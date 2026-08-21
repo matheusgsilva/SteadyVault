@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path name="steadyvault_primary" path="vaults/primary/" />
+    <files-path name="steadyvault_secondary" path="vaults/secondary/" />
+    <files-path name="steadyvault_tertiary" path="vaults/tertiary/" />
+    <files-path name="steadyvault_trash" path="vaults/trash/" />
+    <files-path name="steadyvault_recovery" path="vaults/recovery/" />
+    <files-path name="steadyvault_diagnostics" path="diagnostics/" />
+</paths>

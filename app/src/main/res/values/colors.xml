@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="background">#05070B</color>
+    <color name="background_elevated">#090D14</color>
+    <color name="surface">#0F141D</color>
+    <color name="surface_high">#171E2A</color>
+    <color name="surface_elevated">#1D2634</color>
+    <color name="surface_border">#2A3648</color>
+    <color name="surface_border_soft">#202A39</color>
+    <color name="record_red">#FF5364</color>
+    <color name="danger_container">#3A1921</color>
+    <color name="record_yellow">#8FC9FF</color>
+    <color name="widget_record_yellow">#FFC857</color>
+    <color name="accent">#69DFC4</color>
+    <color name="accent_dark">#20BD98</color>
+    <color name="accent_container">#123C34</color>
+    <color name="accent_container_pressed">#194C42</color>
+    <color name="text_primary">#F7F9FC</color>
+    <color name="text_secondary">#AAB5C5</color>
+    <color name="text_muted">#6F7D91</color>
+    <color name="app_icon_background">#08131E</color>
+    <color name="quick_camera_background">#1769AA</color>
+    <color name="quick_scanner_background">#1261A0</color>
+    <color name="quick_documents_background">#4B4BB7</color>
+    <color name="quick_notes_background">#A56500</color>
+    <color name="quick_video_background">#B3263E</color>
+    <color name="quick_recorder_background">#8D275F</color>
+    <color name="quick_monitor_background">#087A78</color>
+    <color name="quick_calendar_background">#287A42</color>
+</resources>

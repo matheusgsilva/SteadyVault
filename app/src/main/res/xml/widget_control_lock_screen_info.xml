@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_lock_screen_description"
+    android:initialLayout="@layout/widget_control_lock_screen"
+    android:initialKeyguardLayout="@layout/widget_control_lock_screen"
+    android:previewLayout="@layout/widget_control_lock_screen"
+    android:minWidth="160dp"
+    android:minHeight="44dp"
+    android:minResizeWidth="148dp"
+    android:minResizeHeight="44dp"
+    android:resizeMode="horizontal"
+    android:targetCellWidth="4"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen|keyguard" />

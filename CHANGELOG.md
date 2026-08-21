@@ -1,0 +1,1242 @@
+## 1.8.226 — 2026-08-20
+
+- Remove a paginação acionada pelo scroll dos três cofres: a ordenação passa a trabalhar sobre a coleção completa sem trocar/reinserir páginas ao chegar ao fim da grade.
+- Atualizações leves de metadados deixam de reenviar toda a lista ao adapter durante a rolagem, evitando saltos de posição.
+- Libera o cache de miniaturas antes/depois de abrir o visualizador para reduzir pressão de memória em vídeos grandes.
+- Desativa o gesto vertical de fechar apenas para vídeos, evitando saídas acidentais durante a reprodução.
+- Remove a preparação automática do filmstrip de corte durante playback normal; ele só é criado ao entrar no modo Cortar.
+- Substitui o popup de fim do vídeo por controles centrais ao tocar: −10 s, reproduzir/pausar/reproduzir novamente e +10 s.
+- Torna o widget da tela de bloqueio mais compacto, adiciona restauração explícita e atualização periódica para melhorar a permanência no host.
+- Não altera câmera, encoder, FPS, áudio, timestamps ou o pipeline de gravação.
+
+## 1.8.223 — 2026-08-16
+
+- Corrige importação em massa dos três cofres sem alterar o pipeline de gravação.
+- Reabre a origem e tenta novamente falhas transitórias de leitura `EIO`, alternando `openInputStream` e `openFileDescriptor`, com backoff curto e cópia transacional limpa a cada tentativa.
+- Evita varrer diretórios de sistema/cache conhecidos em importação por pasta, incluindo `System Cache - Do not delete`, `LOST.DIR`, `System Volume Information`, `$RECYCLE.BIN` e `Android/data`/`Android/obb`, mantendo `Android/media` disponível.
+- Corrige o relatório que mostrava no máximo 50 falhas como se fossem o total real; agora exibe a contagem verdadeira e somente uma amostra curta, deixando todos os detalhes em Diagnósticos.
+- Nomes de itens inacessíveis passam a ser compactados no relatório em vez de exibir o caminho SAF inteiro.
+- Mantém a seleção e a grade dos cofres independentes da paginação visual de 160 itens.
+
+## 1.8.222 — 2026-08-16
+
+- Torna 60 FPS estritamente `[60,60]` em toda a seleção Camera2: uma faixa variável como `[30,60]` deixa de ser aceita como perfil de gravação de 60 FPS.
+- O request `TEMPLATE_RECORD` reforça `CONTROL_AE_TARGET_FPS_RANGE = [60,60]` quando o perfil selecionado é 60 FPS, inclusive como proteção contra perfil/cache antigo.
+- Preview e matriz de capacidades usam a mesma política para impedir que outro caminho reintroduza uma faixa variável de 60 FPS.
+- Mantém os demais parâmetros de gravação inalterados.
+
+## 1.8.220 — 2026-08-15
+
+- Remove integralmente a calibração e a recomendação **Máximo sustentável do hardware**: saem `DeviceAutoConfigurator`, `DeviceCalibrationStore`, `AutoConfigurationPolicy`, interface, testes e auditorias correspondentes.
+- Mantém a matriz Camera2/MediaCodec apenas como validação de capacidades; resolução, FPS, codec e bitrate continuam sendo escolhas do usuário.
+- Remove o teto automático de bitrate usado em 60/120/240 FPS e também o acréscimo oculto de 8% no HDR. O valor escolhido agora segue direto ao encoder e só é limitado pelo intervalo publicado pelo próprio MediaCodec.
+- Mantém o bitrate fixo durante toda a captura, sem adaptação dinâmica ou reconfiguração no meio do vídeo.
+- Preserva o caminho de maior fluidez já obtido: uma única Surface, `Camera2 → MediaCodec → MediaMuxer`, request congelado, PTS real, B-frames zero, baixa latência, prioridade de tempo real e sem frame drop do encoder quando suportado.
+- Atualiza a revisão do pipeline para `manual-direct-single-surface-1.8.220` e adiciona auditoria para impedir a volta do calibrador ou de tetos automáticos de bitrate.
+
+## 1.8.219 — 2026-08-15
+
+- Unifica a calibração em uma única recomendação, **Máximo sustentável do hardware**, e remove os perfis alternativos de fluidez e qualidade.
+- Usa taxa exata do encoder, `PerformancePoint`, FPS alcançável, faixa Camera2 fixa e sessão validada para selecionar a maior combinação que o aparelho consegue sustentar de verdade.
+- Torna toda gravação estritamente encoder-only: Camera2 envia para uma única `Surface` do MediaCodec, inclusive quando a captura parte da tela com preview. A interface permanece visual, mas deixa de competir com o encoder por uma segunda saída durante o arquivo.
+- Fixa o encoder de vídeo em B-frames zero, baixa latência, prioridade de tempo real, `operating rate` igual ao FPS e `allow frame drop = 0` quando suportado; Android 15+ também recebe a maior importância de codec para vídeo.
+- Prefere VBR quando confirmado pelo encoder e usa CBR apenas como fallback. O codec de áudio recebe importância menor para não disputar recursos com a cadência de vídeo.
+- Prioriza automaticamente a faixa AE exata e o stream use case `VIDEO_RECORD`; remove os controles antigos de faixa fixa, stream use case, modo de bitrate, B-frames, operating rate, correção de lacunas, suavização de alto FPS e pós-processamento automático oculto.
+- Elimina a rota de reabertura de câmera que ficou sem consumidor e metadados de capacidades que só alimentavam controles removidos.
+- Atualiza a revisão do pipeline para `maximum-hardware-single-surface-1.8.219` e adiciona auditoria contra regressão para Surface extra e configurações aposentadas.
+
+## 1.8.218 — 2026-08-15
+
+- Corrige a causa de software dos engasgos periódicos vistos no `56141.mp4`: PTS válidos deixam de ser arredondados para uma grade nominal. A cadência real do encoder é preservada igualmente em 30/60/120/240 FPS; somente timestamps duplicados ou regressivos avançam o mínimo de 1 µs.
+- Prioriza, em todos os modos, a faixa AE exata `[FPS,FPS]`, a câmera calibrada e um encoder com suporte de taxa exato. Metadados conservadores continuam tendo fallback seguro e nunca reduzem a resolução ou o FPS pedidos.
+- No codec Automático, um encoder com taxa exata vence um codec disponível apenas por fallback antes da comparação de folga/desempenho.
+- Inclui `smoothHighFps` na assinatura do cache e muda a revisão do pipeline, impedindo a reutilização de uma configuração antiga com faixa diferente.
+- Divide o início em duas fases: `arm()` drena saídas anteriores, Camera2 instala uma única vez o request/burst definitivo e `commitStart()` confirma a época e pede o IDR inicial. O MP4 só abre em um keyframe decodificável.
+- O gate inicial não mede FPS, pixels, brilho ou tamanho do sample e nunca cancela o comando. Se o codec ignorar o novo IDR, um GOP anterior válido é liberado por um fallback limitado a 250 ms, ¼ de segundo em quadros ou 24 MiB.
+- Mantém o request congelado, sem callback Camera2 por quadro, interpolação, repetição, mudança de bitrate ou reconfiguração durante o vídeo.
+- Em 60 FPS ou mais, ignora solicitações de ISP de alta qualidade no caminho crítico e prefere redução de ruído mínima/off, edge off e correções opcionais off, usando apenas valores publicados pela câmera.
+- A opção de fluidez em alta taxa permanece ativa mesmo quando a HAL não publica faixa fixa: a faixa abrangente compatível pode gravar sem reprovação de cadência.
+- A calibração de hardware testa o codec de verdade, usa faixa fixa como desempate e limita o bitrate recomendado ao teto publicado pelo encoder.
+- Adiciona testes de cadência real, jitter, lacunas, regressão de PTS, 30/60/120/240 FPS e gate de IDR. O prólogo preto pós-commit ainda requer validação física no Samsung porque não pode ser distinguido de uma cena realmente escura sem analisar conteúdo.
+
+## 1.8.217 — 2026-08-15
+
+- Mantém o caminho zero-copy mais curto disponível no Android: `Camera2 → Surface do MediaCodec → MediaMuxer`, sem CameraX, OpenGL/Vulkan, cópia de pixels, preview no headless ou callback por quadro.
+- Arma o encoder e solicita o IDR antes da única submissão `setRepeatingRequest`/`setRepeatingBurst`, fechando a corrida que poderia descartar o primeiro quadro decodificável.
+- Retira a preparação de `AudioRecord`/AAC do caminho que publica a Surface: câmera e encoder de vídeo começam enquanto o áudio é preparado em paralelo.
+- Prepara a faixa AAC com um curto buffer de silêncio antes de abrir o microfone. No fluxo normal o muxer começa sem backlog de vídeo; 750 ms/12 MiB permanecem apenas como defesa se o encoder AAC não responder.
+- Usa uma época `BOOTTIME` comum: o PTS absoluto do primeiro quadro representa a captura, não o dequeue tardio do encoder. O primeiro PCM que cruza esse instante é recortado exatamente e som capturado depois conserva seu atraso real.
+- Falhas de microfone, AAC ou permissão de áudio não impedem nem invalidam o vídeo; clipes curtos também finalizam sem esperar uma faixa AAC inexistente.
+- Câmera é a única permissão obrigatória para gravar. O microfone pode ser liberado separadamente nos Ajustes e nunca segura o comando de vídeo.
+- Valida clipes pelo recebimento de sample de vídeo, não por um tamanho arbitrário de arquivo, e adia a liberação de codecs/muxer até as threads proprietárias realmente saírem.
+- Envia EOS vazio com o PTS final ao muxer, preservando a duração inclusive em clipes de um único quadro e na cauda do áudio.
+- Evita que o watchdog reabra a câmera quando a thread está escrevendo no muxer/armazenamento.
+- Dá prioridade de thread ao vídeo sobre o processamento PCM e adia toda limpeza de MP4 até o fim da gravação.
+- O padrão de áudio passa a ser PCM direto para AAC, sem ganho/low-cut em Kotlin; o processamento só percorre amostras quando o usuário o ativa manualmente.
+- Em 60 FPS ou mais, força blocos ISP leves (`MINIMAL`/`OFF`/`FAST`) e nunca solicita tonemap de alta qualidade como fallback.
+- Remove o `captureSingleRequest` de autofocus anterior à gravação; vídeo usa foco contínuo no único request definitivo.
+- Remove GameManager, classificação de jogo, transcode/correção automática e geração imediata de thumbnail. Otimização continua manual no Cofre.
+- Remove o módulo de Macrobenchmark do projeto; o Baseline Profile já empacotado permanece no app sem executar benchmark em uso normal.
+- O widget dispara o serviço headless antes de inflar a tela preta e instalar gestos.
+
+## 1.8.216 — 2026-08-15
+
+- Corrige o congelamento no início dos vídeos: o primeiro quadro realmente salvo passa a ser o tempo zero do track de vídeo, eliminando a frente parada causada por um PTS inicial positivo.
+- Remove completamente warm-up/callback de início da sessão de gravação. O `CaptureRequest`/burst definitivo é submetido uma única vez sem callback e permanece congelado durante o vídeo.
+- A promoção do foreground service para microfone deixa de bloquear o começo do vídeo. Camera2 + MediaCodec começam primeiro e a tentativa de áudio roda fora da thread crítica.
+- Se o Android 16 demorar ou recusar temporariamente o AppOp/FGS do microfone, o vídeo continua sendo capturado; o áudio entra assim que estiver disponível e, se falhar de vez, a gravação é preservada como vídeo-only.
+- Aumenta apenas a tolerância do watchdog antes do PRIMEIRO sample de vídeo para 3,5 s; depois que o fluxo começou, continua usando 1,5 s para detectar um stall verdadeiro.
+- Mantém headless encoder-only, B-frames desligados, baixa latência, frame-drop desabilitado, operating rate e bitrate definidos antes da captura.
+- O vídeo `56122.mp4` usado para validar a correção tinha primeiro PTS em ~1,8498 s e keyframes a cada ~2 s; após o início apresentou 407 frames, apenas três intervalos de ~33,33 ms e o restante em ~16,67 ms, indicando que o maior defeito visual era a frente congelada, não uma queda contínua de 4K60.
+
+# 1.8.215 — gravação não é mais bloqueada pela cadência inicial
+
+- Remove completamente `FrameCadenceMonitor` e qualquer aprovação/reprovação de FPS antes de iniciar a gravação. Uma leitura inicial como 51,2 FPS não pode mais cancelar 4K60, 120 ou 240 FPS.
+- O warm-up vira somente um assentamento curto por quantidade de frames: no caminho headless de widget/tela preta usa aproximadamente 50 ms e depois inicia, independentemente da cadência observada.
+- Se a HAL não entregar `CaptureResult` dentro de 120 ms no headless, o gravador começa mesmo assim; o watchdog existente continua responsável por recuperar um travamento real depois que a captura já foi solicitada.
+- Antes de salvar o primeiro frame, o callback temporário é removido e o mesmo `CaptureRequest`/burst continua sem listener durante todo o vídeo.
+- Preserva uma única Surface do MediaCodec no headless e não adiciona preview, ajuste dinâmico de AE, bitrate, estabilização, interpolação ou repetição de frames.
+- Só falhas reais de Camera2/MediaCodec/foreground service podem impedir o início; uma estimativa de cadência abaixo do alvo nunca mais interrompe a captura solicitada.
+
+# 1.8.214 — captura determinística e capacidades cache-first
+
+- Remove o aprendizado automático de estabilização e todo o histórico persistente correspondente. O modo Automático passa a ser determinístico: 120/240 FPS priorizam Off; 60 FPS usa OIS somente quando a lente o confirma como segura; abaixo de 60 FPS prioriza OIS e depois os modos digitais suportados.
+- Remove do `HardwareRecorder` a telemetria de cadência por frame usada pelo aprendizado: saem o `LongArray` de 30.000 amostras, `synchronized(cadenceLock)`, `cadenceSummary()` e `RawCadenceAnalyzer` do código de produção. O thread do MediaCodec agora apenas normaliza o PTS, atualiza o watchdog e grava no muxer.
+- Remove integralmente `RecordingQualityAnalyzer` e a classificação de saúde/cadência pós-gravação. Salvar um MP4 não agenda nem mantém uma segunda varredura de timestamps em background.
+- Torna a matriz Camera2/MediaCodec estritamente cache-first: com cache válido, abrir Gravar/Ajustes ou retornar ao app não cria thread de reanálise.
+- O cache de capacidades é invalidado somente quando muda o firmware (`Build.FINGERPRINT`), muda a versão instalada do SteadyVault, o usuário toca em `Reanalisar hardware`/calibração ou uma configuração selecionada falha de verdade em runtime.
+- Adiciona `Reanalisar hardware` em Ajustes e faz `Ver modos reais` reutilizar o cache existente em vez de forçar nova varredura.
+- Mantém sem alteração o headless encoder-only, warm-up curto por `SENSOR_TIMESTAMP`, request congelado, bitrate fixo durante o vídeo, watchdog de travamento e recuperação de arquivo.
+
+# 1.8.213 — remoção total do diagnóstico automático
+
+- Remove a tela de diagnóstico automático, seu repositório de relatórios/capturas, exportação e entrada em Ajustes/Manifest.
+- Remove instrumentação criada exclusivamente para esse diagnóstico: métricas de latência de início, snapshots térmicos de diagnóstico, inspeção de AE dedicada e callbacks de primeiro sample.
+- Remove a categoria correspondente de “Tudo que o app salva” e as regras de auditoria que exigiam a funcionalidade.
+- Mantém o warm-up curto por `SENSOR_TIMESTAMP`, o request Camera2 congelado, o caminho headless encoder-only, o watchdog de travamento real, a proteção térmica normal e o aprendizado de estabilização pelas gravações reais.
+- Nenhum teste automático inicia câmera, microfone, WebView, foto ou gravações descartáveis dentro do aplicativo.
+
+# 1.8.212 — headless encoder-only rígido para widget e tela preta
+
+- Torna widget, tela preta, botão/atalho headless caminhos explicitamente `encoder-only`: a sessão Camera2 recebe somente a `Surface` criada pelo `MediaCodec`.
+- Adiciona `RecordingServiceRouter.startHeadless(...)` para impedir que esses pontos de entrada sejam marcados acidentalmente como captura de preview em alterações futuras.
+- Ao entrar em headless, limpa `CameraPreviewRegistry`, força `previewCaptureRequested=false` e proíbe `shouldAttachRecordingPreviewSurface()` de anexar qualquer saída visual.
+- `createRecordingSession()` monta diretamente `listOf(recorderSurface)` em headless e valida em runtime que exista exatamente uma Surface na sessão.
+- A `DiscreetRecordingActivity` continua sendo somente uma janela preta; seu layout não contém `SurfaceView`, `TextureView` ou qualquer destino Camera2.
+- Mantém integralmente o warm-up curto por `SENSOR_TIMESTAMP` da 1.8.211 e remove o callback antes do primeiro frame salvo; request, bitrate e estabilização continuam congelados durante o vídeo.
+- A gravação com preview continua disponível apenas quando iniciada explicitamente pelos controles do preview; o comportamento headless não depende de FPS e nunca usa preview como fallback.
+
+# 1.8.211 — warm-up real curto + request congelado
+
+- Reconstrói o início da gravação com a arquitetura que funcionava melhor nas versões 1.8.137/1.8.160/1.8.165: Camera2 mede somente alguns `SENSOR_TIMESTAMP` antes do primeiro frame salvo, confirma que a cadência assentou e remove integralmente o callback antes de iniciar o `HardwareRecorder`.
+- 60/120/240 FPS começam assim que a pequena janela recente fica estável; em captura headless a política continua na ordem de ~50–120 ms. O warm-up nunca altera AE, FPS, estabilização, bitrate ou o request durante o arquivo.
+- Depois do warm-up, o mesmo `CaptureRequest`/burst é reenviado com listener nulo. Não existe `CaptureResult` por frame durante a gravação, rebuild de repeating request, AE adaptativo, mudança dinâmica de bitrate ou estabilização.
+- Em 60+ FPS uma cadência inicialmente comprovadamente instável não é aceita silenciosamente. Antes de existir arquivo o serviço tenta retirar preview compartilhado quando aplicável; se o modo dedicado continuar instável, falha em vez de produzir conscientemente um vídeo travando.
+- O `VideoTimestampNormalizer` leve passa a ser usado em 30/60/120/240 FPS: O(1), sem fila/reorder/repetição/interpolação, preservando o offset inicial e qualquer slot realmente perdido.
+- Em SDR o MediaCodec volta a escolher `profile/level` internamente; HDR mantém o profile de 10 bits necessário. Permanecem `KEY_MAX_B_FRAMES=0`, `KEY_LATENCY=1`, `KEY_ALLOW_FRAME_DROP=0`, prioridade realtime e `KEY_OPERATING_RATE`.
+- Mantém a regra observada nos testes atuais: CBR preferencial em 60/120 e VBR em 240 para preservar headroom no encoder.
+- Auto Teste e auditoria passam a verificar explicitamente que o callback existe somente no warm-up e é removido antes de `professionalRecorder.start()`.
+
+# 1.8.210 — correções do Auto Teste 1.8.209
+
+- Mantém o 4K60 no caminho direto que atingiu 59,69 FPS sem perdas no MP4; nenhuma normalização é aplicada em 60 FPS ou abaixo.
+- Em 120/240 FPS adiciona somente o `VideoTimestampNormalizer` leve da arquitetura antiga: O(1), sem fila, reorder, repetição ou interpolação. Ele encaixa jitter pequeno na grade nominal e preserva lacunas reais.
+- Em 240 FPS o bitrate Automático prefere VBR para recuperar margem do encoder, mantendo CBR preferencial em 60/120 FPS.
+- Corrige apenas o metadata nominal `KEY_FRAME_RATE` entregue ao `MediaMuxer`, evitando tracks declarados como 4 FPS/235 FPS sem alterar PTS ou duração dos samples.
+- O foreground service inicia como câmera e só promove para câmera+microfone imediatamente antes do `AudioRecord`, com retry da promoção; isso corrige a corrida que fazia a primeira gravação 4K30 falhar no Android 16.
+- A calibração de estabilização passa a aprender com o MP4 final analisado depois da gravação, em vez de usar telemetria intermediária do encoder.
+- O Auto Teste usa o MP4 como fonte de verdade para o status de cadência; telemetria do encoder permanece visível apenas como diagnóstico.
+
+# 1.8.209 — request congelado e caminho rápido de gravação
+
+- A gravação passa a usar um único `CaptureRequest` construído com o snapshot atual dos Ajustes; depois que a sessão começa, o request não é reconstruído, não há callback por quadro e nenhuma política de AE/FPS/estabilização altera a câmera durante o vídeo.
+- Remove do caminho ativo o `VideoExposureController` adaptativo e reduz o componente a mera inspeção de capacidade usada pelo Auto Teste. A antiga `ExposureCadencePolicy` foi removida do projeto.
+- Adiciona apenas uma espera fixa e curta com a câmera já ligada ao encoder (60 ms em headless, 120 ms em 60+ FPS e 160 ms em modos comuns), sem benchmark, sem decisão por cadência e sem retry; depois disso o gravador começa diretamente.
+- Em 60 FPS ou mais não há disparo AF isolado imediatamente antes da gravação. O foco contínuo do próprio request permanece ativo quando selecionado.
+- O encoder volta à configuração enxuta usada nas versões antigas mais estáveis: sem `KEY_CAPTURE_RATE`/`KEY_MAX_FPS_TO_ENCODER`, com B-frames zero, baixa latência, `KEY_ALLOW_FRAME_DROP=0`, prioridade realtime e CBR preferencial quando o usuário não força outro modo.
+- Mantém o PTS direto da 1.8.208: sem normalizador, reorder, repetição, interpolação ou CFR por software durante a captura.
+- O Auto Teste identifica explicitamente o núcleo direto e deixa de anexar telemetria Camera2/AE por frame às gravações reais; encoder e MP4 permanecem as fontes principais de cadência.
+- Exportação fácil para Arquivos/Compartilhar da 1.8.208 foi preservada integralmente.
+
+# 1.8.208 — núcleo direto Camera2 → MediaCodec → MediaMuxer
+
+- Restaura no gravador principal a filosofia das versões antigas que apresentavam a melhor fluidez: a Surface criada pelo `MediaCodec` continua sendo o destino direto da sessão Camera2 e cada sample comprimido segue diretamente para o `MediaMuxer`.
+- Remove do caminho ativo `VideoTimestampNormalizer` e `PresentationOrderBuffer`; os dois utilitários e seus testes foram eliminados do projeto para impedir regressão acidental para reorder/CFR durante a captura.
+- O PTS do encoder não é mais encaixado em grade de 16,67/8,33 ms, não recebe slot artificial em 120/240 FPS e não tem o `KEY_FRAME_RATE` do track sobrescrito. Só a origem temporal é alinhada ao início da gravação e o muxer mantém a proteção mínima de monotonicidade de 1 µs.
+- O encoder volta a receber apenas hints prévios de hardware (`KEY_FRAME_RATE`, `KEY_CAPTURE_RATE`, `KEY_OPERATING_RATE` e `KEY_MAX_FPS_TO_ENCODER`), sem `KEY_ALLOW_FRAME_DROP=0`, repetição de frame ou adaptação de bitrate durante o vídeo.
+- Mantém os recursos atuais fora do caminho dos frames: perfis por FPS/câmera, HDR, áudio AAC, estabilização, exposição, tela preta, widgets, watchdog, recuperação, telemetria térmica, cofres, Auto Teste e otimização opcional pós-gravação.
+- `Exigir 60/120 FPS reais` passa a ser explicitamente uma política pré-gravação: seleciona/valida câmera e encoder, mas nunca altera timestamps ou fabrica quadros.
+- O Auto Teste desliga `Reparar cadência após gravar` durante as amostras para que o relatório sempre meça o MP4 bruto produzido pelo núcleo direto; o relatório também identifica explicitamente a arquitetura usada.
+- As ferramentas de correção e otimização permanecem disponíveis, porém fora do núcleo: só podem modificar o arquivo depois da gravação quando a opção correspondente estiver explicitamente ativa.
+
+# 1.8.207 — perfis realmente ativos, tela preta imediata e cadência high-speed estável
+
+- Corrige a sincronização dos perfis na abertura do app e dos Ajustes: a câmera/FPS exibidos passam a ser ativados no `CameraProfileStore` antes de montar a interface, evitando mostrar uma opção como ativa enquanto a gravação usava outro perfil persistido.
+- Trocar 30/60/120/240 FPS nos Ajustes agora salva o perfil anterior e carrega imediatamente o perfil próprio do novo FPS, em vez de reaproveitar os controles visuais do FPS anterior e sobrescrever o perfil de destino.
+- Aplicar novamente uma opção que já está ativa não reinicia câmera/preview nem altera o resultado; seletores da tela de Ajustes também ignoram `Aplicar` sem mudança real.
+- Corrige o roteamento da tela preta: o botão Gravar da tela principal usa a preferência “Tela preta ao gravar pelo app”, atalhos rápidos usam a preferência própria e a tela discreta abre assim que o serviço aceita o início, mantendo o broadcast como fallback.
+- Em 120/240 FPS, o normalizador deixa de interpretar timestamps pareados/quantizados do encoder como frames perdidos. Cada sample codificado recebe um slot CFR consecutivo e apenas uma interrupção real longa é preservada; 30/60 FPS continuam detectando perdas curtas reais.
+- Em fluidez estrita, o teto de bitrate passa a ser mais conservador antes de abrir o encoder: até 120% do recomendado em 60 FPS e 115% em 120/240 FPS. O valor escolhido pelo usuário continua salvo, mas não pode sacrificar cadência apenas para empurrar bitrate excessivo.
+- O preview do modo Automático usa a mesma base conservadora da gravação em 60 FPS ou mais, evitando mostrar OIS/EIS ativo no preview quando a captura real começaria por Off para preservar cadência.
+- Corrige textos cortados nos seletores: descrições podem ocupar todas as linhas necessárias dentro do diálogo rolável; botões longos dos Ajustes passam a crescer verticalmente e o valor selecionado do spinner não tenta comprimir uma descrição redundante dentro do campo.
+- Reorganiza Ajustes por fluxo: Vídeo → Câmera e estabilização → Gravação discreta → Áudio → Otimização após gravação → Reprodução → Privacidade e cofres → Apps → Segundo plano → Cache → Navegador → Aparência → Atalhos → Diagnóstico.
+- Adiciona testes para PTS pareado em 120 FPS e para interrupção real longa em high-speed, preservando a cobertura de 60 FPS, reordenação e detecção de gaps reais.
+
+# 1.8.206 — FGS robusto, 120 FPS com encoder de maior headroom e Auto Teste confiável
+
+- Corrige a falha intermitente do Android 16/One UI ao promover o serviço de gravação para câmera + microfone: o CaptureService mantém o prazo do foreground service com câmera provisória, tenta novamente a permissão de microfone e só abre encoder/câmera depois da promoção completa.
+- O encerramento de uma tentativa que falhou antes da câmera agora libera monitor de armazenamento, lease da câmera, estado de inicialização e foreground imediatamente, evitando contaminar 4K30, calibração e foto seguintes.
+- O Auto Teste passa a respeitar de verdade o `cameraId` explícito também em gravação headless; a seleção automática de zoom não pode trocar silenciosamente a câmera escolhida pela matriz de teste.
+- Em 120/240 FPS, a escolha de encoder ganha score por FPS máximo declarado, performance points e headroom real para 240 FPS; isso evita empate que podia levar 1080p120 a um encoder mais fraco enquanto 1080p240 usava outro caminho estável.
+- O relatório de cadência registra nome/MIME/score do encoder, câmera usada, janela sustentada e arquivo completo, permitindo identificar diretamente qualquer diferença de codec sem novo diagnóstico manual.
+- A análise do MP4 usa aproximadamente 500 ms centrais sem bordas como fonte principal de fluidez e mantém o arquivo completo no relatório. Abertura/EOS não derrubam um modo saudável, mas gaps no miolo continuam reprovando normalmente.
+- O PhotoService agora repete de forma limitada a promoção do FGS de câmera e a abertura da câmera quando há corrida transitória `CAMERA_IN_USE`/`MAX_CAMERAS_IN_USE`/serviço da câmera; se falhar, preserva a exceção real no relatório em vez da mensagem genérica “serviço de câmera indisponível”.
+- O Auto Teste aumenta o intervalo entre serviços para permitir liberação completa da HAL/AppOps e renderiza os cards finais antes da captura de tela. O cabeçalho mostra quantidade de falhas/avisos ou “Tudo aprovado”, em vez de sempre dizer apenas “Auto teste concluído”.
+- Corrige a detecção de gravação interrompida no `onDestroy`: a existência de arquivo pendente é calculada antes de marcar a parada como solicitada pelo usuário, preservando recuperação quando o sistema encerra o serviço.
+
+# 1.8.205 — 120 FPS por ordem de apresentação e foto com confirmação terminal
+
+- Corrige o caminho específico de 1080p120 em encoders que devolvem buffers comprimidos fora da ordem de apresentação: uma janela limitada reordena os samples pelo PTS antes da normalização e do muxer, sem alterar o caminho 240 FPS que já estava estável.
+- O track de vídeo passa a declarar explicitamente o FPS solicitado quando o encoder Samsung publica um valor derivado incorreto no formato de saída; os PTS continuam sendo a fonte de verdade da cadência.
+- Mantém lacunas realmente perdidas visíveis: a reordenação corrige apenas a ordem de entrega e não fabrica frames nem comprime interrupções reais da câmera/encoder.
+- Corrige a corrida do Auto Teste fotográfico entre `startForegroundService()` e `PhotoCaptureStateStore.begin()`: o teste agora aguarda um resultado terminal pertencente à captura atual, com sucesso/erro e mensagem persistidos pelo serviço.
+- O PhotoService valida o JPEG por decodificação de dimensões antes de declarar sucesso; um arquivo vazio/corrompido passa a falhar no próprio serviço em vez de aparecer apenas depois no Auto Teste.
+- O diagnóstico de foto informa quando nenhum arquivo novo foi criado e, havendo arquivos inválidos, mostra quantidade e maior tamanho para diferenciar falha de captura de falha de decodificação.
+- Corrige a calibração de estabilização explícita: OIS/EIS/Preview não podem mais selecionar silenciosamente um perfil que não satisfaça o modo pedido e cair para Off; falhas de amostra passam a registrar o motivo no relatório.
+- Amplia os testes puros para cobrir reordenação de PTS em 120 FPS antes da normalização, preservando a cadência nominal.
+
+# 1.8.204 — Cadência real de 60 FPS e diagnóstico por estágio
+
+- O MP4 final passa a ser a fonte principal de verdade da fluidez, com limites mais rígidos: ~57 FPS reais não podem mais aparecer como PASS de uma meta de 60 FPS.
+- A normalização de timestamps suaviza somente jitter pequeno e preserva slots realmente perdidos; uma lacuna real de ~33 ms em 60 FPS permanece visível no arquivo e não é mais comprimida.
+- O Auto Teste separa a cadência por estágio: timestamps do sensor/Camera2, PTS do encoder sustentado e completo, e PTS do MP4 final, incluindo p99, maior gap e perdas estimadas.
+- A calibração Fluidez/AUTO só aceita estabilizações que atinjam uma meta mínima de cadência. Se Off/OIS/EIS/Preview falharem, usa Off como fallback de menor carga em vez de declarar um vencedor ruim como satisfatório.
+- O score de estabilização passa a penalizar explicitamente perdas de quadro, p99 e gaps, além de FPS e irregularidade; o aprendizado antigo é invalidado para não reaproveitar scores calculados pela regra anterior.
+- O modo Fluidez em 60 FPS reduz também o processamento de bordas do ISP quando suportado, sem alterar o caminho high-speed de 120/240 FPS.
+- Bitrate e modo de bitrate deixam de ser restaurados por perfis antigos de câmera/FPS; a seleção global atual permanece ao trocar outras configurações.
+- Restaura `android:extractNativeLibs=true`, exigido pelo executável nativo do downloader e pelo auditor estático do projeto.
+- Adiciona testes puros e unitários cobrindo 57 FPS vs 60 FPS, preservação de um frame perdido e fallback AUTO quando todos os modos ficam abaixo da meta.
+
+# 1.8.203 — Auto teste robusto e Fluidez/AUTO determinístico
+
+- Corrige falha transitória ao iniciar o foreground service de câmera+microfone após atualização em Android/One UI, com retry somente para a SecurityException específica de FGS.
+- Calibração de estabilização passa a consolidar as 3 amostras pela mediana antes de gravar o aprendizado; a ordem dos testes não pode mais fazer OIS/EIS vencer indevidamente o modo mais fluido.
+- Em 120/240 FPS, a telemetria de cadência passa a usar os PTS efetivamente escritos no MP4, eliminando falso 100% de irregularidade causado pelo jitter bruto da HAL; 60 FPS continua usando PTS bruto para comparar estabilização.
+- CaptureResult do Auto Teste agora informa a estabilização efetiva junto dos valores EIS/OIS solicitados e aplicados.
+- Mantém 4K60/120/240 sem mudança no caminho normal de gravação; o retry não adiciona atraso quando o foreground service inicia normalmente.
+
+## 1.8.201
+
+## 1.8.202
+- Corrige a calibração de estabilização em 60 FPS: a escolha AUTO passa a usar a janela sustentada, descartando apenas 500 ms de abertura/fechamento do encoder.
+- Mantém a telemetria completa no relatório para diagnóstico, mas impede um gap comum de borda de 33 ms de derrubar artificialmente todos os modos para ~58 FPS.
+- Calibração de estabilização agora usa 3 amostras de 4 s e mediana, reduzindo decisões por ruído de uma gravação curta.
+- O relatório separa `PTS sustentado` de `bruto completo`, deixando claro quando a perda ocorreu somente na borda.
+- Lacunas no meio da gravação continuam sendo penalizadas normalmente; a correção não mascara travamentos reais.
+
+- Corrige a telemetria bruta de cadência em 120/240 FPS: os PTS do encoder agora são analisados em ordem de apresentação ao finalizar, sem assumir a ordem de dequeue do MediaCodec e sem adicionar sort/alocação no caminho por quadro.
+- Evita o falso `100% irregular` em high-speed causado por buffers entregues fora de ordem; o MP4 final continua sendo a fonte de verdade e a telemetria bruta passa a representar corretamente os timestamps pré-normalização.
+- Em 120/240 FPS, ausência de `AE Priority`/`CaptureResult` passa a aparecer explicitamente como indisponibilidade da HAL em sessão high-speed, não como indício de falha de gravação.
+- A calibração Off/OIS/EIS/Preview agora republica deterministicamente as amostras válidas no `StabilizationPerformanceStore` ao concluir; o vencedor medido passa a alimentar diretamente o modo Fluidez/Automático sem sobrescrever escolhas explícitas do usuário.
+- Adiciona teste puro que reproduz PTS de 120 FPS fora de ordem e garante FPS/gap/irregularidade corretos.
+
+## 1.8.200
+- Corrige os falsos FAIL restantes do Auto Teste: a validade do MP4 final passa a ser a fonte de verdade da gravação, mesmo se o estado visual já tiver voltado para “Pronto para gravar” antes da leitura do teste.
+- Garante as três medições de partida quando o arquivo foi realmente criado e validado, evitando encerrar 4K60 com apenas duas amostras por uma corrida de estado.
+- A classificação de cadência passa a usar o MP4 final reproduzível; a cadência bruta do encoder continua no relatório como telemetria informativa, mas não reprova um arquivo com zero perdas e pacing final estável.
+- Mantém a calibração Off/OIS/EIS/Preview válida quando vídeo e telemetria foram concluídos, mesmo que a mensagem terminal do serviço já tenha sido substituída pelo estado de repouso.
+- Preserva integralmente o pipeline de captura, bitrate e normalização de timestamps da 1.8.199; esta versão corrige o diagnóstico sem mascarar perdas reais no arquivo final.
+
+## 1.8.199
+- Corrige o falso FAIL do Auto Teste em 4K30/4K60: o estado “Salvando original no cofre…” permanece em FINALIZING e o teste só considera sucesso após a confirmação terminal “Vídeo salvo no cofre”.
+- Torna o Auto Teste mais robusto contra corrida entre encerramento do encoder, publicação/validação do MP4 e leitura do arquivo pelo diagnóstico.
+- Suaviza ainda mais os timestamps de vídeo em 60/120/240 FPS: a correção gradual de fase cai para 1,5% do período nominal, reduzindo microjitter sem esconder interrupções reais longas.
+- Reescreve o diagnóstico de cadência para usar p95/p99 do erro de intervalo, lacunas severas e estimativa de frames perdidos, evitando marcar como falha pequenas oscilações de poucos décimos de milissegundo.
+- O relatório passa a mostrar também a cadência bruta do encoder antes da normalização, permitindo diferenciar jitter da HAL de irregularidade introduzida no MP4.
+- Adiciona calibração automática de estabilização no Auto Teste em 60 FPS: Off, OIS, EIS e Preview compatíveis são gravados duas vezes e o modo Automático aprende com a cadência real do aparelho.
+- O aprendizado de estabilização exige duas amostras antes de confiar em um modo e, em 60 FPS ou mais, só troca Off por OIS/EIS/Preview quando a melhora de score é significativa, evitando priorização prematura de OIS.
+- Ajusta o diagnóstico de sincronismo A/V de clipes curtos para considerar o priming normal do AAC, reduzindo avisos falsos em diferenças pequenas de duração.
+- Adiciona testes automatizados para publicação/finalização, estabilização automática e jitter de timestamps em alta taxa de quadros.
+
+## 1.8.198
+- O modo Automático de estabilização deixa de privilegiar OIS por regra fixa. Em 60 FPS ou mais começa pelo caminho de menor carga e aprende, por câmera/resolução/FPS, qual opção entrega melhor cadência real nas gravações concluídas.
+- O aprendizado usa timestamps brutos do encoder antes da normalização, combinando FPS medido, jitter e maior lacuna; escolhas explícitas de OIS, EIS, Preview ou Off continuam sendo respeitadas integralmente.
+- Remove o viés de OIS/EIS da escolha automática da câmera, para a seleção do sensor priorizar sessão, resolução, FPS e nível de hardware.
+- Remove mudanças de bitrate em pleno vídeo via MediaCodec.setParameters; o teto seguro continua sendo escolhido antes de iniciar o encoder, evitando pausas introduzidas por reconfiguração do codec.
+- Reduz a correção máxima do relógio de vídeo de 10% para 4% por quadro e suaviza o ganho de fase, evitando alternâncias de ~16,7 ms para ~18,3 ms em 4K60 sem esconder lacunas reais.
+- O diagnóstico de cadência passa a considerar desvios acima de 4% como irregulares em 60 FPS ou mais, tornando o relatório sensível a microtravadas que antes apareciam como 0% de irregularidade.
+- Adiciona a ação “Reaprender estabilização automática” nos Ajustes para limpar o histórico e recalibrar a escolha.
+
+## 1.8.197
+- Player mostra imediatamente o menu ao terminar vídeo, com reproduzir novamente e próximo vídeo; o próximo arquivo é pré-carregado durante a reprodução para evitar tela preta esperando a lista.
+- Bitrate manual não é mais sobrescrito ao mudar FPS, resolução, codec ou perfil de vídeo, inclusive pelos controles rápidos da câmera; a edição rápida agora também usa seleção sem campo de texto.
+- Modo automático prioriza OIS também na escolha da câmera; EIS/Preview explícitos agora exigem suporte real do perfil selecionado. O perfil Fluidez volta a usar estabilização Automática e bitrate Automático como ponto de partida, para não herdar EIS/CBR pesado de um perfil anterior.
+- Fluidez estrita limita bitrates excessivos antes de iniciar o encoder e reduz dinamicamente a taxa somente se a cadência recente cair, sem descer abaixo do bitrate recomendado do modo. Fora da fluidez estrita, o limite manual de 240 Mbps continua disponível quando o encoder aceitar.
+- Bitrate automático prefere VBR em 60 FPS ou mais para reduzir pressão no encoder.
+- Mantido o empacotamento nativo exigido pelo downloader; o aviso do AGP não altera a gravação.
+
+## 1.8.193
+
+- Ajustado o widget expandido 6x1 para encaixar melhor no launcher da One UI, com dimensões adaptativas conforme a largura realmente entregue pelo host.
+- O preview do 6x1 agora usa uma representação proporcional menor e dedicada, evitando recorte ou ampliação excessiva no seletor de widgets.
+- O preview dinâmico continua recebendo tema, identidade visual, ícones e estado de zoom do widget real.
+- O widget expandido ganhou largura mínima mais conservadora e redimensionamento horizontal, mantendo áreas de toque adequadas mesmo com margens próprias da One UI.
+
+## 1.8.192
+- Faz os widgets usarem a mesma paleta selecionada no aplicativo: shell, divisória, área do logo, botões normais e estados desabilitados agora acompanham Esmeralda, Oceano, Violeta, Âmbar, Gelo, AMOLED, Grafite, Ciano, Rosa, Rubi, Meia-noite e Cobre.
+- Fundo neutro e preto puro também são refletidos no shell dos widgets, mantendo a cor de destaque do tema escolhido.
+- Foto, sequência, zoom e início de gravação deixam de usar cores fixas verde/ciano e passam a usar a cor de destaque do tema; vermelho continua reservado a estados semânticos de gravação/parada.
+- O seletor de widgets do Android 15+ passa a receber previews gerados com exatamente o mesmo layout e as mesmas regras visuais do widget instalado, incluindo tema, fundo, identidade, ícones neutros e disponibilidade do zoom.
+- Em Android anteriores, o preview estático também passa a apontar para o próprio layout real do widget, removendo a miniatura separada que podia divergir em tamanho e proporções.
+- Widgets já instalados são reaplicados na inicialização do SteadyVault, evitando manter a aparência de uma versão anterior depois de uma atualização.
+- Navegação inferior e estados dinâmicos que ainda recuperavam a cor fixa do recurso passam a consultar diretamente a paleta atual.
+- Notificações de gravação, foto, importação, captura protegida e otimização passam a usar a cor de destaque do tema como cor do aplicativo no sistema.
+
+## 1.8.191
+- Amplia os temas escuros para 12 opções: Esmeralda, Oceano, Violeta, Âmbar, Gelo, AMOLED, Grafite, Ciano, Rosa, Rubi, Meia-noite e Cobre, incluindo os destaques equivalentes nos widgets.
+- Separa a cor do tema do estilo de fundo, permitindo manter qualquer destaque com fundo do tema, neutro ou preto puro.
+- Adiciona três níveis de contraste e usa contraste forte como padrão, reforçando bordas e a diferença visual entre chaves ligadas, desligadas e desabilitadas.
+- Adiciona densidade Compacta, Confortável e Espaçosa para a tela de ajustes, alterando altura e espaçamento dos controles sem diminuir a área segura de toque.
+- A tela de ajustes passa a usar rolagem protegida: gestos de arrastar bloqueiam cliques por uma pequena janela após o movimento e chaves ignoram qualquer toque que vire rolagem.
+- Seletores da tela de ajustes passam a exigir confirmação em “Aplicar”, evitando que um toque acidental durante a navegação altere a configuração imediatamente.
+- Botões e diálogos de escolha passam a usar detecção de toque mais estrita, com tolerância menor a deslocamento e proteção compartilhada contra cliques durante o scroll.
+
+## 1.8.190
+- Revisa todos os temas escuros para manter identidade própria sem perder contraste; o AMOLED continua com preto puro e recebe contornos mais visíveis.
+- Chaves de liga/desliga passam a usar contraste independente do tema: trilha ativa em cor de destaque, polegar de alto contraste, estado desligado claramente separado da superfície e estados desabilitados próprios.
+- O modo “Exigir 60/120 FPS reais” agora recusa faixas variáveis como 30–60 em alta taxa de quadros; a gravação só inicia quando a HAL confirma a faixa fixa solicitada.
+- Invalida a configuração antiga de câmera/encoder para refazer a seleção com as regras de cadência desta versão.
+- Em alta taxa de quadros com fluidez estrita, reduz ainda mais a carga do ISP desligando correções não essenciais quando a câmera oferece modo OFF, preservando redução de ruído mínima e tone mapping rápido.
+- Em 60 FPS ou mais, evita o Stream Use Case VIDEO_RECORD no modo de fluidez estrita, exceto quando EIS foi solicitado explicitamente, reduzindo a chance de tuning do fabricante priorizar processamento pesado sobre cadência.
+- Mantém encoder em prioridade realtime, operating rate do FPS solicitado, sem B-frames e sem descarte de quadros em 60 FPS ou mais.
+- O diagnóstico de gravação passa a medir FPS pela duração média real de todos os intervalos e usa limites mais rigorosos, identificando corretamente arquivos sustentados abaixo do FPS escolhido.
+
+## 1.8.189
+- Fotos individuais passam a usar a maior resolução JPEG realmente exposta pela Camera2, incluindo o modo de resolução máxima do sensor no Android 12+ quando a HAL oferece esse caminho.
+- O botão de foto do preview agora entrega a captura ao serviço de qualidade máxima em vez do caminho rápido limitado; usa JPEG 100, processamento de nitidez/ruído em alta qualidade e aguarda foco, exposição, balanço de branco e lente estabilizarem antes do disparo.
+- OIS da foto usa a mesma detecção lógica/física revisada do vídeo.
+- Em 60 FPS ou mais com fluidez ativada, o modo automático escolhe o encoder por margem de desempenho anunciada pelo hardware, em vez de aceitar o primeiro encoder compatível.
+- Mantém o caminho de vídeo de alta taxa com processamento ISP mínimo, sem EIS automático quando isso pode custar cadência e sem criar quadros artificiais para mascarar perdas reais.
+
+## 1.8.188
+- Corrige detecção e aplicação de OIS em câmeras lógicas/físicas quando a HAL expõe o controle de forma incompleta.
+- Prioriza cadência real em 60/120 FPS, evitando EIS automático no modo de FPS estrito quando OIS seguro não está disponível.
+- Adiciona tema AMOLED com fundo preto puro.
+- Ajustes passam a preservar a posição da rolagem e removem campos numéricos/textuais em favor de seleções.
+
+# 1.8.187 — 2026-08-11
+
+- Restaura `android:appCategory="game"` para que Android/Samsung possam reconhecer o SteadyVault como workload de jogo/performance.
+- Restaura `android.game_mode_config` e bloqueia explicitamente `allowGameDownscaling` e `allowGameFpsOverride`, impedindo intervenções do OEM que alterem resolução de backbuffer ou imponham FPS ao app.
+- Durante toda a captura, o `CaptureService` informa `GameState.MODE_GAMEPLAY_UNINTERRUPTIBLE`; ao finalizar ou destruir o serviço, volta para `MODE_NONE`.
+- O Game State é atualizado apenas no início e no fim da captura, sem callback, thread ou processamento adicional por frame.
+- Mantém `SustainedPerformanceMode`, WakeLock, prioridades das threads críticas e todo o pipeline Camera2 → Surface do MediaCodec → MediaMuxer da 1.8.186.
+
+# 1.8.186 — 2026-08-11
+
+- Separa responsabilidades de sessão Camera2, orquestração, monitor de saúde, finalização, métricas de início e telemetria térmica em componentes próprios, mantendo o estado crítico da gravação no mesmo fluxo e sem adicionar processamento paralelo por quadro.
+- Unifica Cofre secundário e Cofre terciário em `PrivateVaultGalleryActivity` e `PrivateVaultRepositoryCore`, removendo a duplicação estrutural das duas telas.
+- Implementa paginação real por lotes de 160 itens no cofre principal, secundário e terciário, carregando novas páginas conforme a rolagem em vez de materializar todos os `MediaItem` na memória.
+- Mede três inícios reais por modo no Auto Teste e registra comando de início, abertura da câmera, configuração da sessão, repeating request, início do recorder, primeiro frame codificado e primeiro sample no MP4, com mediana e pior caso.
+- Adiciona diagnóstico de `CaptureResult` para EIS, OIS, AWB/CCT, faixa de FPS, exposição e ISO somente no Auto Teste.
+- Usa `COLOR_CORRECTION_MODE_CCT`, temperatura e tint no Android 16/API 36 quando a HAL confirma suporte, preservando o balanço de branco anterior como fallback.
+- Adiciona `PowerManager.OnThermalStatusChangedListener` e thermal headroom à telemetria, sem rebaixamento automático de resolução/FPS.
+- Recupera `WebView` após `onRenderProcessGone`, recriando o renderer e restaurando a URL.
+- Troca screenshots de diagnóstico para PixelCopy quando a view está anexada à janela, com fallback seguro para `View.draw`.
+- Sincroniza o MP4 final e o diretório em modo best-effort depois do `MediaMuxer.stop()`, reduzindo a janela de perda após finalização sem afetar FPS durante a gravação.
+- Adiciona `androidTest`, Macrobenchmark com `StartupTimingMetric`, variante `benchmark`, `ProfileInstaller`, gerador de Baseline Profile e perfil inicial em `src/main/baseline-prof.txt`.
+
+# 1.8.185 — 2026-08-11
+
+- Muda o gesto da tela preta: dois toques rápidos agora solicitam `STOP` uma única vez e fecham imediatamente a tela discreta, sem reabrir a interface de gravação.
+- Confirma o duplo toque com a vibração de parada quando a opção de vibração está habilitada; o serviço recebe um marcador de confirmação para não vibrar novamente ao finalizar o mesmo `STOP`.
+- Se o duplo toque ocorrer ainda durante a preparação, a solicitação continua sendo cancelamento do usuário antes do primeiro quadro, nunca uma interrupção recuperável.
+- Atualiza Ajustes, README e auditoria para tornar o duplo toque um comando explícito de parada e impedir regressão para o comportamento antigo de restaurar controles.
+
+# 1.8.184 — 2026-08-11
+
+- Adiciona controle adaptativo de `AE Exposure-Time Priority` no Android 16/API 36 para gravações regulares de 60 FPS ou mais quando câmera e CaptureResult confirmam suporte completo.
+- Mantém AE normal enquanto a exposição e a duração real do frame permanecem dentro do orçamento do FPS; a prioridade só entra após risco sustentado de queda de cadência, evitando fixar 1/60 em cenas claras.
+- Quando a prioridade entra, limita a exposição ao orçamento de um frame e deixa o AE compensar principalmente pela sensibilidade; quando o ISO chega repetidamente perto do mínimo, libera a prioridade e devolve latitude total ao AE.
+- Não injeta o controlador adaptativo em `CameraConstrainedHighSpeedCaptureSession`: 120/240 FPS high-speed continuam usando o mecanismo dedicado da HAL, sem trabalho extra no caminho crítico.
+- Reverte internamente uma transição de AE Priority se a HAL rejeitar a atualização do repeating request, preservando o estado real da sessão e evitando controlador dessincronizado.
+- Amplia o Auto Teste para registrar suporte, modo adaptativo, alvo de exposição, exposição/frame efetivos, ISO, número de transições e motivo de ativação/desativação por modo gravado.
+- Adiciona testes puros para orçamento de frame, limiar de risco de cadência, ativação e liberação por ISO, mantendo a política separada das APIs Android.
+
+# 1.8.183 — 2026-08-11
+
+- Faz nova revisão integral do pipeline e remove a classificação artificial como jogo/Game Mode; mantém apenas `SustainedPerformanceMode` durante gravação ativa quando suportado.
+- Torna OIS estrito à câmera selecionada e ao suporte lógico confirmado; remove qualquer troca silenciosa de câmera e a promoção de OIS apenas “não verificado”.
+- Corrige balanço de branco no request final de vídeo: `lockWhiteBalance` volta a valer e a redução de amarelo usa a mesma correção centralizada do preview/foto quando há medições 3A recentes.
+- Centraliza estado 3A e correção de balanço de branco para evitar regras divergentes entre preview, foto e vídeo.
+- Melhora o áudio de vídeo com `MediaRecorder.AudioSource.CAMCORDER`, direção de microfone frontal/traseira e timestamps de captura via `AudioTimestamp.TIMEBASE_MONOTONIC`.
+- Remove `KEY_LATENCY` do encoder de alta taxa de quadros e mantém controle explícito de B-frames; informa perfil + nível do AVC/HEVC quando publicados pelo encoder.
+- Preserva qualquer trecho interrompido, reproduzível ou quebrado, primeiro em “Vídeos com erro / recuperados”, fora do cache e sem publicar automaticamente no cofre normal.
+- Amplia o Auto Teste: grava amostras reais nos maiores modos confirmados de 30/60/120/240 FPS, mede FPS real, intervalos irregulares e maior lacuna, valida perfil/nível/cor/áudio e diferença de duração A/V, testa a área persistente de recuperação e faz uma foto JPEG real descartável.
+- Melhora o navegador para mostrar falhas de carregamento/HTTP do frame principal em vez de aparentar carregamento infinito.
+- Usa um único `CaptureRequest` regular já configurado para a gravação, evitando reconstrução imediatamente antes do início; a trava de WB só é aplicada com medição 3A recente.
+- Remove atributos depreciados de cor das barras do sistema no tema e reforça o auditor contra retorno de câmera dupla, GameManager, `KEY_LATENCY`, fonte `MIC`, request duplicado e fallback silencioso de OIS.
+- No Android 16/API 36, declara explicitamente `CONTROL_ZOOM_METHOD_ZOOM_RATIO` quando suportado para retirar a ambiguidade entre crop e zoom ratio em 1,0x.
+- Centraliza toda exportação pública dos três cofres em `PublicMediaExporter`, registra as cópias criadas pelo app e permite visualizá-las/apagá-las em “Tudo que o app salva”; falhas de exclusão permanecem registradas em vez de perder o rastreamento.
+- O Auto Teste agora inclui resumo de recursos confirmados por câmera, valida o catálogo completo de armazenamento e faz uma exportação MediaStore real de uma foto de teste, reabre e remove a cópia no final.
+
+# 1.8.182 — 2026-08-11
+
+- Remove integralmente a captura com múltiplas câmeras do serviço, Manifest, configurações, matriz de capacidades, relatórios e interface; resta apenas um pipeline Camera2 → MediaCodec → MediaMuxer.
+- Adiciona Auto Teste completo com relatório compartilhável, capturas de tela do navegador/layout, teste de armazenamento, capacidades, WebView/Google, rede, motor de mídia e gravação real curta descartada ao final.
+- Preserva vídeos interrompidos ou quebrados em `filesDir/vaults/recovery`, fora do cache, e permite abrir, mover para qualquer cofre ou apagar manualmente.
+- Adiciona “Tudo que o app salva”, com visão e limpeza de cofres, lixeira, recuperação, testes, logs, miniaturas, índice/bancos locais, dados privados do navegador, temporários, caches, downloads públicos registrados, dados auxiliares internos/externos e reset completo do aplicativo.
+- Centraliza a configuração do WebView, usa o User-Agent da implementação realmente instalada e remove WebSQL depreciado; o Google passa a ser a página inicial simples e o Auto Teste valida carregamento/título.
+- Ativa `Window.setSustainedPerformanceMode` somente quando o aparelho declara suporte, durante a tela de captura.
+- Migra o build para AGP 9.3.1 + Kotlin embutido, Gradle 9.5.1, AndroidX Core 1.19.0, Activity 1.13.0, Media3 1.10.1 e WebKit 1.16.0.
+- Remove APIs/UA obsoletos, código sem consumidor e reforça a auditoria estática contra resíduos de funcionalidades removidas e referências mortas.
+
+# 1.8.180
+
+- Gravação direta: sessão compatível configurada inicia Camera2 + encoder imediatamente, sem warm-up/benchmark bloqueante.
+- Removida a opção de preparação antes da gravação e as classes de timing que bloqueavam o início.
+- Aplicativo marcado como categoria game com Game Mode config próprio, sem downscaling nem override de FPS do OEM.
+- Game State API sinaliza captura em tempo real como não interrompível no Android 13+.
+- Mantidos foreground service, wake lock e prioridades elevadas das threads críticas.
+- Foto continua JPEG 100/processamento de alta qualidade e recebe hint de carga em tempo real.
+
+# SteadyVault 1.8.179
+
+- Gravação prioriza início rápido e respeita resolução/FPS selecionados; cadência de aquecimento virou telemetria e não cancela nem reduz o modo.
+- Primeiro CaptureResult válido libera a gravação; ausência real de quadros ainda aciona recuperação do mesmo modo.
+- Encoder drena pre-roll sem gravá-lo para evitar bloqueio de Surface e vídeo preto.
+- Foto única inicia foco/preparo mais rápido mantendo resolução, JPEG 100 e processamento de alta qualidade.
+
+## 1.8.178 — 2026-08-10
+
+- Corrige o caso em que o modo de resolução `Automática` seleciona 4K60, mas a tentativa especial de compatibilidade não era acionada porque o código só reconhecia 4K explicitamente selecionado; agora a combinação efetiva 3840×2160@60 também entra na janela completa de aquecimento.
+- Mantém a primeira tentativa rápida e, somente após falha real de cadência, repete 4K60 com sessão compatível e aquecimento completo antes de concluir que o aparelho não sustenta 60 FPS.
+- No Android 16/API 36, quando a câmera publica `CONTROL_AE_PRIORITY_MODE_SENSOR_EXPOSURE_TIME_PRIORITY`, adiciona uma tentativa que mantém a autoexposição ativa, mas limita o tempo de exposição para caber em um quadro de 60 FPS; o FPS continua sendo validado por `SENSOR_TIMESTAMP`.
+- Se a prioridade de exposição não existir ou ainda não sustentar 60 FPS e a câmera publicar `MANUAL_SENSOR`, faz uma última tentativa com `SENSOR_FRAME_DURATION` de aproximadamente 16,67 ms, exposição curta e ISO compensado a partir dos valores reais obtidos pela AE imediatamente anterior.
+- O fallback manual só é usado quando os ranges de exposição/sensibilidade e o modo AE OFF são realmente suportados; caso contrário, a combinação continua sendo recusada em vez de produzir 60 FPS falsos.
+- Preserva bitrate, MediaCodec/MediaMuxer, timestamps do arquivo, finalização, política térmica e os três cofres; as novas tentativas ocorrem antes do primeiro frame oficial gravado.
+
+## 1.8.177 — 2026-08-10
+
+- Corrige o caso real do Galaxy S25 Ultra em que 4K60 cria a sessão Camera2, mas nenhuma captura é concluída enquanto a única Surface pertence a um MediaCodec temporariamente suspenso.
+- Se a primeira tentativa 4K60 não entrega nem o primeiro quadro, ela agora entra na tentativa de compatibilidade em vez de cancelar imediatamente; a compatibilidade libera a entrada do encoder apenas durante o aquecimento.
+- Os frames de aquecimento são drenados e descartados enquanto a gravação oficial ainda está inativa; o muxer só recebe amostras depois que a cadência real foi validada.
+- Adiciona proteção no encoder para descartar qualquer buffer de aquecimento com timestamp anterior ao início oficial, evitando quadro antigo no começo do vídeo.
+- Mantém 4K60 como modo exato: não reduz resolução/FPS silenciosamente e continua recusando cadência que não sustente 60 FPS reais.
+
+## 1.8.176 — 2026-08-10
+
+- Corrige a falsa rejeição precoce de 4K60 em captura sem preview: a primeira tentativa continua rápida, mas se a faixa Samsung for variável (como `[30,60]`) e a cadência ainda não tiver assentado, a tentativa de compatibilidade recebe uma janela completa de aquecimento antes de declarar o modo inviável.
+- A tentativa de compatibilidade 4K60 agora também é acionada por rejeição de cadência/“não sustentou 60 FPS”, além de falhas de sessão/HAL; continua sem reduzir resolução ou FPS silenciosamente.
+- Corrige definitivamente `CaptureModeCatalog.resolve()` sem `return@map` ambíguo e com smart-cast explícito de `validated`, incorporando os dois erros encontrados pelo compilador Kotlin real.
+- A interface deixa de chamar uma capacidade apenas enumerada de “máximo confirmado”: `DETECTED` passa a ser “máximo detectado”; somente `VALIDATED` significa gravação real bem-sucedida.
+- Aumenta o cartão de status para até quatro linhas para exibir a causa completa de uma rejeição de Camera2 em vez de cortar a mensagem após os dois-pontos.
+- Mantém bitrate, MediaCodec/MediaMuxer, política térmica, finalização do vídeo e os três cofres sem alteração.
+
+## 1.8.175 — 2026-08-10
+
+- Corrige a falha Samsung `submitRequestList: Invalid physical camera id`: OIS continua lendo metadados das lentes físicas para diagnóstico, mas nenhum `CaptureRequest` lógico recebe mais `physicalCameraId`, `setPhysicalCameraKey` ou resultado físico forçado.
+- Amplia a descoberta de vídeo para unir saídas `ImageFormat.PRIVATE`, `MediaCodec` e `MediaRecorder`; no Android 15+ combinações regulares relevantes também são consultadas em runtime com `CameraDeviceSetup.isSessionConfigurationSupported`.
+- Não exige mais `[60,60]` para sequer testar 60+ FPS quando o HAL anuncia uma faixa cobrindo o alvo, como `[30,60]`; com Fluidez/FPS fixo, a captura só começa se `SENSOR_TIMESTAMP` comprovar a cadência real e tenta outra configuração antes de salvar um falso 60 FPS.
+- Corrige o catálogo de modos para a matriz atual da câmera selecionada vencer histórico antigo; um 1080p60 gravado anteriormente não pode esconder um 4K60 recém-confirmado nem reaparecer em outra lente incompatível.
+- Invalida o cache antigo da matriz de capacidades e melhora o relatório de diagnóstico para listar os maiores modos efetivamente confirmados por câmera, FPS e encoder.
+- Incorpora as três correções encontradas pelo build Android real: `ByteArray.indexOf` sem `startIndex`, `fastPreviewCapture` removido em favor de `fastSingleCapture` e `Context` explícito no indicador do widget.
+- Remove as duas flags WebView de file-URL obsoletas e migra a ação de cancelar importação para `Notification.Action`, reduzindo warnings sem tocar na gravação.
+- Mantém política térmica, três cofres independentes, bitrate/codec e finalização audiovisual existentes.
+
+## 1.8.174 — 2026-08-10
+
+- Corrige a combinação de build para Android 16/API 36: Android Gradle Plugin `8.10.1` com Gradle Wrapper `8.11.1` e Kotlin `2.2.10`, mantendo JDK 17 no CI e no alvo JVM.
+- Fixa o SHA-256 oficial da distribuição Gradle 8.11.1 no Wrapper e valida a integridade do launcher para impedir um pacote de build ausente ou adulterado.
+- Adiciona `android:extractNativeLibs="true"`, exigido pelo conjunto `youtubedl-android`/FFmpeg/aria2c usado pelo downloader para disponibilizar os binários nativos no aparelho.
+- Corrige o executável externo do downloader para `libaria2c.so`, conforme a integração Android da biblioteca, evitando falha ao tentar chamar o nome desktop `aria2c`.
+- Torna `androidx.fragment:fragment-ktx:1.8.9` uma dependência explícita porque o app usa `FragmentActivity` diretamente, eliminando dependência acidental de classpath transitivo.
+- Executa pente-fino de compilação: parser real do compilador Kotlin em todos os fontes/scripts, índice completo de recursos Android, imports internos, classes do Manifest, custom views, packages, FQCNs duplicados e referências canônicas dos três cofres.
+- Reforça o auditor para validar também IDs gerados por layout, recursos em diretórios qualificados, scripts completos do Gradle Wrapper e repositórios de dependências, distinguindo corretamente recursos locais de `android.R`.
+- Mantém o caminho crítico de gravação sem alterações funcionais nesta revisão.
+
+## 1.8.173 — 2026-08-10
+
+- IDs internos dos cofres padronizados para `primary`, `secondary` e `tertiary` para instalação limpa.
+- Classes da área principal/secundária renomeadas para nomes semânticos (`PrimaryVault*` / `SecondaryVault*`).
+- Diretórios privados padronizados em `vaults/primary`, `vaults/secondary` e `vaults/tertiary`.
+- PIN, biometria, importação, recuperação, lixeira, navegador, captura de tela e extras passaram a usar a mesma identidade canônica.
+- Layouts secundário e terciário possuem recursos/IDs próprios; não existe mais `decoy` na produção.
+- Compatibilidade de IDs antigos removida porque esta versão é destinada a instalação limpa.
+
+## 1.8.172 — 2026-08-10
+
+- Padroniza a nomenclatura visível para `Cofre principal`, `Cofre secundário` e `Cofre terciário`, além de `Lixeira dos cofres`, `Importar para o cofre`, `Otimização após gravação` e `Captura privada`; identificadores internos legados (`main`, `secondary`, `tertiary`) permanecem inalterados para preservar preferências, PINs, biometria, filas e arquivos existentes.
+- Mantém integralmente o caminho de início, aquecimento, Camera2, `HardwareRecorder`, bitrate, codec, estabilização e política térmica da 1.8.171; não adiciona limite de duração nem parada automática por tempo.
+- Remove propriedades e contadores comprovadamente sem consumidores e amplia a auditoria para variáveis sem uso global, nomenclatura atual, preservação dos três cofres, finalização completa do encoder e ausência de limite artificial de duração.
+- Restaura `gradle-wrapper.jar`, que havia ficado ausente no pacote 1.8.171, permitindo que `gradlew` inicialize corretamente antes de resolver a distribuição configurada.
+
+## 1.8.171 — 2026-08-10
+
+- Adiciona Assistente de calibração do aparelho sem alterar o pipeline de gravação: testa a matriz real Camera2, valida combinações de sessão em runtime no Android 15+ e inicializa de fato o encoder de hardware com Surface antes de recomendar qualquer modo.
+- Cria perfis automáticos Fluidez, Qualidade e Máximo do hardware; o perfil Fluidez prioriza 60 FPS sustentáveis e só altera resolução, FPS, codec, bitrate e controles de cadência quando o usuário escolhe Aplicar. Áudio, cor, segurança, cofres e configuração térmica atual são preservados.
+- Adiciona Saúde da última gravação, analisada somente depois que o MP4 final já foi publicado: mede FPS real pelos timestamps, intervalos irregulares, maior lacuna, bitrate e codec em thread de background; se uma nova captura começa, a análise para imediatamente e é remarcada para depois.
+- Torna a cópia de importação transacional em cada um dos três cofres independentes: escreve em `.svimport.partial`, sincroniza os dados com `fsync`, valida tamanho e só então publica o nome final por rename atômico quando possível; temporários de interrupção ficam visíveis no Diagnóstico.
+- Adiciona medição leve de desempenho de foto (preparo, sensor/JPEG, escrita e tempo total) sem alterar qualidade, câmera ou processamento da captura.
+- Endurece o navegador privado com HTTPS estrito por padrão; mixed content passa a exigir opção explícita de compatibilidade.
+- Mantém sem mudanças a política térmica existente e mantém Cofre principal, Cofre secundário e Cofre terciário como áreas/repositórios separados.
+- Amplia a validação contínua com JUnit da política de auto-configuração e `lintDebug` no CI, além da auditoria estática de imports, referências, recursos, widgets e código morto já existente.
+
+## 1.8.170 — 2026-08-10
+
+- Move toda importação de arquivos e pastas para um foreground service `dataSync` com fila persistente em `noBackupFilesDir`, wake lock renovável, progresso por mídia e posição salva após cada item concluído.
+- Adiciona cancelamento da importação diretamente pela notificação e mantém o cancelamento seguro também durante a varredura de pastas; temporários e fila restante não são descartados silenciosamente.
+- Trata o limite de execução do Android 15+ como pausa distinta de cancelamento: preserva a fila, publica aviso acionável e retoma quando o usuário reabre o cofre, sem reimportar itens já concluídos.
+- Mantém gravação/câmera com prioridade sobre importação: o worker usa prioridade de background e espera entre arquivos enquanto uma captura crítica está ativa; Ajustes também ganha atalho direto para a política de otimização de bateria do aparelho.
+- Adiciona identidade discreta configurável para widgets e notificações, com perfis SteadyVault, Arquivos, Utilitário, Notas e Câmera, rótulo personalizado, textos neutros e um conjunto opcional de ícones genéricos nos widgets; posições, ações e acessibilidade continuam funcionais.
+- Adiciona 8K UHD à matriz de resolução e ao modo automático, mas somente expõe/seleciona 8K quando Camera2 e um encoder de hardware confirmam a combinação de resolução/FPS; preserva 4K60 como perfil recomendado para fluidez no Galaxy S25 Ultra.
+- Remove imports e recursos duplicados surgidos durante a integração e reforça a auditoria para imports, declarações privadas, arquivos Kotlin, recursos órfãos, widgets, referências locais e prioridades de background.
+
+## 1.8.169 — 2026-08-10
+
+- Adiciona a Central de recuperação protegida por PIN/biometria, lista temporários recuperáveis/incompletos e vídeos já recuperados, permite tentar recuperação, abrir e mover o resultado entre cofres e elimina exclusão automática por idade de gravações interrompidas.
+- Adiciona Diagnóstico e armazenamento com logs de erro/aviso, histórico de saídas do processo no Android 11+, captura de exceções não tratadas, tamanho dos cofres/caches/recuperação e limpeza individual ou segura sem tocar nos brutos recuperáveis.
+- Reorganiza importações grandes em fila sequencial cancelável, com painel de progresso que não cobre a galeria; leitura por pasta também respeita cancelamento e a limpeza de estado não remove gravações protegidas.
+- Mantém o caminho sem preview dedicado exclusivamente ao encoder e acrescenta tela preta opcional por origem (app, widget e atalhos), brilho mínimo, barras imersivas e dois toques para restaurar os controles sem interromper a gravação.
+- Torna o botão Parar e salvar da notificação utilizável na tela de bloqueio com canal público de conteúdo genérico e canal versionado, mantendo início/parada por app e widgets.
+- Expande a personalização para cinco temas, quatro famílias de fonte, três níveis de cantos e três níveis de contorno; telas, diálogos dinâmicos, PIN, spinners, corte de vídeo, overlay de captura e widgets acompanham a aparência selecionada.
+- Publica previews dinâmicos dos widgets no Android 15+ e mantém previewLayout escalável como fallback; esconde zoom do widget quando a lente selecionada não oferece zoom útil.
+- Acelera foto única com foco contínuo quando suportado, caminho de assentamento reduzido e ZSL para captura still quando disponível, preservando a qualidade JPEG configurada.
+- Amplia o navegador/downloader independente com abertura de links http/https, mídia direta, análise por extrator, sessão/cookies do navegador, perfis rápido/equilibrado/compatível, Wi‑Fi opcional, aria2, metadados, checagem de espaço, seleção de qualidade/resolução/destino e cancelamento real de downloads para o cofre.
+- Remove qualquer branding herdado do downloader de referência e elimina o atalho que abria a tela genérica de ajustes do launcher; os ícones extras do próprio SteadyVault passam a ser controlados dentro do app.
+- Reforça a auditoria para falhar com controles XML sem referência de runtime, placeholders TODO/FIXME, branding externo, configuração de vídeo fora da ordem, recuperação/cancelamento ausentes, preview dinâmico ausente e regressão da tela genérica do launcher.
+
+## 1.8.168 — 2026-08-10
+
+- Cria uma matriz única e persistente de capacidades por câmera, lente física, resolução, FPS e encoder; a primeira abertura analisa em segundo plano e as seguintes já usam o retrato válido, com nova leitura após permissão, mudança de firmware ou versão do esquema.
+- Mantém metadados incompletos como `não verificados`, permitindo a validação pelo request real em vez de esconder uma função por falso negativo; negativas conclusivas continuam removendo o controle e normalizando uma configuração antiga para um valor seguro.
+- Torna o OIS tolerante a HALs contraditórias que anunciam apenas `OFF` na câmera lógica, mas aceitam `ON`: consulta lentes físicas, usa overrides físicos quando disponíveis, tenta a chave lógica e memoriza a aceitação do request por câmera.
+- Remove da interface o item ainda não implementado de zebra/focus peaking e oculta escolhas de processamento que o pipeline high-speed deliberadamente entrega à HAL para preservar a cadência.
+- Adiciona testes puros para a política de suporte e para o fallback OIS, além de ampliar a auditoria estática da detecção lógica/física.
+
+## 1.8.167 — 2026-08-10
+
+- Corrige o falso aviso `OIS indisponível` em câmeras lógicas, consultando também as características das lentes físicas que compõem o conjunto multi-câmera.
+- Usa a chave de request como fallback somente quando o metadado opcional de modos OIS está ausente, preservando uma negativa explícita de uma lente realmente sem estabilização.
+- Cria requests com override físico quando o HAL oferece essa capacidade e aplica OIS tanto no request lógico quanto na lente física adequada.
+- Não trata a omissão de `LENS_OPTICAL_STABILIZATION_MODE` no resultado como OIS desligado; somente um `OFF` explícito impede a confirmação inicial.
+- Quando OIS foi escolhido manualmente e a câmera presa ao preview não oferece o recurso, procura outra câmera traseira OIS-capaz sem reduzir resolução nem FPS; o modo automático continua priorizando OIS em 4K60.
+- Alinha o preview à mesma prioridade OIS → EIS → Preview Stabilization usada na gravação de alta taxa e adiciona testes puros para metadado lógico, físico, ausente e explicitamente desligado.
+
+## 1.8.166 — 2026-08-09
+
+- Elimina os saltos artificiais de 33 ms causados pelo arredondamento absoluto dos timestamps; a deriva normal da câmera agora é corrigida gradualmente sem perder sincronismo com o áudio.
+- Suspende a entrada do encoder durante o aquecimento quando o codec oferece suporte, impedindo quadros antigos de chegarem atrasados depois do início oficial.
+- Reutiliza `MediaCodec.BufferInfo` no áudio e no muxer e remove a função exponencial por amostra do limitador, reduzindo alocações, CPU e pausas de coleta de lixo no caminho de 60/120 FPS.
+- Atualiza o watchdog no recebimento do quadro pelo encoder, sem interpretar uma espera transitória de escrita como congelamento da câmera.
+- Reserva a saída Camera2 exclusivamente para o encoder em 60/120 FPS, exige suporte declarado à taxa escolhida no modo suave e evita trocar o repeating request durante a recuperação de um arquivo já em gravação.
+- Aplica a prioridade da gravação a todos os pontos de entrada, faz a captura de tela ceder o encoder, rebaixa otimização, downloads e miniaturas e pausa importações entre arquivos enquanto a câmera estiver ativa.
+- Amplia os testes de timestamps para deriva prolongada, regressão, lacuna curta suavizada e interrupção longa preservada.
+
+## 1.8.165 — 2026-07-31
+
+- Restaura o caminho leve de início da referência 1.8.161: o serviço volta a apenas publicar o estado por broadcast, sem persistir `SharedPreferences` no executor que prepara e abre a câmera.
+- Mantém fase, proprietário e identificador da sessão no broadcast; o receptor principal persiste esses dados fora do caminho crítico e continua restaurando todos os widgets ao parar.
+- Substitui `UUID.randomUUID()` por um identificador monotônico sem inicialização de entropia durante o clique de gravação.
+- Prepara o monitor de espaço antes da abertura da câmera, evitando criar sua thread no instante dos primeiros quadros; as consultas continuam somente a cada 30 segundos e em prioridade de fundo.
+- Preserva a publicação transacional, a recuperação dos trechos, o bloqueio de finalização concorrente e a suspensão de manutenção durante a gravação.
+- Confirma o mesmo `HardwareRecorder`, Camera2, MediaCodec, resolução, FPS, bitrate, codec, HDR, estabilização, áudio e zoom da versão de referência.
+
+## 1.8.164 — 2026-07-31
+
+- Corrige a transição final dos widgets: ao terminar de salvar, todos os tamanhos recebem uma atualização forçada e voltam imediatamente aos botões normais.
+- Elimina a comparação incorreta no receptor de estado que ignorava o fim da gravação porque o serviço já havia persistido o novo estado antes do broadcast.
+- Adiciona uma conclusão de sessão vinculada ao identificador da gravação, liberando os controles sem apagar o estado de uma captura posterior.
+- Retira a consulta de espaço do monitor de cadência executado a cada 500 ms; a proteção passa a rodar a cada 30 segundos em thread de baixa prioridade, com reserva suficiente para finalizar o arquivo.
+- Adia e suspende manutenção, recuperação e limpeza inicial enquanto uma câmera estiver gravando, evitando disputa de CPU e armazenamento com o encoder.
+- Mantém inalterados resolução, FPS, bitrate, codec, HDR, estabilização, áudio, zoom e o fluxo direto Camera2/MediaCodec.
+
+## 1.8.163 — 2026-07-31
+
+- Renomeia para “Excluir” o botão superior exibido durante a seleção de mídias no cofre, pois ele abre tanto a opção recuperável de mover para a lixeira quanto a exclusão definitiva.
+- Mantém o botão separado “Lixeira” para abrir a lixeira protegida e preserva integralmente o comportamento de remoção, a gravação e a qualidade capturada.
+
+## 1.8.162 — 2026-07-31
+
+- Preserva exatamente a resolução, FPS, bitrate, codec, HDR, estabilização, áudio e zoom selecionados; nenhuma etapa nova recodifica a gravação original.
+- Torna a publicação do MP4 transacional: tenta movimentação atômica, sincroniza e valida a cópia de fallback e mantém o bruto quando não puder provar que o destino ficou íntegro.
+- Mantém o serviço com heartbeat, wake lock renovável, recuperação de sessão e monitor contínuo de espaço; ao atingir espaço crítico, finaliza e preserva o trecho em vez de perder o arquivo.
+- Abre o vídeo antes de ler FPS e timestamps, executa a análise em thread de baixa prioridade e mantém o seek rápido durante reprodução e exato quando pausado.
+- Pré-carrega os frames do corte após o primeiro assentamento do player e mantém cache persistente invalidado automaticamente quando a mídia é movida ou excluída.
+- Adiciona índice SQLite persistente, paginação inicial e resumo do cofre, removendo varreduras repetidas e exibindo as primeiras mídias mais cedo.
+- Serializa recuperação, manutenção e limpeza inicial e inicializa o motor de download somente quando necessário, reduzindo disputa de CPU e disco com câmera e player.
+- Torna imports e downloads duráveis, canceláveis e monitorados por espaço, restringe o FileProvider aos diretórios de mídia e reforça a configuração segura do WebView.
+- Persiste o índice de apps lançáveis, invalida-o em instalação/remoção, mantém biometria/PIN em Ajustes e adiciona limitação progressiva de tentativas de PIN.
+- Amplia a verificação de espaço dos presets manuais pela duração e bitrate, atualiza a auditoria estática e adiciona testes de estado e publicação sem perda.
+
+## 1.8.161 — 2026-07-30
+
+- Deixa a tela Apps protegidos dedicada apenas a adicionar, remover, visualizar, abrir e bloquear os atalhos selecionados.
+- Centraliza em Ajustes o PIN dos apps, biometria, acesso aos ajustes de ocultação do launcher e a autorização de print/gravação de tela protegidos.
+- Move integralmente para Ajustes a escolha do cofre de destino, a validação do PIN e as permissões de sobreposição, notificação e projeção de tela, sem manter métodos ou controles duplicados na tela Apps.
+- Substitui nos três widgets reais os `ImageButton` por `ImageView` clicáveis via `RemoteViews`, eliminando o flash visual de estado pressionado sem liberar comandos durante foto, preparação ou gravação.
+- Mantém `alpha=1` no layout inicial e em cada atualização parcial dos controles, evitando que o widget herde um estado esmaecido anterior.
+- Torna opacas internamente as cores do widget de bloqueio, preservando a mesma aparência escura e discreta sem depender da transição do papel de parede/AOD ao acender a tela.
+- Atualiza a prévia do widget de bloqueio com as mesmas cores estáveis do widget real e preserva os demais previews.
+- Mantém inalterados Camera2, encoder, 60/120 FPS, bitrate, áudio, zoom, player, corte, recuperação e comandos de início/parada.
+- Amplia a auditoria contra configurações duplicadas na tela Apps, botões de widget com estado pressionado, alpha visual incorreto e recursos sem uso.
+
+## 1.8.160 — 2026-07-28
+
+- Reestrutura o caminho crítico de 60/120 FPS para capturar quadros reais diretamente por Camera2 e MediaCodec, sem interpolação nem processamento pesado obrigatório.
+- Restaura o muxer direto e de baixa sobrecarga da referência estável: áudio e vídeo são drenados por seus próprios threads, eliminando cópias e descargas de blocos AAC no thread de vídeo.
+- Faz a estabilização automática em 60/120 FPS preferir OIS, quando disponível, antes de EIS e Preview Stabilization, reduzindo a carga de recorte e transformação por quadro; escolhas manuais continuam respeitadas.
+- Mantém faixa fixa `[60,60]`, parâmetros de sessão Camera2, taxa operacional do encoder, prioridade em tempo real, B-frames desativados e descarte de frames desabilitado quando suportado.
+- Preserva 4K, HEVC, bitrate, áudio, zoom, início rápido, gravação com tela apagada, parada explícita e recuperação preventiva dos trechos.
+- Desliga uma única vez o reparo automático herdado e o mantém desligado por padrão; ele continua disponível como opção explícita e não inventa imagens.
+- Renomeia a opção de alta taxa para “Exigir 60/120 FPS reais”, deixando claro que ela exige uma faixa fixa confirmada pela câmera e não é um filtro posterior.
+- Amplia a auditoria estática para impedir o retorno de filas de áudio no thread do vídeo ou da estabilização digital prioritária no modo automático de 60 FPS.
+
+## 1.8.159 — 2026-07-28
+
+- Corrige a finalização pelo botão da notificação para que um MP4 bruto com qualquer dado gravado nunca seja tratado como uma gravação cancelada.
+- Usa o conteúdo real do arquivo temporário, além do marcador de início, para decidir entre publicar, recuperar ou reservar o trecho.
+- Se a finalização normal do muxer falhar, tenta publicar imediatamente o vídeo válido; se ainda não estiver legível, mantém o bruto protegido para recuperação automática.
+- Aplica a mesma precaução às duas saídas da câmera simultânea, sem apagar arquivos não finalizados que contenham dados.
+- Altera a ação da notificação para “Parar e salvar”, deixando explícito que o comando deve finalizar e preservar o trecho.
+- Remove a mensagem ambígua “Gravação cancelada” do fluxo que poderia conter dados e amplia a auditoria contra regressão.
+- Mantém inalterados encoder, resolução, FPS, bitrate, estabilização, áudio, zoom, preview e qualidade da gravação.
+
+## 1.8.158 — 2026-07-28
+
+- Corrige o botão Parar nos widgets, inclusive na tela de bloqueio, enviando o comando diretamente ao `CaptureService` que a captura rápida iniciou.
+- Remove a etapa intermediária de broadcast que a One UI podia deixar pendente com o aparelho bloqueado.
+- Mantém a autorização explícita do usuário para parar e preserva a finalização segura do arquivo antes de liberar os controles.
+- Torna o botão Parar da tela inicial idempotente: os serviços principal e simultâneo recebem tentativas independentes, sem uma falha impedir o comando correto.
+- Renova automaticamente as ações dos três widgets após atualizar o APK, evitando que algum deles conserve o clique antigo.
+- Exclui o receptor antigo e amplia a auditoria para impedir código solto ou regressão no caminho direto de parada.
+- Mantém inalterados encoder, resolução, FPS, bitrate, estabilização, áudio, zoom, preview e qualidade da gravação.
+
+## 1.8.157 — 2026-07-28
+
+- Padroniza o zoom persistente `0,6x`, `1x`, `3x` e `5x` entre Foto, Sequência e Vídeo nas capturas rápidas sem preview.
+- A foto seleciona a mesma lente física do zoom exibido no widget e aplica a proporção residual tanto na preparação Camera2 quanto no request JPEG final.
+- Aplica o mesmo comportamento aos botões rápidos da tela inicial e aos widgets 6×1 e de bloqueio.
+- Mantém o zoom interno do preview totalmente independente, sem alterar lente, enquadramento ou controles já aprovados.
+- Atualiza descrições de acessibilidade para indicar “zoom da foto e do vídeo”, sem adicionar textos visíveis aos widgets.
+- Amplia a auditoria para impedir que o zoom da foto volte a ficar restrito a apenas um widget ou deixe de alcançar o JPEG final.
+
+## 1.8.156 — 2026-07-28
+
+- Corrige o início lento pelo widget da tela de bloqueio quando o reconhecimento facial da One UI ocupa temporariamente o subsistema Camera2.
+- Trata `ERROR_CAMERA_IN_USE` e `ERROR_MAX_CAMERAS_IN_USE` como disputa transitória, sem marcar o perfil 4K/FPS como incompatível.
+- Mantém câmera, perfil e encoder já preparados e repete somente `openCamera` assim que o Android sinaliza a lente disponível.
+- Usa uma verificação de segurança de 90 ms quando o firmware não envia o callback de disponibilidade, evitando tanto espera longa quanto tentativas agressivas contra o reconhecimento facial.
+- Cancela e remove o callback de disponibilidade ao abrir a câmera, parar ou destruir o serviço, sem deixar métodos ou listeners soltos.
+- Mantém inalterados aquecimento, foco, estabilização, resolução, FPS, bitrate, codec, áudio, gravação, preview e widgets.
+
+## 1.8.155 — 2026-07-27
+
+- Corrige a compilação de `RecordingRecoveryRepository`: o fallback de `canonicalPath` agora usa uma variável `File` nomeada, impedindo que o parâmetro `Throwable` de `getOrElse` seja tratado incorretamente como arquivo.
+- Mantém integralmente as proteções de continuidade e recuperação da 1.8.154, sem alterar o pipeline ou os parâmetros da gravação.
+
+## 1.8.154 — 2026-07-27
+
+- Mantém a gravação de câmera ativa até um comando explícito no botão Parar; fechar o preview e tocar duas vezes na tela preta deixam de ser atalhos de encerramento.
+- Adiciona heartbeat do foreground service e monitor contínuo de quadros para detectar suspensão da câmera após bloquear, apagar ou reacender a tela.
+- Reabre a sessão Camera2 com tentativas contínuas quando outra câmera, o firmware ou a troca de estado da tela interrompe a entrega de quadros, mantendo o mesmo encoder e o mesmo arquivo sempre que possível.
+- Valida o MP4 por amostras reais de vídeo antes de descartar qualquer temporário e mantém candidatos não recuperados por sete dias para nova tentativa.
+- Protege temporários de gravação contra o botão de limpeza, recupera pendências no início do aplicativo e preserva gravações de tela mesmo quando a finalização normal do MediaRecorder falha.
+- Mantém inalterados resolução, FPS, bitrate, codec, HDR, estabilização, áudio, aquecimento inicial e todo o pipeline de qualidade da gravação.
+
+## 1.8.148 — 2026-07-26
+
+- Corrige o aspecto circular dos botões nas três prévias usando raio proporcional de 9 dp para os controles representativos de 34 dp.
+- Reproduz em fundos exclusivos de prévia as mesmas cores, gradientes e contornos dos botões reais de Zoom, Sequência, Foto, Gravar e Parar.
+- Aplica a mesma proporção arredondada ao cartão do logo na prévia 6×1, mantendo todos os botões como quadrados arredondados.
+- Preserva integralmente os três widgets reais, o compartilhamento de links do MediaGrab, os tamanhos das prévias e o restante do aplicativo.
+- Confirma por auditoria que os novos recursos estão referenciados e que não existem arquivos, recursos, imports ou declarações privadas sem uso.
+
+## 1.8.147 — 2026-07-26
+
+- Adiciona o MediaGrab ao compartilhamento de texto do Android e abre a primeira URL HTTP/HTTPS recebida diretamente no navegador interno, mantendo disponíveis a análise da página e os destinos de download já existentes.
+- Transforma o navegador em uma única instância de tarefa, impede documentos separados e trata novos compartilhamentos em `onNewIntent`, evitando vários cartões do SteadyVault nos aplicativos recentes.
+- Adiciona um parser isolado e testado para extrair links de mensagens compartilhadas sem carregar como endereço o texto adicional enviado pelo aplicativo de origem.
+- Aumenta somente de 6 para 8 dp as margens inicial e final do widget real 6×1 e ajusta sua largura declarada para 393 dp, sem alterar botões nem espaços entre controles.
+- Substitui nas prévias 4×1 e 6×1 os fundos de contorno interno por versões representativas de contorno único, eliminando os anéis duplicados vistos no seletor da One UI.
+- Usa uma lupa de 18 dp nas prévias e amplia o controle de zoom do bloqueio para 34 dp, fazendo o valor `1x` aparecer inteiro sem alterar o widget real.
+- Confirma por auditoria que não ficaram recursos, arquivos, imports ou declarações privadas sem uso e mantém intactos gravação, player, corte, captura, cofres, senha e biometria.
+
+## 1.8.146 — 2026-07-26
+
+- Corrige os cantos apagados das barras 6×1 e compacta movendo somente o contorno 2 dp para dentro do fundo, fora da área recortada pela máscara da One UI.
+- Preserva integralmente os tamanhos, as cores, o raio externo de 16 dp, os botões e todos os espaços internos dos widgets 6×1 e compacto da versão anterior.
+- Remove do widget real da tela de bloqueio o fundo, o gradiente e a borda externos, mantendo apenas Zoom, Foto, Gravar e Parar sobre contorno totalmente transparente.
+- Atualiza as três prévias com os mesmos fundos e contornos dos widgets reais; a prévia de bloqueio também passa a exibir somente os quatro botões.
+- Exclui o drawable de bloqueio que ficou sem referência e confirma por auditoria que não existem recursos, arquivos, imports ou declarações privadas sem uso.
+- Mantém sem alterações a gravação, o player, o corte, a captura, a aba de apps, a senha e a biometria.
+
+## 1.8.145 — 2026-07-26
+
+- Reverte integralmente no widget real 6×1 e no compacto as cores, os fundos, os contornos, as alturas e os espaços internos da versão 1.8.143.
+- Restringe a correção de excesso vertical ao widget da tela de bloqueio: a barra de 48 dp fica centralizada na área transparente do host e mantém 2 dp de folga acima e abaixo dos botões de 44 dp.
+- Mantém os contornos originais discretos dos três widgets e o raio de 16 dp, sem introduzir nova cor de borda.
+- Conserva as prévias menores, mas devolve suas margens externas e folgas internas: 6×1 com 233×52 dp, compacto com 164×52 dp e bloqueio com 142×40 dp.
+- Preserva no bloqueio a ordem Zoom, Foto, Gravar e Parar e mantém todo o comportamento sem piscadas.
+- Mantém sem alterações a gravação, o player, o corte, a captura, a aba de apps, a senha e a biometria.
+
+## 1.8.144 — 2026-07-26
+
+- Restaura a leitura colorida dos cantos com um contorno único de 1,5 dp na cor de destaque, mantendo o raio padronizado de 16 dp nos três widgets e nas respectivas prévias.
+- Separa a área transparente reservada pelo host da barra visível, impedindo que a One UI estique o fundo acima e abaixo dos botões.
+- Reduz a altura visível do 6×1 para 66 dp, do compacto para 60 dp e do widget de bloqueio para 46 dp, sem diminuir os botões reais de 62, 58 e 44 dp.
+- Reduz novamente somente as prévias: o 6×1 passa a 225×46 dp, o compacto a 156×44 dp e o bloqueio a 138×36 dp.
+- Preserva no widget de bloqueio e em sua prévia a ordem Zoom, Foto, Gravar e Parar, além do comportamento sem piscadas.
+- Mantém sem alterações a gravação, o player, o corte, a aba de apps protegidos, a senha e a biometria.
+
+## 1.8.143 — 2026-07-25
+
+- Padroniza em 16 dp os cantos das barras 6×1, compacta e de bloqueio, do cartão do logo, de todos os botões e das respectivas prévias.
+- Adiciona Foto ao widget real da tela de bloqueio, mantendo a ordem Zoom, Foto, Gravar e Parar e reutilizando a mesma captura direta dos demais widgets.
+- Separa no renderer as capacidades Foto e Sequência, permitindo ao widget de bloqueio oferecer Foto sem referenciar um botão de sequência inexistente.
+- Atualiza o provider da tela de bloqueio para 4×1 e 186×48 dp, preservando os botões discretos de 44 dp.
+- Reconstrói a prévia desse widget com os mesmos quatro controles, ordem, cores e ícones, em escala representativa de 166×44 dp.
+- Mantém a atualização sem piscadas, o carregamento otimizado de apps, a biometria e todo o pipeline de gravação da versão anterior.
+
+## 1.8.142 — 2026-07-25
+
+- Reduz novamente somente a miniatura 6×1, deixando seus módulos com 42 dp e uma representação centralizada de 281×60 dp.
+- Torna o widget real da tela de bloqueio menor e mais discreto: 140×48 dp, botões de 44 dp, borda de menor contraste e cantos externos de 14 dp.
+- Ajusta a prévia 3×1 para 128×44 dp, preservando a mesma proporção e os cartões arredondados do widget real.
+- Mantém Gravar e Parar tecnicamente habilitados nos três widgets e representa a disponibilidade por ícone, cor e ação segura, evitando a animação de transparência da One UI que causava piscadas ao iniciar ou parar.
+- Acelera a aba Apps protegidos com bloqueio de consultas duplicadas, cache da lista por 10 minutos, carregamento inicial somente dos atalhos selecionados e ícones visíveis carregados progressivamente.
+- Adiciona dentro da própria aba Apps o seletor `Acessar com biometria`, sincronizado com a configuração já disponível nos ajustes e mantendo `Usar PIN` como alternativa.
+- Mantém sem alterações o pipeline de gravação, o player, o editor de corte e o preview da câmera.
+
+## 1.8.141 — 2026-07-25
+
+- Transforma as miniaturas 3×1, 4×1 e 6×1 em representações menores, centralizadas e independentes do tamanho total da célula do seletor.
+- Reduz somente os controles das prévias para 40, 42 e 48 dp, respectivamente, criando folga suficiente para a máscara da One UI não cortar as bordas.
+- Mantém nas três prévias os mesmos cartões, cantos de 16 dp, cores, ícones e estados visuais usados pelo widget 6×1.
+- Confirma que os três widgets reais já compartilham o padrão arredondado do 6×1 e preserva integralmente seus tamanhos, comandos e comportamento.
+- Mantém sem alterações a gravação, o player, o editor de corte e o preview da câmera.
+
+## 1.8.140 — 2026-07-25
+
+- Acrescenta 6 dp de respiro interno nas laterais da barra do widget 6×1 real e de sua miniatura no seletor.
+- Amplia a largura mínima do 6×1 de 379 para 389 dp para acomodar as novas margens sem reduzir ou deformar logo e botões.
+- Mantém os seis módulos do widget real com 62×62 dp e preserva sua ordem, cores, ícones e funcionamento.
+- Mantém sem alterações os widgets 4×1 e da tela de bloqueio, a gravação, o player, o editor de corte e o preview da câmera.
+
+## 1.8.139 — 2026-07-25
+
+- Corrige exclusivamente a miniatura do widget 6×1 no seletor, removendo o aspecto estourado nas bordas da One UI.
+- Reduz proporcionalmente logo e controles da prévia de 60 para 56 dp e reserva uma margem externa própria de 6 dp.
+- Preserva a mesma ordem, cores, ícones, cartões arredondados e proporção visual do widget instalado.
+- Mantém sem alterações o widget 6×1 real, seu provider, seus comandos, o 4×1, o widget da tela de bloqueio, a gravação, o player e o preview da câmera.
+
+## 1.8.138 — 2026-07-25
+
+- Padroniza os quatro controles do widget 4×1 com os mesmos cartões arredondados, cores e ícones do widget 6×1, eliminando os botões circulares antigos.
+- Faz a miniatura do 4×1 reproduzir o desenho do widget instalado, mantendo os botões grandes e inteiramente dentro da área declarada.
+- Ajusta somente a miniatura do widget da tela de bloqueio de 46 para 44 dp, evitando estouro lateral sem reduzir os botões de 48 dp do widget real.
+- Preserva por comparação integral o layout, a miniatura, o provider e todas as dimensões do widget 6×1 da versão 1.8.137.
+- Mantém sem alterações a gravação, o player, o editor de corte e o preview da câmera.
+- Confirma por auditoria que não ficaram métodos, imports, recursos ou arquivos sem uso.
+
+## 1.8.137 — 2026-07-25
+
+- Confirma no novo vídeo analisado 441 quadros em 60 FPS contínuos, sem frames duplicados, lacunas de timestamps ou congelamentos do encoder.
+- Confirma o alinhamento final corrigido: a diferença entre o fim do áudio e do vídeo caiu de aproximadamente 438 ms para cerca de 8 ms.
+- Centraliza os títulos `ACESSO RÁPIDO`, `MODO DE VÍDEO`, `VÍDEO`, `FOTO` e `SISTEMA` dentro dos respectivos cards da tela inicial.
+- Troca o azul do estado ativo do botão Gravar por amarelo real em todos os formatos de widget, mantendo o botão Parar vermelho.
+- Remove a reinflação completa dos widgets na inicialização fria do aplicativo e ignora atualizações parciais repetidas quando o estado visual não mudou.
+- Ao iniciar ou parar, atualiza uma única vez somente Gravar e Parar; zoom, sequência, foto e logotipo permanecem estáveis e deixam de piscar.
+- Aumenta o cartão e o ícone do SteadyVault no widget 6×1 para 62×62 dp, igualando o tamanho dos cinco botões sem reduzi-los.
+- Sincroniza a nova proporção do logotipo com a miniatura do seletor e amplia a largura mínima do widget para evitar compressão.
+- Mantém sem alterações o pipeline de gravação da 1.8.136, o player, o editor de corte e o preview da câmera.
+- Confirma por auditoria que não ficaram métodos, imports, recursos ou arquivos sem uso.
+
+## 1.8.136 — 2026-07-25
+
+- Prioriza a captura urgente ao iniciar pelo widget ou pela tela inicial, mantendo a estabilização eletrônica avançada da 1.8.135.
+- Reduz o aquecimento sem preview para cerca de 50–80 ms em 60 FPS quando a câmera responde normalmente e impõe limite por quadros próximo de 120 ms.
+- Mantém um timeout de segurança de 250 ms apenas para sessões que entregam quadros fora da velocidade esperada, sem voltar à espera de até 1,1 s.
+- Preserva a validação da cadência real e não inventa, repete ou interpola frames para acelerar o início.
+- Mantém sem alterações o player, o corte, o preview e todos os layouts e comandos dos widgets.
+
+## 1.8.135 — 2026-07-25
+
+- Corrige a origem dos pequenos saltos observados na gravação 4K60 pelo widget sem inventar, repetir ou interpolar frames.
+- Faz a gravação sem preview respeitar a janela de aquecimento já definida e só liberar o encoder quando cadência, exposição, balanço, foco e estabilização estiverem assentados, com limite de segurança.
+- No modo automático e sem preview, prioriza a estabilização eletrônica avançada em 60 FPS ou mais quando a câmera a anuncia, mantendo OIS como fallback e preservando as escolhas explícitas do usuário.
+- Centraliza a resolução de OIS, EIS e estabilização avançada em uma única política usada pelo request, pela validação de prontidão e pelo estado exibido.
+- Mantém a cadência real de 60 FPS e o normalizador de timestamps, sem repetir o quadro anterior para mascarar falhas.
+- Segura somente a pequena frente do áudio no muxer e descarta a parte posterior sem vídeo ao finalizar, evitando a cauda audiovisual encontrada no arquivo analisado.
+- Mantém sem alterações o player, o editor de corte, o preview da câmera e todos os layouts e comandos dos widgets.
+- Confirma por auditoria que não ficaram métodos, imports, recursos ou arquivos sem uso.
+
+## 1.8.134 — 2026-07-25
+
+- Adiciona um provider separado `Vault Capture — tela de bloqueio`, declarado para tela inicial e keyguard e dimensionado para o espaço compacto abaixo do relógio.
+- Mostra somente zoom persistente, gravar e parar em uma barra baixa de 156×56 dp, sem abrir preview e sem alterar o widget 6×1 existente.
+- Reutiliza os mesmos comandos, permissões e estados da gravação em segundo plano, sem duplicar o pipeline da câmera.
+- Inclui atualização parcial independente para zoom, início e parada, preservando a resposta sem piscadas também no novo formato.
+- Mantém a identidade visual escura da One UI e fornece uma miniatura própria sincronizada com o layout instalado.
+- Organiza os três providers em uma única lista de atualização para que nenhum modelo fique fora das mudanças de estado.
+- Mantém sem alterações o player, o editor de corte, o preview da câmera e o funcionamento dos widgets anteriores.
+- Confirma por auditoria que o provider, o layout, a miniatura, o manifesto e todos os novos recursos estão referenciados.
+
+## 1.8.133 — 2026-07-25
+
+- Centraliza o logotipo quadrado de 50 dp no widget 6×1 e remove a legenda `PRO`, eliminando a compressão sem reduzir sua área clicável.
+- Mantém os cinco controles em 62×62 dp, retira os rótulos de sequência, foto, gravar e parar e deixa no zoom somente o valor persistente, como `1x` ou `3x`.
+- Sincroniza a mesma composição sem textos na miniatura do seletor e preserva as atualizações parciais que evitam piscadas.
+- Remove as confirmações temporárias ao mudar o zoom pela tela inicial ou pelo widget; a alteração continua visível imediatamente no próprio controle.
+- Remove a notificação da otimização assim que o processamento termina, é cancelado ou falha, sem publicar uma notificação posterior de conclusão.
+- Faz a tela inicial voltar diretamente ao estado pronto após uma otimização bem-sucedida.
+- Reorganiza a tela inicial em cartões de acesso rápido, modo de vídeo, captura e sistema, preservando todos os botões, IDs e ações existentes.
+- Mantém sem alterações o pipeline de gravação, o player, o editor de corte e o preview da câmera.
+- Confirma por auditoria que não ficaram recursos, métodos, imports ou arquivos novos sem uso.
+
+## 1.8.132 — 2026-07-25
+
+- Redesenha o widget 6×1 como um painel Pro, com módulos de cantos moderados, gradientes discretos, bordas consistentes, ícones centralizados e rótulos curtos para identificar cada ação.
+- Preserva o botão do SteadyVault em 50 dp, os cinco controles em 62×62 dp, 1 dp nas duas bordas e a largura de 367 dp da versão anterior, mantendo logo e ações nos respectivos cantos.
+- Mostra `ZOOM` e o valor persistente no mesmo módulo; sequência, foto, gravação e parada passam a ter leitura imediata, inclusive nos estados desativado e gravando.
+- Corrige a miniatura do seletor para representar a mesma composição do widget instalado, ampliando os controles do preview de 36 para 60 dp.
+- Preserva as atualizações parciais de zoom, gravar e parar para não reinflar o widget nem reintroduzir piscadas.
+- Mantém sem alterações o pipeline de gravação, o player, o editor de corte e o preview da câmera.
+- Confirma por auditoria que não ficaram recursos, métodos, imports ou arquivos novos sem uso.
+
+## 1.8.131 — 2026-07-25
+
+- Aproxima visualmente a lupa do valor de zoom no widget 6×1, mantendo o número atualizado no próprio botão.
+- Aumenta de 42 para 50 dp o botão que abre o SteadyVault e força a nova medida nas atualizações do `RemoteViews`.
+- Mantém os cinco comandos com 62×62 dp, reserva exatamente 1 dp nas duas bordas laterais e amplia a largura mínima para impedir compressão.
+- Aplica o mesmo espaçamento lateral e a mesma aproximação da lupa na prévia exibida pelo seletor de widgets.
+- Mantém gravação, zoom persistente, preview da câmera, player e demais botões sem alteração funcional.
+
+## 1.8.130 — 2026-07-23
+
+- Prioriza o vídeo real do player no baixador, reconhece players incorporados e tenta o analisador avançado em páginas com streaming antes de oferecer imagens auxiliares do site.
+- Mostra miniaturas remotas em memória na escolha da mídia e das qualidades, com tipo “Vídeo” ou “Imagem” identificado e sem criar um novo cache persistente.
+- Acrescenta capa obtida do player, metadados públicos, poster do elemento de vídeo ou do extrator, inclusive para YouTube e páginas com iframe compatível.
+- Inclui no botão de limpeza os temporários do navegador, cookies de sessão, downloads sociais interrompidos, miniaturas e metadados, protegendo arquivos que ainda estão em uso.
+- Remove automaticamente miniaturas em disco e memória, duração e metadados persistentes quando uma mídia é movida, restaurada, substituída ou apagada em qualquer cofre.
+- Limpa no início do app sobras antigas `.download`, `.part`, `.ytdl` e `_processing.tmp`, mantendo gravação, preview, player e widget sem alterações.
+- Confirma por auditoria que os novos arquivos, métodos, imports e recursos estão conectados ao fluxo e que a suíte de lógica pura continua passando.
+
+## 1.8.129 — 2026-07-23
+
+- Corrige a retomada lenta ao tocar ou soltar a barra do player: o seek final sai do modo de arraste antes de reposicionar o decodificador.
+- Mantém o parâmetro de busca pelo quadro sincronizado até o Media3 confirmar o salto e só então restaura a precisão exata, evitando decodificação atrasada enquanto a barra já avança.
+- Reduz apenas o buffer necessário para retomar vídeos locais depois de um seek; a leitura antecipada, o fallback e os tempos de detecção e recuperação continuam preservados.
+- Mantém sem alterações a gravação, o preview da câmera, o editor de corte e o widget.
+
+## 1.8.128 — 2026-07-22
+
+- Mostra diretamente no botão de zoom do widget o valor selecionado (`0,6x`, `1x`, `3x` ou `5x`) junto do ícone de lupa.
+- Exibe o aviso imediatamente em todas as mudanças, inclusive ao voltar para `1x`, e atualiza somente o controle de zoom sem reconstruir ou fazer os demais botões piscarem.
+- Mantém sem alterações a câmera, o preview, o player e o processamento da gravação.
+
+## 1.8.127 — 2026-07-22
+
+- Aumenta visualmente o logotipo no widget 6×1 sem reduzir a área reservada aos cinco botões nem deformar a imagem.
+- Ao iniciar ou parar uma gravação, atualiza parcialmente e uma única vez apenas os controles Gravar e Parar; logo, zoom, sequência e foto não são reinflados pelo launcher e deixam de piscar.
+- Aplica a mesma atualização parcial quando a gravação é iniciada pela tela principal ou pela tela preta, preservando os fluxos de gravação, preview, foto e player.
+
+## 1.8.126 — 2026-07-21
+
+- Corrige definitivamente a proporção do logotipo no widget: o PNG quadrado agora fica em um cartão quadrado de 42 dp, com desenho de 38 dp centralizado.
+- Remove o texto minúsculo que transformava a área do logo em uma coluna estreita e elimina a aparência espremida no canto.
+- Mantém os cinco botões em 62×62 dp e preserva todos os demais recursos da 1.8.125.
+
+## 1.8.125 — 2026-07-21
+
+- Corrige a área do logotipo no widget 6×1: ícone e nome voltam a ter espaço próprio, centralizados e sem compressão no canto.
+- Mantém os cinco controles em 62×62 dp e redistribui somente as margens internas para o conjunto ocupar exatamente a largura declarada.
+- Preserva sem alterações o menu ampliado, o player da 1.8.114, a gravação, o preview, as fotos e o zoom headless.
+
+## 1.8.124 — 2026-07-21
+
+- Restaura no widget 6×1 os controles de 62×62 dp e o padding interno de 13 dp usados na 1.8.114, inclusive no novo botão de zoom.
+- Compacta apenas a área clicável do logotipo para os cinco botões grandes continuarem alinhados dentro do cartão.
+- Aumenta e espaça discretamente as cinco opções do menu inferior do app, preservando o encaixe em telas de 360 dp.
+- Mantém integralmente o player incorporado da 1.8.114 e não altera gravação, preview, fotos ou zoom headless.
+
+## 1.8.123 — 2026-07-21
+
+- Incorpora na versão 1.8.122 o seek rápido e estável validado na 1.8.114, preservando a intenção de continuar reproduzindo ao tocar na barra.
+- Usa o quadro sincronizado mais próximo somente em saltos distantes com reprodução ativa; vídeo pausado e editor de corte continuam confirmando o frame exato.
+- Reduz o buffer necessário para a retomada inicial depois do seek sem diminuir os buffers maiores usados na recuperação de travamentos.
+- Mantém a gravação, o zoom headless, as fotos e o preview exatamente iguais à 1.8.122.
+- Redesenha a lupa com círculo e sinal de mais geometricamente centralizados e adiciona a cor desativada usada pelos demais controles do widget.
+- Substitui os emojis de cadeado da aba Apps por vetores centralizados com a cor de destaque do SteadyVault.
+
+## 1.8.122 — 2026-07-21
+
+- Parte novamente da versão original 1.8.112 e preserva integralmente o player, o editor de corte e o funcionamento do preview existente.
+- Adiciona um controle separado de zoom para gravações iniciadas sem preview pela tela inicial e pelo widget 6×1; o valor fica salvo e continua válido com a tela apagada.
+- Aplica o zoom somente ao caminho dedicado em segundo plano, sem alterar foto, gravação com preview, inicialização, áudio, encoder ou finalização do gravador.
+- Inclui a aba Apps protegidos com PIN próprio, biometria opcional, adição e remoção de atalhos do perfil normal e acesso aos ajustes do launcher para ocultar ícones.
+- Adiciona print imediato e gravação de tela por controle flutuante, com gravação transacional diretamente no cofre principal, de disfarce ou terciário escolhido.
+- Mostra carregamento e tratamento de falha nas listagens do cofre principal, cofre de disfarce, cofre terciário, lixeira e aba de apps.
+- Corrige a altura da faixa de seleção para que a moldura e as ações não cubram os botões dos cards.
+- Amplia a otimização com presets de 720p, 1080p e 4K para Apple, Android, web, redes sociais, criação e arquivo, mantendo transcodificação por hardware e áudio quando solicitado.
+- Remove chamadas Android obsoletas do serviço de captura de tela e mantém todos os novos arquivos, componentes e métodos ligados à interface ou ao manifesto.
+
+## 1.8.112 — 2026-07-17
+
+- Padroniza a barra principal, o playhead e as duas alças de corte no mesmo scrubbing nativo do player.
+- Agrupa movimentos contínuos em uma atualização por frame da tela, sempre substituindo o destino pendente pelo ponto mais recente e confirmando o frame exato ao soltar.
+- Prepara os nove quadros da faixa de corte em segundo plano assim que o vídeo fica pronto; o botão Cortar só é liberado depois da preparação e a tela já abre com a faixa preenchida.
+- Usa posições reais ao longo de toda a duração, corrige a orientação e recorta cada miniatura pelo centro sem deformá-la dentro do retângulo.
+- Remove a camada antiga de bitmap, o controlador de preview paralelo, o cache preditivo correspondente, seus métodos e seus testes, evitando dois decodificadores disputando o mesmo vídeo.
+- Renomeia e reaproveita a fila de destino mais recente para o frame da tela e para o refinamento exato, com testes de substituição, consumo e cancelamento.
+- Confirma por auditoria que não restaram arquivos, métodos, imports ou recursos órfãos após a unificação.
+
+## 1.8.111 — 2026-07-17
+
+- O editor de corte agora atualiza diretamente o frame do player enquanto o usuário arrasta a alça inicial, a alça final ou o playhead.
+- Remove a espera pelo decodificador de miniaturas nessa tela e limpa qualquer bitmap antigo antes de pedir a nova posição.
+- Mantém o seek exato, a fricção selecionada e a confirmação final no mesmo frame mostrado durante o corte.
+
+## 1.8.110 — 2026-07-17
+
+- Remove miniaturas globais de 720 px/RGB565 da camada de prévia; somente o quadro exato pedido pode cobrir o vídeo durante o arraste.
+- Aumenta a prévia nítida até 2160 px, valida a resolução realmente entregue pelo decodificador e tenta o quadro completo quando a versão escalada vier abaixo do necessário.
+- Substitui a varredura contínua de toda a duração por uma janela local adaptativa em ARGB8888, orientada pela direção, velocidade e FPS do gesto.
+- Mantém dois decodificadores independentes, descarta previsões antigas quando o dedo muda de posição e limita dinamicamente a memória conforme a resolução.
+- Aplica o mesmo caminho preciso à barra principal, ao playhead e às duas alças de corte, inclusive nos modos ½×, ¼× e ⅛×.
+- Adiciona testes de resolução, limite adaptativo de memória, previsão lenta, rápida, reversa e em vídeos de 240 FPS.
+
+## 1.8.109 — 2026-07-17
+
+- A prévia exata sob o dedo agora usa um decodificador exclusivo; a preparação em segundo plano possui outro decodificador e não consegue mais bloquear o próximo quadro do arraste.
+- O vídeo é coberto progressivamente por 72 posições em memória: uma primeira passagem disponibiliza quadros sincronizados rapidamente e a segunda refina esses mesmos pontos para os quadros mais próximos.
+- Cada movimento antecipa até três quadros na direção do gesto, preserva os passos curtos de vídeos em 120/240 FPS e os prioriza sobre o restante da preparação.
+- Pedidos idênticos do início do gesto são deduplicados, o alvo ativo sempre substitui o anterior e somente o tempo exato solicitado pode ser tratado como quadro final nítido.
+- A pré-carga continua transitória: não cria arquivos, não aumenta o cache de armazenamento e é inteiramente liberada ao fechar o player.
+- Ampliados os testes da distribuição global e adicionados casos para previsão nos dois sentidos e limites da linha do tempo.
+
+## 1.8.108 — 2026-07-17
+
+- Corrigida a perda de nitidez introduzida na prévia do arraste: os quadros imediatos agora usam até 720p e o quadro exato ativo usa a resolução real da tela, limitado a 1440p.
+- Separados os caches de resposta rápida e alta qualidade; um quadro aproximado nunca substitui um quadro nítido já disponível.
+- Os controles agora aparecem como `Vel. 1×` (velocidade de reprodução) e `Arraste 1×` (precisão da barra), com largura responsiva, linha única e descrição ao manter pressionado.
+
+## 1.8.107 — 2026-07-17
+
+- A prévia ao arrastar o vídeo agora usa um decodificador leve separado e pausa o player principal uma única vez, evitando disputa de codec e seeks repetidos em vídeos longos ou 4K.
+- O cache transitório prepara progressivamente 72 pontos de toda a duração, prioriza sempre o pedido mais recente e permanece limitado em memória; nenhum arquivo de cache novo é criado.
+- O quadro mostrado acompanha a posição do dedo e o player recebe o seek exato ao soltar, com uma curta retenção da prévia para evitar o piscar do quadro antigo.
+- O botão de fricção usa frações indivisíveis (`½×`, `¼×` e `⅛×`), autoajuste e linha única, eliminando definitivamente a quebra visual em fontes ampliadas.
+- Adicionados testes das regras de distribuição e escolha dos quadros do cache.
+
+## 1.8.106 — 2026-07-17
+
+### Scrub contínuo, botão estável e corte sem áudio
+
+- Impede que movimentos contínuos adiem indefinidamente o próximo frame exato da prévia.
+- Mantém uma atualização exata já agendada, troca apenas seu destino pelo ponto mais recente e limita o ciclo a um pedido pendente.
+- Atualiza frames intermediários a cada 32 ms durante deslocamentos rápidos, preservando o seek sincronizado para reposicionamento imediato e a confirmação exata ao soltar.
+- Mantém o botão 1×, 1/2×, 1/4× e 1/8× sempre em uma única linha, com medidas que continuam cabendo em telas menores.
+- Adiciona ao editor de corte a opção “Remover áudio da cópia”, com confirmação explícita e preservação do arquivo original.
+- Reaproveita o pipeline existente de transcodificação sem criar uma segunda implementação para retirar a faixa de áudio.
+- Adiciona testes da fila de destino mais recente para movimentos contínuos, novo ciclo e cancelamento.
+
+## 1.8.105 — 2026-07-17
+
+### Preview constante do início ao fim do vídeo
+
+- Evita o acúmulo de buscas exatas longas que reduzia a taxa de atualização ao chegar ao meio do vídeo.
+- Usa o quadro sincronizado mais próximo durante deslocamentos grandes e rápidos para a imagem continuar acompanhando o dedo.
+- Refina automaticamente para o frame exato após uma pausa curta no movimento e confirma novamente o frame exato ao soltar.
+- Mantém buscas exatas em movimentos curtos e nos modos de precisão 1/2×, 1/4× e 1/8×.
+- Delega ao modo nativo de scrubbing do Media3 a supressão temporária da reprodução e do áudio, removendo pausas, mudanças de volume e estados repetidos a cada movimento.
+- Preserva a intenção de reprodução durante o arraste e evita uma busca exata duplicada ao finalizar.
+- Adiciona testes para movimentos rápidos, lentos, com fricção e em diferentes pontos da linha do tempo.
+
+## 1.8.104 — 2026-07-16
+
+### Preview fluido durante o arraste
+
+- Ativa o modo nativo de scrubbing do Media3 somente enquanto o dedo está na barra ou na faixa de corte.
+- Mantém seeks exatos, aumenta a prioridade operacional do codec e evita reinicializações desnecessárias entre quadros compatíveis.
+- Encaixa cada destino no quadro real mais próximo de acordo com o FPS detectado, inclusive em 60, 120 e 240 FPS.
+- Descarta pedidos duplicados para o mesmo quadro e continua mantendo somente o destino mais recente por frame da tela.
+- Desativa imediatamente o modo intensivo ao soltar e confirma no player exatamente o mesmo quadro mostrado na prévia.
+- Aplica a mesma coordenação à barra principal, ao playhead e às alças do editor de corte, preservando 1x, 1/2x, 1/4x e 1/8x.
+- Corrige o import do relógio monotônico usado na liberação segura de mídias, mantendo o projeto compilável.
+
+## 1.8.103 — 2026-07-15
+
+### Correção dos imports de atalhos Android
+
+- Corrige `ShortcutInfo` e `ShortcutManager` para o pacote oficial `android.content.pm`.
+- Remove a dependência de `BuildConfig`, que não é gerada nesta configuração, e usa uma versão interna do esquema para atualizar o cache dos atalhos.
+- Revisa o arquivo completo dos atalhos configuráveis para evitar o próximo erro de importação relacionado.
+
+## 1.8.102 — 2026-07-15
+
+### Correção de compilação do player
+
+- Substitui o atributo XML inválido `android:compoundDrawablePadding` por `android:drawablePadding` no botão de precisão do player.
+- Confirma que não existem outras referências ao atributo inválido nos layouts.
+
+## 1.8.101 — 2026-07-14
+
+### Precisão, exclusão direta e atalhos configuráveis
+
+- Substitui o gesto vertical difícil por um botão de precisão no player, alternando entre 1×, 1/2×, 1/4× e 1/8× tanto na barra quanto nas alças do corte.
+- Mantém a prévia em tempo real limitada ao destino mais recente de cada quadro da tela e confirma uma busca exata ao soltar, inclusive durante movimentos rápidos.
+- Oferece “Excluir direto” junto da lixeira nos cofres, menus de três pontos e player, inclusive depois de cancelar com segurança uma otimização em andamento.
+- Adiciona o botão OK à escolha do cofre de destino, permitindo confirmar imediatamente a opção que já estava marcada.
+- Torna configuráveis os atalhos de foto e vídeo com quatro nomes/ícones para cada ação: nome direto ou disfarces de scanner, documentos, notas, gravador, monitor e agenda.
+- Disponibiliza separadamente os três formatos do Android: ações ao segurar o ícone principal, atalhos fixados na tela inicial e ícones opcionais semelhantes a apps na gaveta.
+- Mantém o ícone principal e o menu interno Gravar inalterados; os ícones adicionais podem ser ativados e removidos nas configurações.
+- Publica e atualiza atalhos em uma fila de segundo plano, evita atualizações repetidas e remove o XML estático e os textos que ficaram sem uso.
+
+## 1.8.100 — 2026-07-14
+
+### Reels públicos sem login
+
+- Separa o acesso público do Instagram dos cookies do navegador, impedindo que cookies incompletos ou antigos façam um reel público cair indevidamente no fluxo de login.
+- Replica o reparo de compatibilidade do Media Grab: após uma falha, atualiza o extrator pelo canal mais recente com intervalo seguro entre tentativas e repete a análise anônima.
+- Tenta os endereços públicos de embed com extrator genérico, referenciador do Instagram e agente móvel antes de considerar uma sessão autenticada.
+- Adiciona uma última rota pública que lê `og:video` e URLs de vídeo do HTML e baixa o arquivo direto para o cofre, sem passar pelo extrator social.
+- Só reaproveita cookies quando existe um `sessionid` real e deixa esse caminho por último, preservando suporte a mídias privadas sem exigir login para conteúdo público.
+- Normaliza qualquer link de post/reel e remove parâmetros de rastreamento; nenhum endereço usado no teste ficou fixo no aplicativo.
+- Inclui testes das regras de normalização, ordem dos fallbacks, detecção de sessão e rejeição de domínios semelhantes ao Instagram.
+
+## 1.8.99 — 2026-07-14
+
+### Detalhes sob demanda e controle dos caches
+
+- Adiciona nas configurações dois modos para os detalhes: preparar a mídia ao abrir seu menu de três pontos ou carregar somente ao tocar em “Detalhes”.
+- Usa por padrão o pré-carregamento da mídia selecionada, em uma fila exclusiva que não atrasa exportação, exclusão, importação nem a primeira renderização da grade.
+- Reaproveita detalhes de fotos e vídeos em um cache persistente pequeno e em uma memória limitada a 64 itens, evitando abrir novamente o arquivo sem necessidade.
+- Exibe o uso de miniaturas, detalhes/metadados e arquivos temporários, separando armazenamento permanente de memória usada enquanto o app está aberto.
+- Permite atualizar os números e limpar miniaturas, detalhes, temporários e registros órfãos sem apagar mídias, lixeira, álbuns, favoritos ou configurações da câmera.
+- Inclui na limpeza as miniaturas mantidas pelas galerias em memória e impede a remoção de temporários durante uma gravação.
+- Respeita o cancelamento da espera por detalhes e não abre o resultado depois que o usuário fecha o progresso.
+
+## 1.8.98 — 2026-07-13
+
+### Cofres rápidos, corte profissional e detalhes da mídia
+
+- Os três cofres exibem a grade imediatamente sem abrir cada vídeo de forma bloqueante para ler duração e resolução.
+- Metadados ausentes são preenchidos em segundo plano, em lotes pequenos, e persistidos em cache para as próximas aberturas.
+- O editor de corte recebe uma linha do tempo visual com miniaturas, duas alças independentes, playhead e prévia em tempo real durante o arraste.
+- A linha do tempo mantém o ajuste fino vertical em 1/2×, 1/4× e 1/8×, com retorno tátil e seleção mínima segura.
+- Remove a instrução fixa que cobria os controles de zoom e ajuste; a orientação de precisão agora aparece somente durante o gesto.
+- Recalcula o posicionamento dos controles conforme a altura real do player e oculta a barra de zoom durante o corte.
+- Adiciona “Detalhes” ao menu de três pontos das mídias nos três cofres, com nome, tipo, resolução, duração, tamanho e data.
+- Remove os botões e métodos antigos de marcação de início/fim substituídos pela faixa de corte com duas alças.
+
+## 1.8.97 — 2026-07-13
+
+### Player, corte preciso e modais profissionais
+
+- Remove a camada de bitmap atrasada que cobria os quadros atuais durante o arraste.
+- O Media3 passa a renderizar diretamente o quadro exato solicitado, limitado à posição mais recente de cada frame da tela.
+- A barra acompanha a reprodução a cada 100 ms e responde a movimentos mínimos do dedo.
+- Adiciona ajuste de fricção: arrastar o dedo para cima reduz a velocidade para 1/2×, 1/4× e 1/8×, com indicação visual e resposta tátil.
+- O modo de corte usa a mesma prévia em tempo real e mantém início/fim dentro de um intervalo válido.
+- Reduz e realinha títulos de todos os modais, melhora margens e padroniza o cabeçalho com botão X.
+- Adiciona o mesmo cabeçalho e botão X ao teclado de PIN, único diálogo fora do componente central.
+- Remove campos, métodos, import e recurso visual antigos do preview; a varredura final não encontrou símbolos ou arquivos órfãos.
+
+## 1.8.96 — 2026-07-13
+
+### Motor de download baseado no Media Grab
+
+- Links de Instagram e demais redes compatíveis agora passam primeiro pelo motor avançado, antes da varredura de recursos internos da página.
+- Impede que falhas do extrator social abram uma lista bruta de JavaScript, CSS ou requisições internas.
+- A varredura DOM considera players, fontes, metadados públicos de vídeo e links com extensão real de mídia.
+- URLs com nomes de mídia apenas em parâmetros não são mais classificadas como arquivos diretos.
+- Adota o fallback de embed do Media Grab com extrator genérico, referenciador e agente móvel, sem fixar links de teste no app.
+
+## 1.8.95 — 2026-07-13
+
+### Build sem APIs obsoletas
+
+- Remove a configuração WebSQL obsoleta do WebView; armazenamento DOM permanece ativo.
+- Substitui `FLAG_FULLSCREEN` pela API moderna de insets ao abrir e fechar vídeos em tela cheia.
+- Atualiza a leitura de URIs compartilhadas para `IntentCompat`, compatível com Android 10+.
+- Marca bibliotecas nativas de terceiros já pré-compiladas para não passarem por uma tentativa inútil de remoção de símbolos.
+
+## 1.8.94 — 2026-07-13
+
+### Correção da limpeza do navegador
+
+- Remove `clearSessionOnly`, que havia perdido sua única função após a retirada da preferência antiga de última URL.
+- Remove a chamada correspondente ao encerrar a sessão privada.
+- Elimina a referência residual a `KEY_LAST_URL` que impedia a compilação.
+
+## 1.8.93 — 2026-07-13
+
+### Limpeza de código e recursos
+
+- Remove o drawable de exclusão definitiva que não possuía referência no projeto.
+- Remove o cache Python gerado pela ferramenta de auditoria.
+- Remove métodos públicos sem chamadas do player, navegador e catálogo de formatos.
+- Remove a preferência antiga de última URL, que não era mais utilizada nem persistida.
+- Elimina comparadores duplicados do modelo de ordenação; a ordenação efetiva permanece inalterada.
+- Confirma por varredura que não restaram métodos ou propriedades declarados sem referência direta.
+
+## 1.8.92 — 2026-07-13
+
+### Menu interno restaurado
+
+- Restaura o botão Gravar do menu inferior ao comportamento original: apenas abrir a tela de captura.
+- Remove o extra e o fluxo que iniciavam vídeo automaticamente pelo menu interno.
+- Mantém “Gravar vídeo” e “Tirar foto” exclusivamente nos atalhos do ícone do app no Android.
+
+## 1.8.91 — 2026-07-13
+
+### Atalhos no ícone do Android
+
+- Remove o botão Foto adicionado ao menu inferior interno e restaura o menu original.
+- Adiciona “Gravar vídeo” e “Tirar foto” ao menu exibido ao manter pressionado o ícone do SteadyVault na tela inicial ou na lista de apps.
+- Remove extras e código de navegação que ficaram desnecessários após mover o atalho de foto para o launcher.
+
+## 1.8.90 — 2026-07-13
+
+### Atalho de foto
+
+- Adiciona o comando Foto ao menu inferior para capturar uma imagem imediatamente.
+- Mantém o comando Gravar separado e preserva as validações de câmera, permissões e perfil ativo.
+- Compacta os cinco itens do menu para manter espaçamento uniforme em telas menores.
+
+## 1.8.89 — 2026-07-13
+
+### Captura, teclado, pop-ups e duração
+
+- O item Gravar do menu inferior agora abre a tela e inicia a captura, respeitando permissões e validações existentes.
+- O teclado é recolhido ao confirmar uma pesquisa/endereço no navegador.
+- Todos os pop-ups personalizados receberam botão X, alinhamento consistente à esquerda e acabamento visual uniforme.
+- A duração dos vídeos é lida durante a carga inicial dos três cofres, sem exigir que a mídia seja aberta antes.
+
+## 1.8.88 — 2026-07-12
+
+### Filtro de mídia do navegador
+
+- Impede que JavaScript, CSS, JSON, mapas de código, fontes e páginas HTML sejam exibidos como opções de mídia.
+- Remove correspondências genéricas por palavras como `video` e `media` no endereço.
+- Mantém somente MIME de foto/vídeo, extensões suportadas e endpoints de streaming reconhecidos.
+
+## 1.8.87 — 2026-07-12
+
+### Downloads e player
+
+- Conectado o baixador avançado já existente ao comando “Baixar mídia da página”.
+- URLs sociais passam pelo extrator atualizado e genérico, com fallback para mídia direta quando necessário.
+- Removido o modo forçado de Instagram que podia exigir login mesmo em Reels públicos.
+- Cookies do Instagram agora são compartilhados corretamente entre os subdomínios usados pelo extrator.
+- Removido acesso ao WebView fora da thread principal durante downloads.
+- O seek do Media3 agora solicita o quadro exato a cada movimento da barra sem iniciar reprodução temporária.
+
+## 1.8.56 — 2026-07-12
+
+### Correção de compilação Kotlin
+
+- Corrigido erro `Class is prohibited here` em `SecondaryVaultActivity.kt`.
+- Movido o `Holder` do `GalleryAdapter` interno para o corpo da Activity.
+- Aplicado o mesmo ajuste preventivo no cofre terciário.
+- Mantida a limpeza anterior: falhas de importação aparecem somente em popup, sem gerar `.txt`.
+
+## 1.8.55 - Importação: falhas só em popup
+
+- Remove geração de relatório `.txt` de falhas na importação.
+- Mantém a visualização dos nomes dos arquivos com falha diretamente no popup final da importação.
+- Remove código antigo de relatório em arquivo e limpa relatórios legados `ImportReports` na manutenção de abertura do app.
+
+
+## 1.8.53 - Cofres: miniaturas mais limpas e importação em lote
+
+- Diminui a borda/arredondamento das miniaturas nos cofres.
+- Mantém o card da miniatura com tamanho quadrado estável mesmo enquanto a imagem ainda não carregou.
+- Remove margem interna exagerada no cofre disfarçado/terciário para a imagem preencher melhor o card.
+- Adiciona importação de vários arquivos de uma vez.
+- Adiciona importação de uma pasta inteira com busca em subpastas.
+- Importação em lote agora é sequencial e mostra progresso, preparada para coleções grandes.
+- Limita aquecimento prévio de miniaturas aos primeiros itens visíveis para não sobrecarregar coleções com centenas/milhares de arquivos.
+
+
+
+## 1.8.50 - Correção CFR fixa para lacunas
+- Restaurada a correção de timestamps anormais como CFR real: 60 FPS passa a usar ~16,66 ms por quadro, removendo saltos de ~33 ms sem adicionar imagens.
+- Conferida a configuração `gapCorrection`: ela está ligada em Ajustes, salva em `CaptureSettings`, usada ao finalizar gravação e aplicada por `TimelineRepairer`.
+- Textos dos ajustes atualizados para deixar claro que a opção força cadência fixa no arquivo final.
+
+## 1.8.49 - Captura dedicada por widget e botão inicial
+- Captura dedicada limpa qualquer ponte de preview registrada e cancela otimização em andamento para não competir com câmera, ISP ou encoder.
+
+# Changelog
+
+Este arquivo registra mudanças confirmadas no código-fonte disponibilizado. O formato segue a organização geral do Keep a Changelog, sem declarar compatibilidade estrita com versionamento semântico.
+
+## 1.8.48 — 2026-07-11
+
+### Desempenho
+
+- Metadados e callbacks Camera2 passaram a ser usados somente durante o aquecimento inicial.
+- Antes do primeiro quadro salvo, a sessão continua com o mesmo request e listener nulo, mantendo as imagens sem gerar metadados por quadro.
+- Reutilização de MediaCodec.BufferInfo no áudio e no muxer para reduzir alocações e pressão de coleta de lixo.
+- Mantida a configuração visual aprovada da versão 1.8.47.
+
+### Qualidade de código
+
+- Removidos todos os @Suppress existentes.
+- Removidos parâmetros sem uso.
+- Removidos métodos vazios e suas chamadas.
+- A auditoria passou a reprovar supressões de warning e métodos privados vazios.
+- Mantidas verificações de imports sem uso, declarações privadas mortas, arquivos Kotlin órfãos e recursos sem referência.
+
+## 1.8.47 — 2026-07-11
+
+### Gravação
+
+- Timeline passou a respeitar o relógio real da câmera, preservando sincronização com o áudio.
+- Lacunas reais deixaram de ser escondidas por compressão indiscriminada dos timestamps.
+- A gravação sem preview passou a aguardar quadros reais antes de iniciar áudio e muxer.
+- Barreira inicial definida em 2 quadros para 30 FPS, 3 para 60 FPS e 4 para 120/240 FPS.
+- Adicionado fallback curto de 350 ms para o início sem preview.
+- Removida a troca tardia do repeating request durante gravações de 60 FPS ou mais.
+- Arquivo bruto movido para o cache interno, reduzindo picos de I/O no caminho crítico.
+- OIS priorizado no modo automático de 4K60.
+- A opção de faixa fixa de FPS passou a exigir intervalos exatos como 60–60.
+
+### Validação
+
+- Auditoria estática aprovada para 89 arquivos Kotlin, 136 XML e 395 referências locais no pacote analisado.
+
+## 1.8.46 — versão recebida
+
+### Estado do projeto
+
+- Versão com Camera2, MediaCodec e MediaMuxer.
+- Serviços de gravação em primeiro plano e captura sem preview.
+- Cofres, lixeira, miniaturas, widgets, player interno e exportação.
+- Políticas de aquecimento, cadência, armazenamento e proteção térmica.
+- Ferramentas de análise, reparo de timeline e transcodificação por hardware.
+
+As alterações anteriores à versão 1.8.46 não foram reconstruídas por falta de histórico versionado completo. Consulte o repositório Git original, quando disponível, para detalhes anteriores.
+
+## 1.8.48 - Correção de lacunas em 4K60
+- Corrigida a regularização de timeline para remover saltos longos de timestamp mantendo a duração do vídeo, sem inventar frames.
+- Em 4K60/120, a gravação não compartilha mais a Surface do preview com o encoder para reduzir carga do ISP/HAL e evitar buracos de frame.
+- FPS alto agora prioriza faixa fixa da câmera; faixas variáveis como 30-60 são rejeitadas quando o modo suave está ativo.
+- Bitrate padrão 4K60 HEVC ajustado para 60 Mbps para reduzir quedas de frame no encoder mantendo alta qualidade visual.
+
+## 1.8.224
+- Cofres: o resumo deixa de expor o tamanho interno do lote visual (160); mostra somente a quantidade total real do cofre.
+- Interface: removido o destaque quadrado/cinza nativo do Android nos controles clicáveis; permanecem os estados visuais definidos pelo SteadyVault.
+- Ajustes: títulos e descrições reescritos para explicar claramente a função de cada controle.
+- Ajustes: bitrate, exposição, ganho, buffer, processamento de ruído/nitidez e bitrate AAC passam a ter descrições específicas por opção.
+- Gravação: nenhum código de captura, câmera, encoder, FPS, timestamps ou áudio foi alterado.
+
+## 1.8.225
+- Cofres: ordenações passam a atuar sobre o índice lógico completo, não apenas sobre o lote visual já carregado.
+- Cofres: mais recentes/antigas, nome A-Z/Z-A e tamanho maior/menor agora reordenam imediatamente toda a coleção.
+- Cofres: duração e resolução completam metadados em segundo plano antes da ordenação e persistem os dados no índice correto de cada cofre.
+- Cofres: adicionadas as direções menor duração e menor resolução para completar os pares crescente/decrescente.
+- Cofres: a grade continua carregando miniaturas sob demanda, sem limitar a ordenação ao antigo lote de 160 itens.
+- Gravação: nenhum arquivo de captura, câmera, encoder, FPS, timestamps ou áudio foi alterado nesta versão.

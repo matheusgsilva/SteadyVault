@@ -1,0 +1,76 @@
+package com.steadyvault.camera.widgets
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.widget.Toast
+import com.steadyvault.camera.capture.service.RecordingServiceRouter
+import com.steadyvault.camera.core.feedback.Haptics
+import com.steadyvault.camera.core.settings.CaptureModeStore
+import com.steadyvault.camera.core.settings.CameraProfileStore
+import com.steadyvault.camera.core.settings.CaptureSettings
+import com.steadyvault.camera.core.state.CaptureStateStore
+import com.steadyvault.camera.core.state.OptimizationStateStore
+import com.steadyvault.camera.core.state.PhotoCaptureStateStore
+import com.steadyvault.camera.processing.service.VideoOptimizationService
+import com.steadyvault.camera.core.storage.RecordingStorageGuard
+
+class WidgetStartReceiver : BroadcastReceiver() {
+
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != ACTION_START) return
+
+        if (
+            CaptureStateStore.isBusy(context) ||
+            PhotoCaptureStateStore.isBusy(context)
+        ) {
+            WidgetRenderer.updateRecordingControls(context)
+            return
+        }
+
+        val fps = intent.getIntExtra(
+            EXTRA_TARGET_FPS,
+            CaptureModeStore.getTargetFps(context)
+        )
+        val current = CaptureSettings.snapshot(context)
+        val settings = current.selectedCameraId?.let {
+            CameraProfileStore.activate(context, it, CameraProfileStore.FunctionMode.VIDEO, current)
+        } ?: current.also { CameraProfileStore.setActiveMode(context, CameraProfileStore.FunctionMode.VIDEO) }
+        val effectiveSettings = settings.copy(fps = fps)
+        if (OptimizationStateStore.snapshot(context).running) {
+            VideoOptimizationService.cancel(context)
+            CaptureStateStore.update(context, "Cancelando otimização para gravar sem dividir recursos…")
+        }
+        val spaceCheck = RecordingStorageGuard.checkProfile(context, effectiveSettings)
+        if (!spaceCheck.allowed) {
+            CaptureStateStore.update(context, spaceCheck.message)
+            WidgetRenderer.updateRecordingControls(context)
+            Haptics.error(context)
+            Toast.makeText(context, spaceCheck.message, Toast.LENGTH_LONG).show()
+            return
+        }
+        val preparing = "Preparando gravação dedicada • ${CaptureSettings.resolutionLabel(settings.resolution)} • $fps FPS…"
+
+        CaptureStateStore.update(context, preparing)
+
+        runCatching {
+            RecordingServiceRouter.startHeadless(context, fps)
+            WidgetRenderer.updateRecordingControls(context)
+        }.onFailure { throwable ->
+            CaptureStateStore.update(context, "Pronto para gravar")
+            WidgetRenderer.updateRecordingControls(context)
+            Haptics.error(context)
+            Toast.makeText(
+                context,
+                throwable.message?.takeIf { it.isNotBlank() }
+                    ?: "Não foi possível iniciar a gravação.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    companion object {
+        const val ACTION_START = "com.steadyvault.camera.WIDGET_START"
+        const val EXTRA_TARGET_FPS = "target_fps"
+    }
+}

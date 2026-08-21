@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:padding="@dimen/widget_preview_lock_safe_inset">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@android:color/transparent"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:paddingStart="@dimen/widget_preview_lock_padding_h"
+        android:paddingTop="@dimen/widget_preview_lock_padding_v"
+        android:paddingEnd="@dimen/widget_preview_lock_padding_h"
+        android:paddingBottom="@dimen/widget_preview_lock_padding_v">
+
+        <TextView
+            android:id="@+id/widgetZoom"
+            android:layout_width="@dimen/widget_preview_lock_button"
+            android:layout_height="@dimen/widget_preview_lock_button"
+            android:background="@drawable/bg_widget_lock_preview_button_teal"
+            android:contentDescription="@string/zoom_content_description"
+            android:drawablePadding="0dp"
+            android:drawableTop="@drawable/ic_zoom_preview"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:maxLines="1"
+            android:paddingStart="1dp"
+            android:paddingTop="1dp"
+            android:paddingEnd="1dp"
+            android:paddingBottom="1dp"
+            android:text="@string/widget_zoom_preview"
+            android:textColor="@android:color/white"
+            android:textSize="8sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/widgetPhoto"
+            android:layout_width="@dimen/widget_preview_lock_button"
+            android:layout_height="@dimen/widget_preview_lock_button"
+            android:layout_marginStart="@dimen/widget_preview_lock_spacing"
+            android:background="@drawable/bg_widget_lock_preview_button_green"
+            android:contentDescription="@string/photo_content_description"
+            android:padding="@dimen/widget_preview_lock_icon_padding"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_camera" />
+
+        <ImageButton
+            android:id="@+id/widgetStart"
+            android:layout_width="@dimen/widget_preview_lock_button"
+            android:layout_height="@dimen/widget_preview_lock_button"
+            android:layout_marginStart="@dimen/widget_preview_lock_spacing"
+            android:background="@drawable/bg_widget_lock_preview_button_teal"
+            android:contentDescription="@string/record_content_description"
+            android:padding="@dimen/widget_preview_lock_icon_padding"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_record" />
+
+        <ImageButton
+            android:id="@+id/widgetStop"
+            android:layout_width="@dimen/widget_preview_lock_button"
+            android:layout_height="@dimen/widget_preview_lock_button"
+            android:layout_marginStart="@dimen/widget_preview_lock_spacing"
+            android:background="@drawable/bg_widget_lock_preview_button_disabled"
+            android:contentDescription="@string/stop_content_description"
+            android:enabled="false"
+            android:padding="@dimen/widget_preview_lock_icon_padding"
+            android:scaleType="centerInside"
+            android:src="@drawable/ic_widget_stop_off" />
+    </LinearLayout>
+</FrameLayout>

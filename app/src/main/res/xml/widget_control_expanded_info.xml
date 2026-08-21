@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_expanded_description"
+    android:initialLayout="@layout/widget_control_expanded_large"
+    android:initialKeyguardLayout="@layout/widget_control_expanded_large"
+    android:previewLayout="@layout/widget_control_expanded_preview"
+    android:minWidth="393dp"
+    android:minHeight="72dp"
+    android:minResizeWidth="393dp"
+    android:minResizeHeight="72dp"
+    android:resizeMode="none"
+    android:targetCellWidth="6"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

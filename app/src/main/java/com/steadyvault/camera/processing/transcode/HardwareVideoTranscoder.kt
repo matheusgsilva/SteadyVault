@@ -1,0 +1,861 @@
+package com.steadyvault.camera.processing.transcode
+
+import com.steadyvault.camera.processing.model.FrameRepairMode
+import com.steadyvault.camera.processing.model.OptimizationPreset
+import com.steadyvault.camera.processing.model.OptimizationRateMode
+import com.steadyvault.camera.processing.model.VideoFilterConfig
+
+import android.graphics.SurfaceTexture
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import android.opengl.EGL14
+import android.opengl.EGLConfig
+import android.opengl.EGLContext
+import android.opengl.EGLDisplay
+import android.opengl.EGLExt
+import android.opengl.EGLSurface
+import android.opengl.GLES11Ext
+import android.opengl.GLES20
+import android.view.Surface
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.nio.FloatBuffer
+import kotlin.math.max
+
+class HardwareVideoTranscoder {
+    data class Request(
+        val outputMime: String,
+        val width: Int,
+        val height: Int,
+        val fps: Int,
+        val bitrate: Int,
+        val preset: OptimizationPreset,
+        val rateMode: OptimizationRateMode,
+        val orientationHint: Int,
+        val frameRepair: FrameRepairMode,
+        val sourceDurationUs: Long,
+        val sourceFrameCount: Int,
+        val keepAudio: Boolean,
+        val filters: VideoFilterConfig,
+        val maxInterpolatedFramesPerGap: Int,
+        val trimStartUs: Long = 0L,
+        val trimEndUs: Long = 0L
+    )
+
+    data class Result(
+        val outputFrames: Int,
+        val createdFrames: Int,
+        val blendedFrames: Int,
+        val durationUs: Long
+    )
+
+    fun transcode(
+        input: File,
+        output: File,
+        request: Request,
+        progress: (Int, String) -> Unit,
+        cancelled: () -> Boolean
+    ): Result {
+        require(input.isFile && input.length() > 0L) { "Vídeo de origem inválido" }
+        val gpuWorkingBytes = request.width.toLong() * request.height.toLong() * RGBA_BYTES_PER_PIXEL * FRAME_TEXTURE_COUNT
+        require(gpuWorkingBytes <= MAX_GPU_FRAME_BYTES) {
+            "A resolução exige memória GPU excessiva. Reduza a saída para 4K, 1080p ou 720p"
+        }
+        if (output.exists()) output.delete()
+
+        val source = SourceTracks.open(input)
+        if (request.keepAudio && source.audioFormat != null) {
+            val audioMime = source.audioFormat.getString(MediaFormat.KEY_MIME).orEmpty()
+            require(audioMime == MediaFormat.MIMETYPE_AUDIO_AAC) {
+                "O áudio $audioMime não pode ser copiado para MP4. Desative Preservar áudio para este arquivo."
+            }
+        }
+        val extractor = MediaExtractor()
+        var decoder: MediaCodec? = null
+        var encoder: MediaCodec? = null
+        var inputSurface: EncoderInputSurface? = null
+        var outputSurface: DecoderOutputSurface? = null
+        var muxer: MediaMuxer? = null
+        var muxerStarted = false
+        var outputVideoTrack = -1
+        var outputAudioTrack = -1
+        var encodedFrames = 0
+        var createdFrames = 0
+        var blendedFrames = 0
+        var finalDurationUs = 0L
+
+        try {
+            extractor.setDataSource(input.absolutePath)
+            extractor.selectTrack(source.videoTrack)
+            val frameIntervalUs = 1_000_000L / request.fps.coerceAtLeast(1)
+            val trimStartUs = request.trimStartUs.coerceIn(0L, (request.sourceDurationUs - frameIntervalUs).coerceAtLeast(0L))
+            val requestedTrimEndUs = if (request.trimEndUs > trimStartUs) request.trimEndUs else request.sourceDurationUs
+            val trimEndUs = requestedTrimEndUs.coerceIn(trimStartUs + frameIntervalUs, request.sourceDurationUs.coerceAtLeast(trimStartUs + frameIntervalUs))
+            val sourceSpanUs = (trimEndUs - trimStartUs).coerceAtLeast(frameIntervalUs)
+            if (trimStartUs > 0L) extractor.seekTo(trimStartUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+
+            val selectedEncoderInfo = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+                .asSequence()
+                .filter { it.isEncoder && it.supportedTypes.any { type -> type.equals(request.outputMime, true) } }
+                .mapNotNull { info ->
+                    val capabilities = runCatching { info.getCapabilitiesForType(request.outputMime) }.getOrNull() ?: return@mapNotNull null
+                    val videoCapabilities = capabilities.videoCapabilities ?: return@mapNotNull null
+                    if (!videoCapabilities.areSizeAndRateSupported(request.width, request.height, request.fps.toDouble())) return@mapNotNull null
+                    Triple(info, capabilities, videoCapabilities)
+                }
+                .sortedByDescending { (info, _, _) -> info.isHardwareAccelerated }
+                .firstOrNull()
+                ?: throw IllegalStateException("Nenhum encoder suporta ${request.width}×${request.height} a ${request.fps} FPS")
+            encoder = MediaCodec.createByCodecName(selectedEncoderInfo.first.name)
+            val codecCapabilities = selectedEncoderInfo.second
+            val videoCapabilities = selectedEncoderInfo.third
+            val safeBitrate = request.bitrate.coerceIn(videoCapabilities.bitrateRange.lower, videoCapabilities.bitrateRange.upper)
+            val encoderFormat = MediaFormat.createVideoFormat(request.outputMime, request.width, request.height).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                setInteger(MediaFormat.KEY_BIT_RATE, safeBitrate)
+                setInteger(MediaFormat.KEY_FRAME_RATE, request.fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+                val encoderCapabilities = codecCapabilities.encoderCapabilities
+                fun supportsRateMode(mode: Int): Boolean =
+                    encoderCapabilities?.isBitrateModeSupported(mode) == true
+
+                val desiredRateMode = when (request.rateMode) {
+                    OptimizationRateMode.CONSTANT_QUALITY -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ
+                    OptimizationRateMode.CBR -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                    OptimizationRateMode.VBR -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                    OptimizationRateMode.AUTO -> if (
+                        request.preset == OptimizationPreset.HIGH_QUALITY &&
+                        supportsRateMode(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ)
+                    ) MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ else MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                }
+                val appliedRateMode = if (supportsRateMode(desiredRateMode)) {
+                    desiredRateMode
+                } else {
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                }
+                if (supportsRateMode(appliedRateMode)) setInteger(MediaFormat.KEY_BITRATE_MODE, appliedRateMode)
+                if (appliedRateMode == MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ) {
+                    encoderCapabilities?.qualityRange?.let { qualityRange ->
+                        val fraction = when (request.preset) {
+                            OptimizationPreset.HIGH_QUALITY,
+                            OptimizationPreset.HQ_1080P,
+                            OptimizationPreset.HQ_720P,
+                            OptimizationPreset.CREATOR_2160P_4K,
+                            OptimizationPreset.CREATOR_1080P,
+                            OptimizationPreset.APPLE_2160P_4K_HEVC,
+                            OptimizationPreset.ARCHIVE_4K -> 0.90
+                            OptimizationPreset.APPLE_1080P_SURROUND -> 0.82
+                            OptimizationPreset.ANDROID_1080P,
+                            OptimizationPreset.ANDROID_720P,
+                            OptimizationPreset.WEB_1080P -> 0.76
+                            OptimizationPreset.FAST_1080P, OptimizationPreset.FAST_720P -> 0.72
+                            OptimizationPreset.VERY_FAST_1080P -> 0.60
+                            OptimizationPreset.SOCIAL_720P -> 0.56
+                            OptimizationPreset.BALANCED -> 0.72
+                            OptimizationPreset.SMALL_FILE -> 0.48
+                            else -> 0.70
+                        }
+                        val quality = qualityRange.lower + ((qualityRange.upper - qualityRange.lower) * fraction).toInt()
+                        setInteger(MediaFormat.KEY_QUALITY, quality.coerceIn(qualityRange.lower, qualityRange.upper))
+                    }
+                }
+                encoderCapabilities?.complexityRange?.let { complexityRange ->
+                    val complexity = when (request.preset) {
+                        OptimizationPreset.HIGH_QUALITY,
+                        OptimizationPreset.ARCHIVE_4K,
+                        OptimizationPreset.HQ_1080P,
+                        OptimizationPreset.HQ_720P,
+                        OptimizationPreset.CREATOR_2160P_4K,
+                        OptimizationPreset.CREATOR_1080P,
+                        OptimizationPreset.APPLE_2160P_4K_HEVC,
+                        OptimizationPreset.APPLE_1080P_SURROUND,
+                        OptimizationPreset.ANDROID_1080P,
+                        OptimizationPreset.ANDROID_720P,
+                        OptimizationPreset.WEB_1080P,
+                        OptimizationPreset.SMALL_FILE,
+                        OptimizationPreset.CUSTOM -> complexityRange.upper
+                        OptimizationPreset.VERY_FAST_1080P -> complexityRange.lower
+                        OptimizationPreset.FAST_1080P,
+                        OptimizationPreset.FAST_720P,
+                        OptimizationPreset.SOCIAL_720P ->
+                            complexityRange.lower + (complexityRange.upper - complexityRange.lower) / 2
+                        else -> complexityRange.lower + (complexityRange.upper - complexityRange.lower) / 2
+                    }
+                    setInteger(MediaFormat.KEY_COMPLEXITY, complexity.coerceIn(complexityRange.lower, complexityRange.upper))
+                }
+                setInteger(MediaFormat.KEY_OPERATING_RATE, request.fps)
+                setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+                setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+                setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+            }
+            encoder!!.configure(encoderFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            inputSurface = EncoderInputSurface(encoder!!.createInputSurface()).also { it.makeCurrent() }
+            encoder!!.start()
+
+            outputSurface = DecoderOutputSurface(request.width, request.height)
+            val sourceMime = source.videoFormat.getString(MediaFormat.KEY_MIME)
+                ?: throw IllegalStateException("Codec de origem ausente")
+            val decoderCodecInfo = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+                .asSequence()
+                .filter { !it.isEncoder && it.supportedTypes.any { type -> type.equals(sourceMime, true) } }
+                .sortedByDescending { it.isHardwareAccelerated }
+                .firstOrNull()
+                ?: throw IllegalStateException("Nenhum decoder suporta o vídeo de origem")
+            val decoderFormat = source.videoFormat.apply {
+                if (containsKey(MediaFormat.KEY_ROTATION)) {
+                    setInteger(MediaFormat.KEY_ROTATION, 0)
+                }
+            }
+            decoder = MediaCodec.createByCodecName(decoderCodecInfo.name).apply {
+                configure(decoderFormat, outputSurface!!.surface, null, 0)
+                start()
+            }
+
+            muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4).apply {
+                setOrientationHint(((request.orientationHint % 360) + 360) % 360)
+            }
+
+            val decoderInfo = MediaCodec.BufferInfo()
+            val encoderBufferInfo = MediaCodec.BufferInfo()
+            var extractorDone = false
+            var decoderDone = false
+            var encoderDone = false
+            var firstSourcePts = Long.MIN_VALUE
+            var lastSourceRelativePts = 0L
+            var sourceDecodedFrames = 0
+            val smoothStepUs = frameIntervalUs
+            var nextFillPtsUs = 0L
+            var lastWrittenPtsUs = -1L
+            var loadedFrame = false
+            var previousSourceRelativePts = 0L
+
+            fun startMuxerIfReady(format: MediaFormat) {
+                if (muxerStarted) return
+                format.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+                format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+                format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+                if (format.containsKey(MediaFormat.KEY_ROTATION)) format.setInteger(MediaFormat.KEY_ROTATION, 0)
+                outputVideoTrack = muxer!!.addTrack(format)
+                if (request.keepAudio && source.audioFormat != null) outputAudioTrack = muxer!!.addTrack(source.audioFormat)
+                muxer!!.start()
+                muxerStarted = true
+            }
+
+            var encoderEosSignaled = false
+            fun drainEncoder(endOfStream: Boolean) {
+                if (endOfStream && !encoderEosSignaled) {
+                    encoder!!.signalEndOfInputStream()
+                    encoderEosSignaled = true
+                }
+                var idleCount = 0
+                while (true) {
+                    val status = encoder!!.dequeueOutputBuffer(encoderBufferInfo, CODEC_TIMEOUT_US)
+                    when {
+                        status == MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                            if (!endOfStream) return
+                            idleCount++
+                            if (idleCount > MAX_ENCODER_IDLE_POLLS) throw IllegalStateException("Tempo excedido finalizando o encoder")
+                        }
+                        status == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            idleCount = 0
+                            startMuxerIfReady(encoder!!.outputFormat)
+                        }
+                        status >= 0 -> {
+                            idleCount = 0
+                            val buffer = encoder!!.getOutputBuffer(status)
+                                ?: throw IllegalStateException("Buffer do encoder indisponível")
+                            if (encoderBufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) encoderBufferInfo.size = 0
+                            if (encoderBufferInfo.size > 0) {
+                                check(muxerStarted) { "Muxer ainda não iniciado" }
+                                buffer.position(encoderBufferInfo.offset)
+                                buffer.limit(encoderBufferInfo.offset + encoderBufferInfo.size)
+                                muxer!!.writeSampleData(outputVideoTrack, buffer, encoderBufferInfo)
+                                finalDurationUs = max(finalDurationUs, encoderBufferInfo.presentationTimeUs)
+                            }
+                            encoderDone = encoderBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                            encoder!!.releaseOutputBuffer(status, false)
+                            if (encoderDone) return
+                        }
+                    }
+                }
+            }
+
+            fun submitFrame(ptsUs: Long, draw: () -> Unit) {
+                draw()
+                val safePtsUs = max(lastWrittenPtsUs + 1L, ptsUs)
+                inputSurface!!.setPresentationTime(safePtsUs * 1_000L)
+                check(inputSurface!!.swapBuffers()) { "Falha enviando quadro ao encoder" }
+                lastWrittenPtsUs = safePtsUs
+                encodedFrames++
+                drainEncoder(false)
+            }
+
+            fun writeCurrentFrame(ptsUs: Long) = submitFrame(ptsUs) { outputSurface!!.drawCurrent() }
+            fun writePreviousFrame(ptsUs: Long) = submitFrame(ptsUs) { outputSurface!!.drawPrevious() }
+            fun writeBlendedFrame(ptsUs: Long, alpha: Float) {
+                submitFrame(ptsUs) { outputSurface!!.drawBlend(alpha) }
+                if (alpha > 0.02f && alpha < 0.98f) blendedFrames++
+            }
+
+            while (!encoderDone) {
+                if (cancelled()) throw InterruptedException("Otimização cancelada")
+
+                if (!extractorDone) {
+                    val inputIndex = decoder!!.dequeueInputBuffer(CODEC_TIMEOUT_US)
+                    if (inputIndex >= 0) {
+                        val inputBuffer = decoder!!.getInputBuffer(inputIndex)
+                            ?: throw IllegalStateException("Buffer do decoder indisponível")
+                        val sampleTimeUs = extractor.sampleTime
+                        val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                        if (sampleSize < 0 || sampleTimeUs > trimEndUs) {
+                            decoder!!.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            extractorDone = true
+                        } else {
+                            decoder!!.queueInputBuffer(inputIndex, 0, sampleSize, sampleTimeUs, extractor.sampleFlags)
+                            extractor.advance()
+                        }
+                    }
+                }
+
+                if (!decoderDone) {
+                    val outputIndex = decoder!!.dequeueOutputBuffer(decoderInfo, CODEC_TIMEOUT_US)
+                    when {
+                        outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                        outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> Unit
+                        outputIndex >= 0 -> {
+                            val doRender = decoderInfo.size > 0
+                            decoderDone = decoderInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                            val decodedPtsUs = decoderInfo.presentationTimeUs
+                            val renderInsideTrim = doRender && decodedPtsUs >= trimStartUs && decodedPtsUs <= trimEndUs
+                            if (renderInsideTrim && firstSourcePts == Long.MIN_VALUE) firstSourcePts = decodedPtsUs
+                            val sourceRelative = if (renderInsideTrim) (decodedPtsUs - firstSourcePts).coerceAtLeast(0L) else 0L
+
+                            decoder!!.releaseOutputBuffer(outputIndex, renderInsideTrim)
+                            if (renderInsideTrim) {
+                                outputSurface!!.awaitNewImage()
+                                outputSurface!!.captureCurrent(request.filters)
+                                lastSourceRelativePts = max(lastSourceRelativePts, sourceRelative)
+
+                                when (request.frameRepair) {
+                                    FrameRepairMode.FILL_MISSING_FRAMES,
+                                    FrameRepairMode.ADAPTIVE_BLEND -> {
+                                        if (!loadedFrame) {
+                                            writeCurrentFrame(0L)
+                                            nextFillPtsUs = frameIntervalUs
+                                            loadedFrame = true
+                                        } else {
+                                            val intervalUs = (sourceRelative - previousSourceRelativePts).coerceAtLeast(1L)
+                                            val outputFramesInGap = ((intervalUs + frameIntervalUs - 1L) / frameIntervalUs).toInt()
+                                            val blendAllowed = request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND &&
+                                                    outputFramesInGap <= request.maxInterpolatedFramesPerGap + 1
+                                            while (nextFillPtsUs < sourceRelative) {
+                                                val alpha = ((nextFillPtsUs - previousSourceRelativePts).toDouble() / intervalUs.toDouble())
+                                                    .toFloat()
+                                                    .coerceIn(0f, 1f)
+                                                when {
+                                                    blendAllowed -> writeBlendedFrame(nextFillPtsUs, alpha)
+                                                    alpha < 0.5f -> writePreviousFrame(nextFillPtsUs)
+                                                    else -> writeCurrentFrame(nextFillPtsUs)
+                                                }
+                                                nextFillPtsUs += frameIntervalUs
+                                            }
+                                        }
+                                        previousSourceRelativePts = max(previousSourceRelativePts, sourceRelative)
+                                    }
+                                    FrameRepairMode.SMOOTH_TIMELINE -> {
+                                        writeCurrentFrame(sourceDecodedFrames.toLong() * smoothStepUs)
+                                    }
+                                    FrameRepairMode.NONE -> {
+                                        writeCurrentFrame(max(lastWrittenPtsUs + 1L, sourceRelative))
+                                    }
+                                }
+                                sourceDecodedFrames++
+                                val percent = ((sourceRelative * 88L / sourceSpanUs).toInt() + 5).coerceIn(5, 93)
+                                val message = when (request.frameRepair) {
+                                    FrameRepairMode.ADAPTIVE_BLEND -> "Reconstruindo cadência com mistura temporal por GPU"
+                                    FrameRepairMode.FILL_MISSING_FRAMES -> "Preenchendo lacunas com o quadro mais próximo"
+                                    FrameRepairMode.SMOOTH_TIMELINE -> "Regularizando a timeline"
+                                    FrameRepairMode.NONE -> if (request.filters.enabled) "Aplicando filtros por GPU" else "Recodificando por hardware"
+                                }
+                                progress(percent, message)
+                            }
+                        }
+                    }
+                }
+
+                if (decoderDone) {
+                    if ((request.frameRepair == FrameRepairMode.FILL_MISSING_FRAMES ||
+                                request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND) && loadedFrame
+                    ) {
+                        val targetEndExclusiveUs = sourceSpanUs.coerceAtLeast(lastSourceRelativePts + frameIntervalUs)
+                        while (nextFillPtsUs < targetEndExclusiveUs) {
+                            writeCurrentFrame(nextFillPtsUs)
+                            nextFillPtsUs += frameIntervalUs
+                        }
+                    }
+                    drainEncoder(true)
+                } else {
+                    drainEncoder(false)
+                }
+            }
+
+            if (!muxerStarted) throw IllegalStateException("Encoder não produziu formato de saída")
+            if (request.keepAudio && outputAudioTrack >= 0 && source.audioTrack >= 0) {
+                progress(95, "Preservando áudio")
+                copyAudio(input, source.audioTrack, outputAudioTrack, muxer!!, sourceSpanUs + AUDIO_TOLERANCE_US, trimStartUs, cancelled)
+            }
+            createdFrames = (encodedFrames - request.sourceFrameCount).coerceAtLeast(0)
+            progress(100, "Validando saída otimizada")
+            return Result(encodedFrames, createdFrames, blendedFrames, max(sourceSpanUs, finalDurationUs + frameIntervalUs))
+        } catch (t: Throwable) {
+            output.delete()
+            throw t
+        } finally {
+            runCatching { extractor.release() }
+            runCatching { decoder?.stop() }
+            runCatching { decoder?.release() }
+            runCatching { outputSurface?.release() }
+            runCatching { encoder?.stop() }
+            runCatching { encoder?.release() }
+            runCatching { inputSurface?.release() }
+            if (muxerStarted) runCatching { muxer?.stop() }
+            runCatching { muxer?.release() }
+        }
+    }
+
+    private fun copyAudio(
+        input: File,
+        sourceTrack: Int,
+        outputTrack: Int,
+        muxer: MediaMuxer,
+        maxPtsUs: Long,
+        sourceAudioStartPtsUs: Long,
+        cancelled: () -> Boolean
+    ) {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(input.absolutePath)
+            extractor.selectTrack(sourceTrack)
+            val format = extractor.getTrackFormat(sourceTrack)
+            val capacity = if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE).coerceIn(64 * 1024, 4 * 1024 * 1024)
+            } else 512 * 1024
+            val buffer = ByteBuffer.allocateDirect(capacity)
+            val info = MediaCodec.BufferInfo()
+            if (sourceAudioStartPtsUs > 0L) extractor.seekTo(sourceAudioStartPtsUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            var lastPts = -1L
+            while (extractor.sampleTrackIndex >= 0) {
+                if (cancelled()) throw InterruptedException("Otimização cancelada")
+                val sourcePts = extractor.sampleTime
+                if (sourcePts < 0L) break
+                if (sourcePts < sourceAudioStartPtsUs) {
+                    if (!extractor.advance()) break
+                    continue
+                }
+                val pts = (sourcePts - sourceAudioStartPtsUs).coerceAtLeast(0L)
+                if (pts > maxPtsUs) break
+                buffer.clear()
+                val size = extractor.readSampleData(buffer, 0)
+                if (size < 0) break
+                val safePts = max(lastPts + 1L, pts)
+                info.set(0, size, safePts, extractor.sampleFlags)
+                buffer.position(0)
+                buffer.limit(size)
+                muxer.writeSampleData(outputTrack, buffer, info)
+                lastPts = safePts
+                if (!extractor.advance()) break
+            }
+        } finally {
+            extractor.release()
+        }
+    }
+
+    private data class SourceTracks(
+        val videoTrack: Int,
+        val audioTrack: Int,
+        val videoFormat: MediaFormat,
+        val audioFormat: MediaFormat?
+    ) {
+        companion object {
+            fun open(file: File): SourceTracks {
+                val extractor = MediaExtractor()
+                try {
+                    extractor.setDataSource(file.absolutePath)
+                    var video = -1
+                    var audio = -1
+                    var videoFormat: MediaFormat? = null
+                    var audioFormat: MediaFormat? = null
+                    for (index in 0 until extractor.trackCount) {
+                        val format = extractor.getTrackFormat(index)
+                        val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
+                        if (video < 0 && mime.startsWith("video/")) { video = index; videoFormat = format }
+                        if (audio < 0 && mime.startsWith("audio/")) { audio = index; audioFormat = format }
+                    }
+                    return SourceTracks(video, audio, videoFormat ?: error("Faixa de vídeo ausente"), audioFormat)
+                } finally {
+                    extractor.release()
+                }
+            }
+        }
+    }
+
+    private class EncoderInputSurface(private val surface: Surface) {
+        private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
+        private var context: EGLContext = EGL14.EGL_NO_CONTEXT
+        private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+
+        init { setup() }
+
+        private fun setup() {
+            display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+            check(display != EGL14.EGL_NO_DISPLAY) { "EGL display indisponível" }
+            val version = IntArray(2)
+            check(EGL14.eglInitialize(display, version, 0, version, 1)) { "Falha ao inicializar EGL" }
+            val attribList = intArrayOf(
+                EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
+                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                EGL_RECORDABLE_ANDROID, 1, EGL14.EGL_NONE
+            )
+            val configs = arrayOfNulls<EGLConfig>(1)
+            val numConfigs = IntArray(1)
+            check(EGL14.eglChooseConfig(display, attribList, 0, configs, 0, 1, numConfigs, 0)) { "Config EGL indisponível" }
+            val config = configs[0] ?: throw IllegalStateException("Config EGL vazia")
+            val contextAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
+            context = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT, contextAttribs, 0)
+            check(context != EGL14.EGL_NO_CONTEXT) { "Contexto EGL indisponível" }
+            val surfaceAttribs = intArrayOf(EGL14.EGL_NONE)
+            eglSurface = EGL14.eglCreateWindowSurface(display, config, surface, surfaceAttribs, 0)
+            check(eglSurface != EGL14.EGL_NO_SURFACE) { "Surface EGL indisponível" }
+        }
+
+        fun makeCurrent() { check(EGL14.eglMakeCurrent(display, eglSurface, eglSurface, context)) }
+        fun swapBuffers(): Boolean = EGL14.eglSwapBuffers(display, eglSurface)
+        fun setPresentationTime(nsecs: Long) { EGLExt.eglPresentationTimeANDROID(display, eglSurface, nsecs) }
+        fun release() {
+            if (display != EGL14.EGL_NO_DISPLAY) {
+                EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+                EGL14.eglDestroySurface(display, eglSurface)
+                EGL14.eglDestroyContext(display, context)
+                EGL14.eglReleaseThread()
+                EGL14.eglTerminate(display)
+            }
+            surface.release()
+            display = EGL14.EGL_NO_DISPLAY
+            context = EGL14.EGL_NO_CONTEXT
+            eglSurface = EGL14.EGL_NO_SURFACE
+        }
+    }
+
+    private class DecoderOutputSurface(private val width: Int, private val height: Int) : SurfaceTexture.OnFrameAvailableListener {
+        private val frameSync = Object()
+        private var frameAvailable = false
+        private val renderer = TextureRenderer(width, height)
+        private val surfaceTexture: SurfaceTexture
+        val surface: Surface
+
+        init {
+            renderer.surfaceCreated()
+            surfaceTexture = SurfaceTexture(renderer.externalTextureId).apply {
+                setDefaultBufferSize(width, height)
+                setOnFrameAvailableListener(this@DecoderOutputSurface)
+            }
+            surface = Surface(surfaceTexture)
+        }
+
+        override fun onFrameAvailable(surfaceTexture: SurfaceTexture?) {
+            synchronized(frameSync) {
+                frameAvailable = true
+                frameSync.notifyAll()
+            }
+        }
+
+        fun awaitNewImage() {
+            synchronized(frameSync) {
+                while (!frameAvailable) {
+                    frameSync.wait(FRAME_WAIT_MS)
+                    if (!frameAvailable) throw RuntimeException("Tempo excedido aguardando quadro decodificado")
+                }
+                frameAvailable = false
+            }
+            surfaceTexture.updateTexImage()
+        }
+
+        fun captureCurrent(filters: VideoFilterConfig) = renderer.captureFrame(surfaceTexture, filters)
+        fun drawCurrent() = renderer.drawCurrent()
+        fun drawPrevious() = renderer.drawPrevious()
+        fun drawBlend(alpha: Float) = renderer.drawBlend(alpha)
+
+        fun release() {
+            surface.release()
+            surfaceTexture.release()
+            renderer.release()
+        }
+    }
+
+    private class TextureRenderer(private val width: Int, private val height: Int) {
+        private val triangleVertices: FloatBuffer = ByteBuffer.allocateDirect(VERTICES.size * 4)
+            .order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(VERTICES).position(0) }
+        private val transform = FloatArray(16)
+        private val identity = floatArrayOf(
+            1f, 0f, 0f, 0f,
+            0f, 1f, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            0f, 0f, 0f, 1f
+        )
+        private var externalProgram = 0
+        private var blendProgram = 0
+        private val frameTextures = IntArray(2)
+        private val framebuffers = IntArray(2)
+        private var currentIndex = -1
+        private var previousIndex = -1
+        var externalTextureId: Int = -1
+            private set
+
+        fun surfaceCreated() {
+            val maximumTextureSize = IntArray(1)
+            GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, maximumTextureSize, 0)
+            require(width <= maximumTextureSize[0] && height <= maximumTextureSize[0]) {
+                "A GPU não suporta textura de ${width}×${height}; reduza a resolução de saída"
+            }
+            externalProgram = createProgram(VERTEX_SHADER, EXTERNAL_FRAGMENT_SHADER)
+            blendProgram = createProgram(VERTEX_SHADER, BLEND_FRAGMENT_SHADER)
+
+            val external = IntArray(1)
+            GLES20.glGenTextures(1, external, 0)
+            externalTextureId = external[0]
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId)
+            GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR.toFloat())
+            GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR.toFloat())
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+
+            GLES20.glGenTextures(2, frameTextures, 0)
+            GLES20.glGenFramebuffers(2, framebuffers, 0)
+            for (index in 0..1) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTextures[index])
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexImage2D(
+                    GLES20.GL_TEXTURE_2D,
+                    0,
+                    GLES20.GL_RGBA,
+                    width,
+                    height,
+                    0,
+                    GLES20.GL_RGBA,
+                    GLES20.GL_UNSIGNED_BYTE,
+                    null
+                )
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffers[index])
+                GLES20.glFramebufferTexture2D(
+                    GLES20.GL_FRAMEBUFFER,
+                    GLES20.GL_COLOR_ATTACHMENT0,
+                    GLES20.GL_TEXTURE_2D,
+                    frameTextures[index],
+                    0
+                )
+                check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE) {
+                    "Framebuffer de processamento incompleto"
+                }
+            }
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+        }
+
+        fun captureFrame(surfaceTexture: SurfaceTexture, requestedFilters: VideoFilterConfig) {
+            val filters = requestedFilters.normalized()
+            previousIndex = currentIndex
+            currentIndex = if (currentIndex < 0) 0 else 1 - currentIndex
+            surfaceTexture.getTransformMatrix(transform)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffers[currentIndex])
+            GLES20.glViewport(0, 0, width, height)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            GLES20.glUseProgram(externalProgram)
+            bindGeometry(externalProgram, transform)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId)
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(externalProgram, "sTexture"), 0)
+            GLES20.glUniform2f(
+                GLES20.glGetUniformLocation(externalProgram, "uTexel"),
+                1f / width.toFloat(),
+                1f / height.toFloat()
+            )
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uDenoise"), filters.denoise.amount)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uSharpen"), filters.sharpen.amount)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uDeblock"), filters.deblock.amount)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uBrightness"), filters.brightness / 100f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uContrast"), filters.contrast / 100f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uSaturation"), filters.saturation / 100f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uTemperature"), filters.temperature / 50f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uTint"), filters.tint / 30f)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            if (previousIndex < 0) previousIndex = currentIndex
+            checkGl("capturar quadro")
+        }
+
+        fun drawCurrent() = drawTextures(currentIndex, currentIndex, 1f)
+        fun drawPrevious() = drawTextures(previousIndex, previousIndex, 1f)
+        fun drawBlend(alpha: Float) = drawTextures(previousIndex, currentIndex, alpha.coerceIn(0f, 1f))
+
+        private fun drawTextures(firstIndex: Int, secondIndex: Int, alpha: Float) {
+            check(firstIndex >= 0 && secondIndex >= 0) { "Nenhum quadro foi capturado para renderização" }
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            GLES20.glViewport(0, 0, width, height)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            GLES20.glUseProgram(blendProgram)
+            bindGeometry(blendProgram, identity)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTextures[firstIndex])
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(blendProgram, "uPrevious"), 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTextures[secondIndex])
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(blendProgram, "uCurrent"), 1)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(blendProgram, "uAlpha"), alpha)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            checkGl("renderizar quadro")
+        }
+
+        private fun bindGeometry(program: Int, matrix: FloatArray) {
+            val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
+            val textureHandle = GLES20.glGetAttribLocation(program, "aTextureCoord")
+            val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
+            triangleVertices.position(0)
+            GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, STRIDE_BYTES, triangleVertices)
+            GLES20.glEnableVertexAttribArray(positionHandle)
+            triangleVertices.position(2)
+            GLES20.glVertexAttribPointer(textureHandle, 2, GLES20.GL_FLOAT, false, STRIDE_BYTES, triangleVertices)
+            GLES20.glEnableVertexAttribArray(textureHandle)
+            GLES20.glUniformMatrix4fv(matrixHandle, 1, false, matrix, 0)
+        }
+
+        fun release() {
+            if (externalTextureId >= 0) GLES20.glDeleteTextures(1, intArrayOf(externalTextureId), 0)
+            GLES20.glDeleteTextures(2, frameTextures, 0)
+            GLES20.glDeleteFramebuffers(2, framebuffers, 0)
+            if (externalProgram != 0) GLES20.glDeleteProgram(externalProgram)
+            if (blendProgram != 0) GLES20.glDeleteProgram(blendProgram)
+            externalTextureId = -1
+            externalProgram = 0
+            blendProgram = 0
+        }
+
+        private fun createProgram(vertex: String, fragment: String): Int {
+            val vertexShader = loadShader(GLES20.GL_VERTEX_SHADER, vertex)
+            val fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, fragment)
+            val program = GLES20.glCreateProgram()
+            GLES20.glAttachShader(program, vertexShader)
+            GLES20.glAttachShader(program, fragmentShader)
+            GLES20.glLinkProgram(program)
+            val status = IntArray(1)
+            GLES20.glGetProgramiv(program, GLES20.GL_LINK_STATUS, status, 0)
+            val log = GLES20.glGetProgramInfoLog(program)
+            GLES20.glDeleteShader(vertexShader)
+            GLES20.glDeleteShader(fragmentShader)
+            check(status[0] == GLES20.GL_TRUE) { "Falha ao vincular shader: $log" }
+            return program
+        }
+
+        private fun loadShader(type: Int, source: String): Int {
+            val shader = GLES20.glCreateShader(type)
+            GLES20.glShaderSource(shader, source)
+            GLES20.glCompileShader(shader)
+            val status = IntArray(1)
+            GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
+            val log = GLES20.glGetShaderInfoLog(shader)
+            check(status[0] == GLES20.GL_TRUE) { "Falha ao compilar shader: $log" }
+            return shader
+        }
+
+        private fun checkGl(operation: String) {
+            val error = GLES20.glGetError()
+            check(error == GLES20.GL_NO_ERROR) { "Erro OpenGL ao $operation: 0x${error.toString(16)}" }
+        }
+
+        companion object {
+            private const val STRIDE_BYTES = 4 * 4
+            private val VERTICES = floatArrayOf(
+                -1f, -1f, 0f, 0f,
+                1f, -1f, 1f, 0f,
+                -1f, 1f, 0f, 1f,
+                1f, 1f, 1f, 1f
+            )
+            private const val VERTEX_SHADER = "attribute vec4 aPosition; attribute vec4 aTextureCoord; uniform mat4 uTextureMatrix; varying vec2 vTextureCoord; void main(){ gl_Position=aPosition; vTextureCoord=(uTextureMatrix*aTextureCoord).xy; }"
+            private const val EXTERNAL_FRAGMENT_SHADER = """#extension GL_OES_EGL_image_external : require
+precision mediump float;
+varying vec2 vTextureCoord;
+uniform samplerExternalOES sTexture;
+uniform vec2 uTexel;
+uniform float uDenoise;
+uniform float uSharpen;
+uniform float uDeblock;
+uniform float uBrightness;
+uniform float uContrast;
+uniform float uSaturation;
+uniform float uTemperature;
+uniform float uTint;
+void main(){
+    vec3 center=texture2D(sTexture,vTextureCoord).rgb;
+    vec3 color=center;
+    if(uDenoise+uSharpen+uDeblock>0.001){
+        vec3 nearBlur=(
+            texture2D(sTexture,vTextureCoord+vec2(uTexel.x,0.0)).rgb+
+            texture2D(sTexture,vTextureCoord-vec2(uTexel.x,0.0)).rgb+
+            texture2D(sTexture,vTextureCoord+vec2(0.0,uTexel.y)).rgb+
+            texture2D(sTexture,vTextureCoord-vec2(0.0,uTexel.y)).rgb
+        )*0.25;
+        vec3 wideBlur=(
+            texture2D(sTexture,vTextureCoord+vec2(uTexel.x*2.0,0.0)).rgb+
+            texture2D(sTexture,vTextureCoord-vec2(uTexel.x*2.0,0.0)).rgb+
+            texture2D(sTexture,vTextureCoord+vec2(0.0,uTexel.y*2.0)).rgb+
+            texture2D(sTexture,vTextureCoord-vec2(0.0,uTexel.y*2.0)).rgb
+        )*0.25;
+        color=mix(center,nearBlur,uDenoise*0.55);
+        color=mix(color,wideBlur,uDeblock*0.30);
+        color+=(center-nearBlur)*uSharpen*0.75;
+    }
+    color=(color-0.5)*uContrast+0.5+uBrightness;
+    float luma=dot(color,vec3(0.2126,0.7152,0.0722));
+    color=mix(vec3(luma),color,uSaturation);
+    float cool=max(-uTemperature,0.0);
+    float warm=max(uTemperature,0.0);
+    color.r*=1.0+warm*0.16-cool*0.10;
+    color.b*=1.0+cool*0.22-warm*0.12;
+    float magenta=max(uTint,0.0);
+    float green=max(-uTint,0.0);
+    color.r+=magenta*0.025;
+    color.b+=magenta*0.025;
+    color.g+=green*0.035;
+    gl_FragColor=vec4(clamp(color,0.0,1.0),1.0);
+}"""
+            private const val BLEND_FRAGMENT_SHADER = """precision mediump float;
+varying vec2 vTextureCoord;
+uniform sampler2D uPrevious;
+uniform sampler2D uCurrent;
+uniform float uAlpha;
+void main(){
+    float eased=uAlpha*uAlpha*(3.0-2.0*uAlpha);
+    gl_FragColor=mix(texture2D(uPrevious,vTextureCoord),texture2D(uCurrent,vTextureCoord),eased);
+}"""
+        }
+    }
+
+    companion object {
+        private const val CODEC_TIMEOUT_US = 10_000L
+        private const val MAX_ENCODER_IDLE_POLLS = 3_000
+        private const val FRAME_WAIT_MS = 5_000L
+        private const val AUDIO_TOLERANCE_US = 250_000L
+        private const val EGL_RECORDABLE_ANDROID = 0x3142
+        private const val RGBA_BYTES_PER_PIXEL = 4L
+        private const val FRAME_TEXTURE_COUNT = 2L
+        private const val MAX_GPU_FRAME_BYTES = 160L * 1024L * 1024L
+    }
+}

@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.steadyvault.camera.ui.components.SquareFrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_media_tile"
+    android:clipToOutline="true"
+    android:minWidth="96dp"
+    android:minHeight="96dp">
+
+    <ImageView
+        android:id="@+id/mediaThumbnail"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_margin="0dp"
+        android:background="@color/background_elevated"
+        android:contentDescription="Miniatura da mídia"
+        android:scaleType="centerCrop" />
+
+    <TextView
+        android:id="@+id/mediaDuration"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:minWidth="44dp"
+        android:gravity="center"
+        android:includeFontPadding="false"
+        android:layout_gravity="bottom|start"
+        android:layout_margin="7dp"
+        android:background="@drawable/bg_zoom_badge"
+        android:paddingStart="7dp"
+        android:paddingTop="3dp"
+        android:paddingEnd="7dp"
+        android:paddingBottom="3dp"
+        android:textColor="@color/text_primary"
+        android:textSize="10sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/mediaProcessing"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="7dp"
+        android:background="@drawable/bg_zoom_badge"
+        android:paddingStart="7dp"
+        android:paddingTop="3dp"
+        android:paddingEnd="7dp"
+        android:paddingBottom="3dp"
+        android:textColor="@color/accent"
+        android:textSize="9sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/mediaMore"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="5dp"
+        android:background="@drawable/bg_media_more"
+        android:contentDescription="Mais opções"
+        android:drawableStart="@drawable/ic_more_vertical"
+        android:drawablePadding="0dp"
+        android:drawableTint="@color/text_primary"
+        android:gravity="center"
+        android:includeFontPadding="false"
+        android:padding="0dp"
+        android:text=""
+        android:textColor="@color/text_primary" />
+
+    <View
+        android:id="@+id/mediaSelectionOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_media_selected"
+        android:clickable="false"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/mediaSelectionCheck"
+        android:layout_width="30dp"
+        android:layout_height="30dp"
+        android:layout_gravity="top|start"
+        android:layout_margin="7dp"
+        android:background="@drawable/bg_media_check"
+        android:gravity="center"
+        android:includeFontPadding="false"
+        android:text="✓"
+        android:textColor="@color/background"
+        android:textSize="17sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+</com.steadyvault.camera.ui.components.SquareFrameLayout>

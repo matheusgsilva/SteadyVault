@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SteadyVault</string>
+    <string name="share_link_browser_label">SteadyVault — abrir link</string>
+
+    <string name="quick_camera_name">Câmera</string>
+    <string name="quick_scanner_name">Scanner</string>
+    <string name="quick_documents_name">Documentos</string>
+    <string name="quick_notes_name">Notas</string>
+    <string name="quick_video_name">Vídeo</string>
+    <string name="quick_recorder_name">Gravador</string>
+    <string name="quick_monitor_name">Monitor</string>
+    <string name="quick_calendar_name">Agenda</string>
+
+    <string name="widget_expanded_name">SteadyVault — controles</string>
+    <string name="widget_compact_name">SteadyVault — compacto</string>
+    <string name="widget_lock_screen_name">SteadyVault — tela de bloqueio</string>
+
+    <string name="widget_expanded_description">Zoom de foto e vídeo, sequência, foto, gravar e parar</string>
+    <string name="widget_compact_description">Sequência, foto, gravar e parar</string>
+    <string name="widget_lock_screen_description">Zoom, foto, gravar e parar em uma barra compacta para a tela de bloqueio</string>
+
+    <string name="sequence_content_description">Sequência</string>
+    <string name="photo_content_description">Foto</string>
+    <string name="record_content_description">Gravar</string>
+    <string name="stop_content_description">Parar</string>
+    <string name="zoom_content_description">Alterar zoom da foto e do vídeo sem abrir preview</string>
+    <string name="widget_zoom_preview">1x</string>
+</resources>

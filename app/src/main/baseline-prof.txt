@@ -1,0 +1,7 @@
+Lcom/steadyvault/camera/SteadyVaultApplication;
+Lcom/steadyvault/camera/ui/capture/CaptureActivity;
+Lcom/steadyvault/camera/capture/service/CaptureService;
+Lcom/steadyvault/camera/capture/service/RecordingServiceRouter;
+Lcom/steadyvault/camera/capture/recorder/HardwareRecorder;
+Lcom/steadyvault/camera/core/settings/CaptureSettings;
+Lcom/steadyvault/camera/core/capability/CaptureCapabilityMatrix;

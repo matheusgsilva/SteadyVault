@@ -1,0 +1,314 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/optimizerRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/background"
+    android:fillViewport="true"
+    android:clipToPadding="false"
+    android:overScrollMode="never"
+    android:scrollbars="none">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:id="@+id/optimizerBackButton"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:gravity="center_vertical"
+            android:text="‹  Voltar"
+            android:textColor="@color/accent"
+            android:textSize="18sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Melhorar e reparar vídeo"
+            android:textColor="@color/text_primary"
+            android:textSize="26sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/optimizerSourceInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="@color/text_secondary"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/optimizerSmartButton"
+            android:layout_width="match_parent"
+            android:layout_height="54dp"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_oneui_button_primary"
+            android:gravity="center"
+            android:text="Analisar vídeo e aplicar configuração recomendada"
+            android:textColor="@color/background"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/optimizerRecommendation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_card"
+            android:padding="14dp"
+            android:text="A análise é feita no aparelho. Ela mede fluidez, lacunas, resolução, FPS e bitrate antes de sugerir mudanças."
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+
+        <TextView style="@style/SettingsLabel" android:text="Objetivo da otimização" />
+        <com.steadyvault.camera.ui.components.OneUiSpinner android:id="@+id/optimizerPreset" style="@style/SettingsSpinner" />
+
+        <TextView style="@style/SettingsLabel" android:text="Como corrigir falhas de fluidez" />
+        <com.steadyvault.camera.ui.components.OneUiSpinner android:id="@+id/optimizerFrameRepair" style="@style/SettingsSpinner" />
+
+        <TextView style="@style/SettingsLabel" android:text="Formato do novo arquivo" />
+        <com.steadyvault.camera.ui.components.OneUiSpinner android:id="@+id/optimizerCodec" style="@style/SettingsSpinner" />
+
+        <TextView style="@style/SettingsLabel" android:text="Prioridade entre qualidade e tamanho" />
+        <com.steadyvault.camera.ui.components.OneUiSpinner android:id="@+id/optimizerRateMode" style="@style/SettingsSpinner" />
+
+        <TextView style="@style/SettingsLabel" android:text="Tamanho da imagem final" />
+        <com.steadyvault.camera.ui.components.OneUiSpinner android:id="@+id/optimizerResolution" style="@style/SettingsSpinner" />
+
+        <TextView style="@style/SettingsLabel" android:text="Fluidez final (FPS)" />
+        <com.steadyvault.camera.ui.components.OneUiSpinner android:id="@+id/optimizerFps" style="@style/SettingsSpinner" />
+
+        <TextView style="@style/SettingsLabel" android:text="Bitrate máximo em Mbps (0 usa o recomendado)" />
+        <EditText
+            android:id="@+id/optimizerBitrate"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:background="@drawable/bg_oneui_field"
+            android:inputType="number"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:text="0"
+            android:textColor="@color/text_primary" />
+
+        <TextView
+            android:id="@+id/optimizerAutoBitrateButton"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_oneui_button_secondary"
+            android:gravity="center"
+            android:text="Usar bitrate seguro para esta configuração"
+            android:textColor="@color/accent"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="22dp"
+            android:text="Ajustes visuais opcionais"
+            android:textColor="@color/text_primary"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView style="@style/SettingsLabel" android:text="Suavizar granulação / ruído" />
+        <com.steadyvault.camera.ui.components.OneUiSpinner android:id="@+id/optimizerDenoise" style="@style/SettingsSpinner" />
+
+        <TextView style="@style/SettingsLabel" android:text="Disfarçar blocos de compressão" />
+        <com.steadyvault.camera.ui.components.OneUiSpinner android:id="@+id/optimizerDeblock" style="@style/SettingsSpinner" />
+
+        <TextView style="@style/SettingsLabel" android:text="Recuperar nitidez aparente" />
+        <com.steadyvault.camera.ui.components.OneUiSpinner android:id="@+id/optimizerSharpen" style="@style/SettingsSpinner" />
+
+        <TextView style="@style/SettingsLabel" android:text="Brilho: negativo escurece, positivo clareia (-25 a 25)" />
+        <EditText
+            android:id="@+id/optimizerBrightness"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:background="@drawable/bg_oneui_field"
+            android:inputType="numberSigned"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:text="0"
+            android:textColor="@color/text_primary" />
+
+        <TextView style="@style/SettingsLabel" android:text="Contraste: 100 mantém o original (75 a 135)" />
+        <EditText
+            android:id="@+id/optimizerContrast"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:background="@drawable/bg_oneui_field"
+            android:inputType="number"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:text="100"
+            android:textColor="@color/text_primary" />
+
+        <TextView style="@style/SettingsLabel" android:text="Saturação: 100 mantém as cores (70 a 140)" />
+        <EditText
+            android:id="@+id/optimizerSaturation"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:background="@drawable/bg_oneui_field"
+            android:inputType="number"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:text="100"
+            android:textColor="@color/text_primary" />
+
+        <TextView style="@style/SettingsLabel" android:text="Temperatura: negativo esfria e reduz amarelo (-50 a 50)" />
+        <EditText
+            android:id="@+id/optimizerTemperature"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:background="@drawable/bg_oneui_field"
+            android:inputType="numberSigned"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:text="0"
+            android:textColor="@color/text_primary" />
+
+        <TextView style="@style/SettingsLabel" android:text="Matiz: negativo adiciona verde, positivo adiciona magenta (-30 a 30)" />
+        <EditText
+            android:id="@+id/optimizerTint"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:background="@drawable/bg_oneui_field"
+            android:inputType="numberSigned"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:text="0"
+            android:textColor="@color/text_primary" />
+
+        <TextView style="@style/SettingsLabel" android:text="Limite de quadros corrigidos por falha (1 a 30)" />
+        <EditText
+            android:id="@+id/optimizerMaxInterpolation"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:background="@drawable/bg_oneui_field"
+            android:inputType="number"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:text="8"
+            android:textColor="@color/text_primary" />
+
+        <TextView
+            android:id="@+id/optimizerResetFiltersButton"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_oneui_button_secondary"
+            android:gravity="center"
+            android:text="Remover todos os ajustes visuais"
+            android:textColor="@color/accent"
+            android:textStyle="bold" />
+
+        <Switch
+            android:id="@+id/optimizerAiAssisted"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_oneui_field"
+            android:paddingStart="14dp"
+            android:paddingEnd="12dp"
+            android:checked="true"
+            android:text="Análise local para escolher filtros conservadores e evitar rastros"
+            android:thumbTint="@color/switch_thumb_tint"
+            android:trackTint="@color/switch_track_tint"
+            android:textColor="@color/text_primary" />
+
+        <Switch
+            android:id="@+id/optimizerKeepAudio"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/bg_oneui_field"
+            android:paddingStart="14dp"
+            android:paddingEnd="12dp"
+            android:checked="true"
+            android:text="Manter o áudio do vídeo"
+            android:thumbTint="@color/switch_thumb_tint"
+            android:trackTint="@color/switch_track_tint"
+            android:textColor="@color/text_primary" />
+
+        <Switch
+            android:id="@+id/optimizerThermalProtection"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_oneui_field"
+            android:paddingStart="14dp"
+            android:paddingEnd="12dp"
+            android:checked="true"
+            android:text="Proteger o aparelho: pausar se a temperatura ficar alta"
+            android:thumbTint="@color/switch_thumb_tint"
+            android:trackTint="@color/switch_track_tint"
+            android:textColor="@color/text_primary" />
+
+        <Switch
+            android:id="@+id/optimizerReplaceOriginal"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_oneui_field"
+            android:paddingStart="14dp"
+            android:paddingEnd="12dp"
+            android:text="Substituir o original somente se o novo vídeo passar em todas as validações"
+            android:thumbTint="@color/switch_thumb_tint"
+            android:trackTint="@color/switch_track_tint"
+            android:textColor="@color/text_primary" />
+
+        <TextView
+            android:id="@+id/optimizerWarning"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="O processamento é local e preserva o original por padrão. A mistura de quadros pode suavizar falhas curtas, mas pode criar rastro em movimentos rápidos. O app limita correções agressivas e valida duração, dimensões, áudio e decodificação antes de substituir qualquer arquivo."
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp" />
+
+        <ProgressBar
+            android:id="@+id/optimizerProgress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="8dp"
+            android:layout_marginTop="22dp"
+            android:max="100"
+            android:progress="0"
+            android:progressTint="@color/accent"
+            android:progressBackgroundTint="@color/surface_border" />
+
+        <TextView
+            android:id="@+id/optimizerStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:padding="12dp"
+            android:text="Pronto"
+            android:textColor="@color/text_secondary" />
+
+        <TextView
+            android:id="@+id/optimizerStartButton"
+            android:layout_width="match_parent"
+            android:layout_height="60dp"
+            android:background="@drawable/bg_oneui_button_primary"
+            android:gravity="center"
+            android:text="Criar vídeo otimizado"
+            android:textColor="@color/background"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/optimizerCancelButton"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_oneui_button_danger"
+            android:gravity="center"
+            android:text="Cancelar processamento"
+            android:textColor="@color/record_red"
+            android:textStyle="bold"
+            android:visibility="gone" />
+    </LinearLayout>
+</ScrollView>

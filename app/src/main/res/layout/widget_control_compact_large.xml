@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widgetRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_widget_discreet_bar"
+    android:gravity="center"
+    android:orientation="horizontal"
+    android:paddingStart="1dp"
+    android:paddingTop="2dp"
+    android:paddingEnd="1dp"
+    android:paddingBottom="2dp">
+
+    <ImageView
+        android:id="@+id/widgetSequence"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
+        android:alpha="1"
+        android:background="@drawable/bg_widget_expanded_button_cyan"
+        android:contentDescription="@string/sequence_content_description"
+        android:padding="18dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_burst" />
+
+    <ImageView
+        android:id="@+id/widgetPhoto"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
+        android:alpha="1"
+        android:layout_marginStart="2dp"
+        android:background="@drawable/bg_widget_expanded_button_green"
+        android:contentDescription="@string/photo_content_description"
+        android:padding="18dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_camera" />
+
+    <ImageView
+        android:id="@+id/widgetStart"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
+        android:alpha="1"
+        android:layout_marginStart="2dp"
+        android:background="@drawable/bg_widget_expanded_button_teal"
+        android:contentDescription="@string/record_content_description"
+        android:padding="18dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_record" />
+
+    <ImageView
+        android:id="@+id/widgetStop"
+        android:layout_width="58dp"
+        android:layout_height="58dp"
+        android:alpha="1"
+        android:layout_marginStart="2dp"
+        android:background="@drawable/bg_widget_expanded_button_disabled"
+        android:contentDescription="@string/stop_content_description"
+        android:enabled="false"
+        android:padding="18dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_widget_stop_off" />
+</LinearLayout>

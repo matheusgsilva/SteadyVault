@@ -1,0 +1,288 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
+    <uses-feature android:name="android.hardware.camera.any" android:required="true" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <application
+        android:name=".SteadyVaultApplication"
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
+        android:extractNativeLibs="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SteadyVault">
+        <profileable android:shell="true" />
+        <provider
+            android:name=".core.storage.SteadyVaultFileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/steadyvault_file_paths" />
+        </provider>
+
+
+        <activity android:name=".ui.vault.ShareToVaultActivity" android:exported="true" android:label="Importar para o cofre" android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".ui.browser.PrivateBrowserActivity"
+            android:documentLaunchMode="never"
+            android:exported="true"
+            android:label="@string/share_link_browser_label"
+            android:launchMode="singleTask"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".ui.apps.ProtectedAppsActivity" android:exported="false" android:launchMode="singleTop" android:label="Apps protegidos" android:screenOrientation="portrait" />
+        <activity android:name=".ui.vault.VaultTrashActivity" android:exported="false" android:label="Lixeira dos cofres" android:screenOrientation="portrait" />
+        <activity android:name=".ui.vault.SecondaryVaultActivity" android:exported="false" android:label="Cofre secundário" android:screenOrientation="portrait" />
+        <activity android:name=".ui.vault.TertiaryVaultActivity" android:exported="false" android:label="Cofre terciário" android:screenOrientation="portrait" />
+        <activity android:name=".ui.vault.VideoOptimizationActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".ui.vault.MediaPlayerActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".ui.vault.PrimaryVaultActivity" android:exported="false" android:launchMode="singleTop" android:screenOrientation="portrait" />
+        <activity android:name=".ui.settings.SettingsActivity" android:exported="false" android:launchMode="singleTop" android:screenOrientation="portrait" />
+        <activity android:name=".ui.settings.DiagnosticsActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".ui.settings.StorageManagementActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity android:name=".ui.vault.RecoveryActivity" android:exported="false" android:screenOrientation="portrait" />
+        <activity
+            android:name=".ui.capture.DiscreetRecordingActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:showWhenLocked="true"
+            android:theme="@style/Theme.SteadyVault.Black" />
+        <activity
+            android:name=".ui.capture.CaptureActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".ui.capture.PhotoLauncherActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+        <activity
+            android:name=".ui.capture.VideoLauncherActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+
+        <!-- Optional launcher aliases. Only the profile chosen in Settings is enabled. -->
+        <activity-alias
+            android:name=".ui.capture.CameraPhotoAlias"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_quick_camera"
+            android:label="@string/quick_camera_name"
+            android:targetActivity=".ui.capture.PhotoLauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.capture.ScannerPhotoAlias"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_quick_scanner"
+            android:label="@string/quick_scanner_name"
+            android:targetActivity=".ui.capture.PhotoLauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.capture.DocumentsPhotoAlias"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_quick_documents"
+            android:label="@string/quick_documents_name"
+            android:targetActivity=".ui.capture.PhotoLauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.capture.NotesPhotoAlias"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_quick_notes"
+            android:label="@string/quick_notes_name"
+            android:targetActivity=".ui.capture.PhotoLauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.capture.VideoCaptureAlias"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_quick_video"
+            android:label="@string/quick_video_name"
+            android:targetActivity=".ui.capture.VideoLauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.capture.RecorderVideoAlias"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_quick_recorder"
+            android:label="@string/quick_recorder_name"
+            android:targetActivity=".ui.capture.VideoLauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.capture.MonitorVideoAlias"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_quick_monitor"
+            android:label="@string/quick_monitor_name"
+            android:targetActivity=".ui.capture.VideoLauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".ui.capture.CalendarVideoAlias"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_quick_calendar"
+            android:label="@string/quick_calendar_name"
+            android:targetActivity=".ui.capture.VideoLauncherActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <service
+            android:name=".capture.service.CaptureService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="camera|microphone" />
+        <service
+            android:name=".photo.service.PhotoService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
+        <service
+            android:name=".processing.service.VideoOptimizationService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProcessing" />
+        <service
+            android:name=".ui.vault.VaultImportService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync" />
+        <service
+            android:name=".ui.apps.VaultScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <receiver android:name=".core.state.CaptureStateReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="com.steadyvault.camera.STATE" />
+            </intent-filter>
+        </receiver>
+        <receiver android:name=".widgets.WidgetPinnedReceiver" android:exported="false" />
+        <receiver android:name=".widgets.WidgetStartReceiver" android:exported="false" />
+        <receiver android:name=".widgets.WidgetZoomReceiver" android:exported="false" />
+        <receiver android:name=".ui.apps.ProtectedAppsPackageReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_ADDED" />
+                <action android:name="android.intent.action.PACKAGE_REMOVED" />
+                <action android:name="android.intent.action.PACKAGE_CHANGED" />
+                <data android:scheme="package" />
+            </intent-filter>
+        </receiver>
+
+        <receiver android:name=".widgets.ExpandedControlWidget" android:exported="true" android:icon="@mipmap/ic_launcher" android:label="@string/widget_expanded_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_control_expanded_info" />
+        </receiver>
+        <receiver android:name=".widgets.CompactControlWidget" android:exported="true" android:icon="@mipmap/ic_launcher" android:label="@string/widget_compact_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_control_compact_info" />
+        </receiver>
+        <receiver android:name=".widgets.LockScreenControlWidget" android:exported="true" android:icon="@mipmap/ic_launcher" android:label="@string/widget_lock_screen_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_control_lock_screen_info" />
+        </receiver>
+    </application>
+</manifest>
