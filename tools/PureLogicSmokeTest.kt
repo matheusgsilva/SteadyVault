@@ -192,8 +192,12 @@ fun main() {
         "salto distante deve retomar pelo quadro sincronizado"
     )
     expect(
-        ScrubSeekPolicy.chooseCommitMode(1_000, 20_000, resumePlayback = false) == ScrubSeekPolicy.Mode.EXACT,
-        "vídeo pausado e corte devem preservar o quadro exato"
+        ScrubSeekPolicy.chooseCommitMode(1_000, 20_000, resumePlayback = false) == ScrubSeekPolicy.Mode.FAST_SYNC,
+        "scrub longo pausado deve continuar responsivo"
+    )
+    expect(
+        ScrubSeekPolicy.chooseCommitMode(1_000, 20_000, resumePlayback = false, precisionRequired = true) == ScrubSeekPolicy.Mode.EXACT,
+        "corte deve preservar o quadro exato"
     )
     val scrubQueue = LatestScrubTargetQueue()
     expect(scrubQueue.offer(1_000), "primeiro destino agenda o frame da tela")

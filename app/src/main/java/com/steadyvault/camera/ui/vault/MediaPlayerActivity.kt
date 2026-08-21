@@ -577,7 +577,7 @@ class MediaPlayerActivity : ComponentActivity() {
     }
 
     private fun endScrubPreview(finalTargetMs: Int? = null, resumePlayback: Boolean = false) {
-        videoView.endPreviewSeek(finalTargetMs, resumePlayback)
+        videoView.endPreviewSeek(finalTargetMs, resumePlayback, precise = trimMode)
     }
 
     private fun requestScrubPreviewFrame(targetMs: Int) {
@@ -651,7 +651,7 @@ class MediaPlayerActivity : ComponentActivity() {
         scrubCommitGeneration++
         seekCommitPending = true
         playbackCompleted = false
-        videoView.seekFromTimeline(target, shouldResume)
+        videoView.seekFromTimeline(target, shouldResume, precise = trimMode)
         seekBar.progress = target.coerceAtMost(seekBar.max)
         updateVideoTime(target, duration)
         playPauseButton.setImageResource(if (shouldResume) R.drawable.ic_pause else R.drawable.ic_play)
@@ -1064,10 +1064,13 @@ class MediaPlayerActivity : ComponentActivity() {
         val lower = if (trimMode) trimStartMs else 0
         val upper = if (trimMode) trimEndMs else videoView.duration.coerceAtLeast(0)
         val target = (videoView.currentPosition + deltaMs).coerceIn(lower, upper.coerceAtLeast(lower))
-        videoView.seekTo(target)
+        val shouldResume = videoView.isPlaybackRequested() && !trimMode
+        playbackCompleted = false
+        videoView.seekFromTimeline(target, shouldResume, precise = trimMode)
         seekBar.progress = target
         if (trimMode) trimRangeView.setPlayhead(target.toFloat() / currentVideoDuration())
         updateVideoTime(target, videoDurationMs.coerceAtLeast(videoView.duration))
+        updatePlayPauseButton(shouldResume)
     }
 
     private fun applyInitialPlaybackSpeed() {
@@ -1524,7 +1527,7 @@ class MediaPlayerActivity : ComponentActivity() {
         private const val VIEWER_PREFERENCES = "steadyvault_viewer_preferences"
         private const val KEY_GESTURE_HINT_SHOWN = "gesture_hint_shown"
         private const val SEEK_STEP_MS = 10_000
-        private const val DIRECT_SEEK_SETTLE_MS = 180L
+        private const val DIRECT_SEEK_SETTLE_MS = 80L
         private const val TRIM_MIN_SPAN_MS = 500
         private const val SCRUB_SETTLE_MS = 45L
         private const val PRECISION_STATUS_MS = 1_500L

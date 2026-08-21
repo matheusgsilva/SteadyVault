@@ -1,3 +1,14 @@
+## 1.8.228 — 2026-08-21
+
+- Torna o seek interativo do player imediato: toque na timeline e botões ±10 s usam busca rápida por quadro sincronizado, evitando decodificar um GOP inteiro em 4K60 antes de responder.
+- Mantém busca exata somente em operações de precisão, como corte; após cada busca rápida o Media3 volta ao modo exato para não contaminar operações posteriores.
+- No fallback VLC, usa o modo de seek rápido para navegação normal e preserva seek preciso quando necessário.
+- Remove a segunda busca exata automática que era disparada durante scrub rápido, evitando fila duplicada de decodificação.
+- Redefine a amostra do monitor de saúde ao saltar na timeline para que um seek pesado não seja confundido com travamento do decoder.
+- Adia a análise detalhada de cadência enquanto o usuário acabou de abrir/navegar no vídeo, reduzindo disputa de I/O com o seek.
+- Mantém o player pausado mostrando o novo ponto após seek e conserva a reprodução quando o vídeo já estava tocando.
+- Não altera câmera, encoder, FPS, áudio, timestamps ou qualquer parte do pipeline de gravação.
+
 ## 1.8.226 — 2026-08-20
 
 - Remove a paginação acionada pelo scroll dos três cofres: a ordenação passa a trabalhar sobre a coleção completa sem trocar/reinserir páginas ao chegar ao fim da grade.

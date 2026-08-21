@@ -91,6 +91,7 @@ class ZoomableVideoView @JvmOverloads constructor(
     private var prepared = false
     private var playWhenReady = false
     private var pendingSeekMs = 0L
+    private var pendingSeekFast = false
     private var sourceFrameRate = 0f
     private var sourceVideoWidth = 0
     private var sourceVideoHeight = 0
@@ -122,9 +123,7 @@ class ZoomableVideoView @JvmOverloads constructor(
     private var previewSeekOriginMs = -1L
     private var lastPreviewSeekMs = -1L
     private var lastPreviewRequestRealtimeMs = 0L
-    private var restoreExactSeekAfterFastCommit = false
     private val previewRenderQueue = LatestScrubTargetQueue()
-    private val previewExactFrameQueue = LatestScrubTargetQueue()
     private var analysisGeneration = 0L
 
     private var errorListener: ((Throwable?) -> Unit)? = null
@@ -210,18 +209,6 @@ class ZoomableVideoView @JvmOverloads constructor(
             applySurfaceFrameRate()
         }
 
-        override fun onPositionDiscontinuity(
-            oldPosition: Player.PositionInfo,
-            newPosition: Player.PositionInfo,
-            reason: Int
-        ) {
-            if (reason != Player.DISCONTINUITY_REASON_SEEK || !restoreExactSeekAfterFastCommit) return
-            post {
-                if (!restoreExactSeekAfterFastCommit || previewSeekActive) return@post
-                restoreExactSeekAfterFastCommit = false
-                runCatching { media3Player?.setSeekParameters(SeekParameters.EXACT) }
-            }
-        }
     }
 
     private fun handleVlcEvent(eventType: Int, buffering: Float = 0f, voutCount: Int = 0, timeChangedMs: Long = -1L) {
@@ -270,8 +257,9 @@ class ZoomableVideoView @JvmOverloads constructor(
                 applyVlcPlaybackSpeed()
                 applyVlcVideoLayout()
                 if (pendingSeekMs > 0L) {
-                    runCatching { vlcPlayer?.time = pendingSeekMs }
+                    runCatching { vlcPlayer?.setTime(pendingSeekMs, pendingSeekFast) }
                     pendingSeekMs = 0L
+                    pendingSeekFast = false
                 }
                 if (!playWhenReady && !previewFrameRequested) {
                     runCatching { vlcPlayer?.pause() }
@@ -371,18 +359,6 @@ class ZoomableVideoView @JvmOverloads constructor(
             healthLastCheckMs = now
             healthLastPositionMs = position
             postDelayed(this, HEALTH_CHECK_MS)
-        }
-    }
-
-    private val previewExactSeekRunnable = Runnable {
-        val target = previewExactFrameQueue.consume()
-        if (
-            previewSeekActive &&
-            engine == PlaybackEngine.MEDIA3 &&
-            target != LatestScrubTargetQueue.NO_TARGET &&
-            target == lastPreviewSeekMs
-        ) {
-            previewSeekMedia3(target, SeekParameters.EXACT)
         }
     }
 
@@ -584,6 +560,7 @@ class ZoomableVideoView @JvmOverloads constructor(
         prepared = false
         playWhenReady = false
         pendingSeekMs = 0L
+        pendingSeekFast = false
         engine = PlaybackEngine.VLC
         media3Profile = Media3Profile.PERFORMANCE
         recoveryPolicy.reset()
@@ -596,7 +573,6 @@ class ZoomableVideoView @JvmOverloads constructor(
         vlcVideoOutputReady = false
         vlcMediaAssigned = false
         previewFrameRequested = false
-        restoreExactSeekAfterFastCommit = false
         vlcBufferPercentage = 0
         analysisGeneration++
         val metadata = SourceMetadata(0f, 0, 0)
@@ -714,7 +690,6 @@ class ZoomableVideoView @JvmOverloads constructor(
 
     fun beginPreviewSeek() {
         if (source == null) return
-        removeCallbacks(previewExactSeekRunnable)
         cancelPreviewRender()
         previewSeekActive = true
         previewSeekGeneration++
@@ -722,8 +697,6 @@ class ZoomableVideoView @JvmOverloads constructor(
         previewSeekOriginMs = currentPosition.toLong().coerceAtLeast(0L)
         lastPreviewSeekMs = previewSeekOriginMs
         lastPreviewRequestRealtimeMs = SystemClock.uptimeMillis()
-        restoreExactSeekAfterFastCommit = false
-        previewExactFrameQueue.clear()
         stopHealthMonitor()
         cancelBufferingRecovery()
         cancelFirstFrameWatchdog()
@@ -739,6 +712,7 @@ class ZoomableVideoView @JvmOverloads constructor(
     fun previewSeekTo(position: Int) {
         val target = snapPreviewPosition(position).toLong()
         pendingSeekMs = target
+        pendingSeekFast = false
         previewFrameRequested = true
         playbackEnded = false
         terminalFailure = false
@@ -761,59 +735,45 @@ class ZoomableVideoView @JvmOverloads constructor(
             frameRate = sourceFrameRate
         )
         lastPreviewSeekMs = target
+        pendingSeekFast = seekMode == ScrubSeekPolicy.Mode.FAST_SYNC
         when (engine) {
-            PlaybackEngine.MEDIA3 -> {
-                if (seekMode == ScrubSeekPolicy.Mode.FAST_SYNC) {
-                    previewSeekMedia3(target, SeekParameters.CLOSEST_SYNC)
-                    if (previewExactFrameQueue.offer(target)) {
-                        postDelayed(previewExactSeekRunnable, PREVIEW_EXACT_REFRESH_MS)
-                    }
-                } else {
-                    removeCallbacks(previewExactSeekRunnable)
-                    previewExactFrameQueue.clear()
-                    previewSeekMedia3(target, SeekParameters.EXACT)
-                }
-            }
-            PlaybackEngine.VLC -> previewSeekVlc(target)
+            PlaybackEngine.MEDIA3 -> previewSeekMedia3(
+                target,
+                if (seekMode == ScrubSeekPolicy.Mode.FAST_SYNC) SeekParameters.CLOSEST_SYNC else SeekParameters.EXACT
+            )
+            PlaybackEngine.VLC -> previewSeekVlc(target, fast = seekMode == ScrubSeekPolicy.Mode.FAST_SYNC)
         }
     }
 
     fun snapPreviewPosition(position: Int): Int =
         ScrubFramePolicy.snapPositionMs(position, duration, sourceFrameRate)
 
-    fun endPreviewSeek(finalPosition: Int? = null, resumePlayback: Boolean = false) {
-        removeCallbacks(previewExactSeekRunnable)
+    fun endPreviewSeek(finalPosition: Int? = null, resumePlayback: Boolean = false, precise: Boolean = false) {
         val pendingRenderTarget = previewRenderQueue.consume().takeIf { it >= 0L }
         cancelPreviewRender()
-        val queuedExactTarget = previewExactFrameQueue.consume()
         val finalTarget = finalPosition?.let { snapPreviewPosition(it).toLong() }
             ?: pendingRenderTarget
-            ?: queuedExactTarget.takeIf { it != LatestScrubTargetQueue.NO_TARGET }
-        restoreExactSeekAfterFastCommit = false
+            ?: lastPreviewSeekMs.takeIf { it >= 0L }
         media3Player?.let { player ->
             runCatching { player.setScrubbingModeEnabled(false) }
         }
         if (finalTarget != null) {
+            val commitMode = ScrubSeekPolicy.chooseCommitMode(
+                startPositionMs = previewSeekOriginMs,
+                targetPositionMs = finalTarget,
+                resumePlayback = resumePlayback,
+                precisionRequired = precise
+            )
+            val fast = commitMode == ScrubSeekPolicy.Mode.FAST_SYNC
             pendingSeekMs = finalTarget
+            pendingSeekFast = fast
             lastPreviewSeekMs = finalTarget
             when (engine) {
-                PlaybackEngine.MEDIA3 -> {
-                    val commitMode = ScrubSeekPolicy.chooseCommitMode(
-                        startPositionMs = previewSeekOriginMs,
-                        targetPositionMs = finalTarget,
-                        resumePlayback = resumePlayback
-                    )
-                    restoreExactSeekAfterFastCommit = commitMode == ScrubSeekPolicy.Mode.FAST_SYNC
-                    previewSeekMedia3(
-                        finalTarget,
-                        if (commitMode == ScrubSeekPolicy.Mode.FAST_SYNC) {
-                            SeekParameters.CLOSEST_SYNC
-                        } else {
-                            SeekParameters.EXACT
-                        }
-                    )
-                }
-                PlaybackEngine.VLC -> previewSeekVlc(finalTarget)
+                PlaybackEngine.MEDIA3 -> previewSeekMedia3(
+                    finalTarget,
+                    if (fast) SeekParameters.CLOSEST_SYNC else SeekParameters.EXACT
+                )
+                PlaybackEngine.VLC -> previewSeekVlc(finalTarget, fast = fast)
             }
         }
         previewSeekActive = false
@@ -822,13 +782,9 @@ class ZoomableVideoView @JvmOverloads constructor(
         previewSeekOriginMs = -1L
         lastPreviewSeekMs = -1L
         lastPreviewRequestRealtimeMs = 0L
-        previewExactFrameQueue.clear()
         media3Player?.let { player ->
             runCatching {
                 player.setScrubbingModeEnabled(false)
-                if (!restoreExactSeekAfterFastCommit) {
-                    player.setSeekParameters(SeekParameters.EXACT)
-                }
                 if (!playWhenReady && !resumePlayback) {
                     player.pause()
                     player.playWhenReady = false
@@ -852,17 +808,18 @@ class ZoomableVideoView @JvmOverloads constructor(
             player.setSeekParameters(seekParameters)
             if (player.playbackState == Player.STATE_IDLE) player.prepare()
             player.seekTo(target)
+            player.setSeekParameters(SeekParameters.EXACT)
         }.onFailure { recoverFromMedia3Failure(it) }
     }
 
-    private fun previewSeekVlc(target: Long) {
+    private fun previewSeekVlc(target: Long, fast: Boolean) {
         val player = vlcPlayer
         if (player == null) {
             requestEngineOpen(preservePosition = true)
             return
         }
         runCatching {
-            player.time = target
+            player.setTime(target, fast)
             if (!playWhenReady && !player.isPlaying) {
                 previewFrameRequested = true
                 requestVlcPlay(player)
@@ -964,7 +921,11 @@ class ZoomableVideoView @JvmOverloads constructor(
             media3Player = player
             playerView.player = player
             player.setMediaItem(MediaItem.fromUri(uri))
-            if (pendingSeekMs > 0L) player.seekTo(pendingSeekMs)
+            if (pendingSeekMs > 0L) {
+                if (pendingSeekFast) player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
+                player.seekTo(pendingSeekMs)
+                player.setSeekParameters(SeekParameters.EXACT)
+            }
             player.playWhenReady = playWhenReady || previewFrameRequested
             player.prepare()
             recoveryTransitionPending = false
@@ -1580,16 +1541,14 @@ class ZoomableVideoView @JvmOverloads constructor(
     }
 
     fun release() {
-        removeCallbacks(previewExactSeekRunnable)
         cancelPreviewRender()
         stopHealthMonitor()
         hostSuspended = false
         playWhenReady = false
         previewFrameRequested = false
         previewSeekActive = false
-        restoreExactSeekAfterFastCommit = false
-        previewExactFrameQueue.clear()
         pendingSeekMs = 0L
+        pendingSeekFast = false
         recoveryTransitionPending = false
         zoomController.resetImmediately()
         releasePlayers(clearSource = true, keepPosition = false, releaseVlcCore = true)
@@ -1746,20 +1705,21 @@ class ZoomableVideoView @JvmOverloads constructor(
         seekInternal(position)
     }
 
-    fun seekFromTimeline(position: Int, resumePlayback: Boolean) {
+    fun seekFromTimeline(position: Int, resumePlayback: Boolean, precise: Boolean = false) {
         val target = position.coerceAtLeast(0).toLong()
         cancelPreviewRender()
-        removeCallbacks(previewExactSeekRunnable)
-        previewExactFrameQueue.clear()
         previewSeekActive = false
         previewFrameRequested = false
-        restoreExactSeekAfterFastCommit = false
         pendingSeekMs = target
+        pendingSeekFast = !precise
         playbackEnded = false
         terminalFailure = false
         playWhenReady = resumePlayback
         cancelBufferingRecovery()
         cancelFirstFrameWatchdog()
+        healthLastPositionMs = target
+        healthLastCheckMs = SystemClock.uptimeMillis()
+        healthStallSamples = 0
 
         when (engine) {
             PlaybackEngine.MEDIA3 -> {
@@ -1767,16 +1727,17 @@ class ZoomableVideoView @JvmOverloads constructor(
                 if (player == null) {
                     requestEngineOpen(preservePosition = true)
                 } else {
-                    runCatching { player.setScrubbingModeEnabled(false) }
-                    runCatching { player.setSeekParameters(SeekParameters.EXACT) }
+                    val seekParameters = if (precise) SeekParameters.EXACT else SeekParameters.CLOSEST_SYNC
                     runCatching {
+                        player.setScrubbingModeEnabled(false)
+                        player.setSeekParameters(seekParameters)
                         if (player.playbackState == Player.STATE_IDLE) player.prepare()
                         player.seekTo(target)
+                        player.setSeekParameters(SeekParameters.EXACT)
                         player.playWhenReady = resumePlayback
                         if (resumePlayback) {
                             player.play()
                             startHealthMonitor()
-                            armFirstFrameWatchdog()
                         } else {
                             player.pause()
                         }
@@ -1785,18 +1746,26 @@ class ZoomableVideoView @JvmOverloads constructor(
             }
 
             PlaybackEngine.VLC -> {
-                val player = vlcPlayer
+                        val player = vlcPlayer
                 if (player == null) {
                     requestEngineOpen(preservePosition = true)
                 } else {
                     runCatching {
-                        player.time = target
+                        player.setTime(target, !precise)
                         if (resumePlayback) {
                             requestVlcPlay(player)
                             startHealthMonitor()
-                            armFirstFrameWatchdog()
                         } else {
-                            player.pause()
+                            previewFrameRequested = true
+                            requestVlcPlay(player)
+                            val generation = ++previewSeekGeneration
+                            postDelayed({
+                                if (generation == previewSeekGeneration && !playWhenReady) {
+                                    previewFrameRequested = false
+                                    runCatching { player.pause() }
+                                    playbackListener?.invoke(false)
+                                }
+                            }, VLC_PREVIEW_SEEK_RENDER_MS)
                         }
                     }.onFailure { recoverFromVlcFailure(it) }
                 }
@@ -1808,6 +1777,7 @@ class ZoomableVideoView @JvmOverloads constructor(
     private fun seekInternal(position: Int) {
         val target = position.coerceAtLeast(0).toLong()
         pendingSeekMs = target
+        pendingSeekFast = false
         if (playbackEnded) {
             terminalFailure = false
             playbackEnded = false
@@ -1905,7 +1875,7 @@ class ZoomableVideoView @JvmOverloads constructor(
         private const val VERY_HIGH_FRAME_RATE_SOURCE_MIN = 180f
         private const val HIGH_REFRESH_OUTPUT_MIN = 90f
         private const val SOURCE_FPS_SAMPLE_COUNT = 120
-        private const val STANDARD_ANALYSIS_DELAY_MS = 350L
+        private const val STANDARD_ANALYSIS_DELAY_MS = 2_000L
         private const val HIGH_FRAME_RATE_ANALYSIS_DELAY_MS = 5_000L
 
         private const val PERFORMANCE_RECOVERY_DELAY_MS = 5_000L
@@ -1928,7 +1898,6 @@ class ZoomableVideoView @JvmOverloads constructor(
         private const val VLC_FIRST_FRAME_CONFIRM_DELAY_MS = 350L
         private const val PREVIEW_FRAME_PAUSE_DELAY_MS = 120L
         private const val VLC_PREVIEW_SEEK_RENDER_MS = 48L
-        private const val PREVIEW_EXACT_REFRESH_MS = 32L
 
         const val ENGINE_MEDIA3 = "Media3"
         const val ENGINE_MEDIA3_COMPATIBILITY = "Media3 compatibilidade"
