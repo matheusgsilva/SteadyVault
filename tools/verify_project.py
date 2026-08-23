@@ -863,7 +863,6 @@ required_architecture = {
     JAVA / "com/steadyvault/camera/storage/vault/PublicMediaRegistry.kt": ("object PublicMediaRegistry", "contentResolver.delete", "OpenableColumns.SIZE"),
     JAVA / "com/steadyvault/camera/storage/vault/AppStorageCatalog.kt": ("ID_PUBLIC_GALLERY", "ID_NO_BACKUP", "PublicMediaRegistry.metrics", "PublicMediaRegistry.removeAll"),
     JAVA / "com/steadyvault/camera/ui/browser/BrowserWebViewConfigurator.kt": ("object BrowserWebViewConfigurator", "WebStorageCompat.deleteBrowsingData", "getCurrentWebViewPackage"),
-    JAVA / "com/steadyvault/camera/core/performance/SustainedPerformanceController.kt": ("setSustainedPerformanceMode", "isSustainedPerformanceModeSupported"),
     JAVA / "com/steadyvault/camera/core/camera/CctWhiteBalanceController.kt": ("COLOR_CORRECTION_MODE_CCT", "COLOR_CORRECTION_COLOR_TEMPERATURE", "COLOR_CORRECTION_COLOR_TINT"),
     JAVA / "com/steadyvault/camera/capture/health/RecordingHealthMonitor.kt": ("class RecordingHealthMonitor", "Handler"),
     JAVA / "com/steadyvault/camera/capture/finalize/RecordingFinalizer.kt": ("object RecordingFinalizer", "FileDurability"),
@@ -904,8 +903,8 @@ for token in ("CaptureRequest.CONTROL_ZOOM_METHOD", "CONTROL_ZOOM_METHOD_ZOOM_RA
         errors.append(f"zoom explícito do Android 16 ausente: {token}")
 
 recorder_text = (JAVA / "com/steadyvault/camera/capture/recorder/HardwareRecorder.kt").read_text(errors="ignore")
-if "MediaFormat.KEY_LATENCY" not in recorder_text:
-    errors.append("encoder de alta taxa perdeu a configuração de baixa latência")
+if "setInteger(MediaFormat.KEY_LATENCY" in recorder_text:
+    errors.append("encoder voltou a forçar latência mínima; gravação deve usar a fila nativa do hardware")
 if "MediaRecorder.AudioSource.MIC" in recorder_text:
     errors.append("gravação de vídeo deve usar fonte de áudio CAMCORDER")
 if "MediaRecorder.AudioSource.CAMCORDER" not in recorder_text:
@@ -923,6 +922,8 @@ for forbidden_token in ("GameManager", "GameState.MODE_GAMEPLAY_UNINTERRUPTIBLE"
         errors.append(f"integração Game State ainda presente: {forbidden_token}")
 if "RealtimePerformanceHint" in all_kotlin_text:
     errors.append("RealtimePerformanceHint não deve entrar no pipeline de captura")
+if "setSustainedPerformanceMode" in all_kotlin_text:
+    errors.append("modo de desempenho sustentado voltou a limitar o pico disponível durante a gravação")
 
 dual_tokens = ("ConcurrentCameraService", "dualCamera", "dual_camera", "dual_video", "câmera dupla", "duas câmeras")
 for source in list(JAVA.rglob("*.kt")) + list(RES.rglob("*.xml")) + [ROOT / "app/src/main/AndroidManifest.xml"]:
@@ -1023,10 +1024,13 @@ for required_token in ("Exportar mídia", "Arquivos do celular", "Compartilhar",
 for required_token in (
     "videoSilenceDurationMs(",
     "lastVideoSampleElapsedMs.set(SystemClock.elapsedRealtime())",
-    "muxerCoordinator.writeVideo(buffer, sampleInfo, outputPtsUs)",
+    "startVideoMuxThread()",
+    "ArrayBlockingQueue<QueuedVideoSample>",
+    "VIDEO_MUX_QUEUE_CAPACITY = 64",
+    "enqueueVideoSample(buffer, sampleInfo, outputPtsUs)",
+    "muxerCoordinator.writeVideo(ByteBuffer.wrap(data, 0, sample.size)",
     "MediaFormat.KEY_OPERATING_RATE",
     "MediaFormat.KEY_PRIORITY, 0",
-    "MediaFormat.KEY_LATENCY",
     "MediaFormat.KEY_ALLOW_FRAME_DROP",
     "directInfo.set(sourceInfo.offset, sourceInfo.size, ptsUs, flags)",
     "writeVideoEndOfStream",
@@ -1067,6 +1071,9 @@ if "Process.THREAD_PRIORITY_BACKGROUND" not in optimization_service_text:
 for required_token in (
     "Process.THREAD_PRIORITY_BACKGROUND",
     "VaultStartupCoordinator.isCapturePriorityActive(context)",
+    "ItemStatus.PAUSED_FOR_CAPTURE",
+    "shouldYieldToActiveCapture(context)",
+    "seenUris.remove(uriKey)",
 ):
     if required_token not in bulk_import_text:
         errors.append(f"importação não respeita prioridade da gravação: {required_token}")
@@ -1710,9 +1717,17 @@ for forbidden in ("RESOLUTION_AUTO", "CODEC_AUTO", "STABILIZATION_AUTO"):
     ):
         if forbidden in source_text:
             errors.append(f"{source_name} voltou a expor seleção automática: {forbidden}")
-for forbidden in ("encoderPerformanceScore", "getAchievableFrameRatesFor", "supportedPerformancePoints", "headroomProbeFps"):
+for forbidden in ("encoderPerformanceScore", "getAchievableFrameRatesFor", "headroomProbeFps"):
     if forbidden in capture_service_text:
         errors.append("heurística automática de desempenho voltou ao encoder: " + forbidden)
+if "supportedPerformancePoints" not in capture_service_text or "PerformancePoint(size.width, size.height, fps)" not in capture_service_text:
+    errors.append("seleção do encoder perdeu a garantia oficial de PerformancePoint para 4K60/HFR")
+thumbnail_repo_text = (JAVA / "com/steadyvault/camera/storage/vault/MediaThumbnailRepository.kt").read_text(errors="ignore")
+vault_repo_text = (JAVA / "com/steadyvault/camera/storage/vault/VaultRepository.kt").read_text(errors="ignore")
+import_post_text = (JAVA / "com/steadyvault/camera/ui/vault/VaultImportPostProcessor.kt").read_text(errors="ignore")
+for source_name, source_text in (("thumbnails", thumbnail_repo_text), ("metadados", vault_repo_text), ("pós-importação", import_post_text)):
+    if "VaultStartupCoordinator.isCapturePriorityActive" not in source_text:
+        errors.append(f"{source_name} ainda pode disputar decoder/I/O com a gravação")
 if "private val pending = ArrayDeque<PendingSample>()" in hardware_recorder_text:
     errors.append("MuxerCoordinator voltou a manter um segundo buffer de samples")
 if "primeAudioTrack" in hardware_recorder_text or "AAC_PRIME_MAX_BUFFERS" in hardware_recorder_text:

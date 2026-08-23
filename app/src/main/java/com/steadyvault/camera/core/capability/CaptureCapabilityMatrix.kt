@@ -175,7 +175,7 @@ object CaptureCapabilityMatrix {
         val diagnostics = mutableListOf<String>()
         val modes = mutableListOf<Mode>()
         val cameraFeatures = mutableListOf<CameraFeatures>()
-        val encoderCache = mutableMapOf<Pair<Size, Int>, List<String>>()
+        val encoderCache = mutableMapOf<Triple<Size, Int, Boolean>, List<String>>()
         val hdrEncoderSupport = hardwareHlg10EncoderSupport()
 
         for (cameraId in manager.cameraIdList) {
@@ -235,8 +235,8 @@ object CaptureCapabilityMatrix {
                 if (size !in regularSizes) continue
                 for (fps in CaptureSettings.supportedFpsValues) {
                     if (normalRanges.none { StrictCaptureModePolicy.acceptsFpsRange(fps, it.lower, it.upper) }) continue
-                    val encoders = encoderCache.getOrPut(size to fps) {
-                        findHardwareEncoders(size, fps)
+                    val encoders = encoderCache.getOrPut(Triple(size, fps, false)) {
+                        findHardwareEncoders(size, fps, allowRateMetadataFallback = false)
                     }
                     if (encoders.isEmpty()) continue
 
@@ -290,8 +290,8 @@ object CaptureCapabilityMatrix {
                     }
                     for (fps in CaptureSettings.supportedFpsValues.filter { it >= 60 }) {
                         if (highSpeedRanges.none { StrictCaptureModePolicy.acceptsFpsRange(fps, it.lower, it.upper) }) continue
-                        val encoders = encoderCache.getOrPut(size to fps) {
-                            findHardwareEncoders(size, fps)
+                        val encoders = encoderCache.getOrPut(Triple(size, fps, true)) {
+                            findHardwareEncoders(size, fps, allowRateMetadataFallback = true)
                         }
                         encoders.forEach { mime ->
                             modes += Mode(cameraId, resolution, size, fps, highSpeed = true, encoderMime = mime)
@@ -651,30 +651,26 @@ object CaptureCapabilityMatrix {
         map: android.hardware.camera2.params.StreamConfigurationMap,
         size: Size
     ): Long {
-        val values = buildList {
-            try {
-                add(map.getOutputMinFrameDuration(ImageFormat.PRIVATE, size))
-            } catch (_: Throwable) {
-            }
-            try {
-                add(map.getOutputMinFrameDuration(MediaCodec::class.java, size))
-            } catch (_: Throwable) {
-            }
-            try {
-                add(map.getOutputMinFrameDuration(MediaRecorder::class.java, size))
-            } catch (_: Throwable) {
-            }
-        }.filter { it >= 0L }
-        return values.minOrNull() ?: 0L
+        runCatching { map.getOutputMinFrameDuration(MediaCodec::class.java, size) }
+            .getOrNull()?.takeIf { it > 0L }?.let { return it }
+        runCatching { map.getOutputMinFrameDuration(ImageFormat.PRIVATE, size) }
+            .getOrNull()?.takeIf { it > 0L }?.let { return it }
+        return runCatching { map.getOutputMinFrameDuration(MediaRecorder::class.java, size) }
+            .getOrNull()?.takeIf { it > 0L } ?: 0L
     }
 
-    private fun findHardwareEncoders(size: Size, fps: Int): List<String> {
+    private fun findHardwareEncoders(
+        size: Size,
+        fps: Int,
+        allowRateMetadataFallback: Boolean
+    ): List<String> {
         val preferredMimes = listOf(
             MediaFormat.MIMETYPE_VIDEO_HEVC,
             MediaFormat.MIMETYPE_VIDEO_AVC
         )
         val codecInfos = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
         return preferredMimes.filter { mime ->
+            var sizeSupportedByHardware = false
             codecInfos.any { codecInfo ->
                 if (!codecInfo.isEncoder || codecInfo.isSoftwareOnly) return@any false
                 if (codecInfo.supportedTypes.none { it.equals(mime, ignoreCase = true) }) return@any false
@@ -683,23 +679,19 @@ object CaptureCapabilityMatrix {
                 } catch (_: Throwable) {
                     return@any false
                 }
-                if (
-                    !capabilities.colorFormats.contains(
-                        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
-                    )
-                ) {
+                if (!capabilities.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)) {
                     return@any false
                 }
-                try {
-                    capabilities.videoCapabilities?.areSizeAndRateSupported(
-                        size.width,
-                        size.height,
-                        fps.toDouble()
-                    ) == true
-                } catch (_: Throwable) {
-                    false
-                }
-            }
+                val videoCapabilities = capabilities.videoCapabilities ?: return@any false
+                val sizeSupported = runCatching {
+                    videoCapabilities.isSizeSupported(size.width, size.height)
+                }.getOrDefault(false)
+                if (!sizeSupported) return@any false
+                sizeSupportedByHardware = true
+                runCatching {
+                    videoCapabilities.areSizeAndRateSupported(size.width, size.height, fps.toDouble())
+                }.getOrDefault(false)
+            } || (allowRateMetadataFallback && sizeSupportedByHardware)
         }
     }
 

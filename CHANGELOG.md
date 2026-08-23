@@ -1,3 +1,82 @@
+# 1.8.238
+
+- Remove a linha explicativa do card “MODO DE VÍDEO” da tela inicial, mantendo as configurações acessíveis nos Ajustes.
+- Nenhuma alteração no pipeline de gravação.
+
+## 1.8.237 — 2026-08-22
+
+- Corrige duração ausente/lenta nos vídeos ao abrir qualquer um dos três cofres.
+- A leitura de duração e resolução passa a usar `MediaExtractor` primeiro, lendo o contêiner sem abrir decoder; `MediaMetadataRetriever` fica apenas como fallback.
+- Vídeos que entram na área visível da grade solicitam metadados imediatamente por uma fila prioritária independente, sem esperar o aquecimento do restante do cofre.
+- O enriquecimento em segundo plano deixa de parar nos primeiros 96 itens e passa a percorrer todas as mídias do cofre.
+- O pós-processamento de importações que cede recursos para uma gravação ativa é reagendado automaticamente em vez de abandonar duração/thumbnail daquele arquivo.
+- Cache persistente e índices dos cofres continuam recebendo duração, resolução e rotação para que as próximas aberturas sejam instantâneas.
+- Nenhuma alteração no pipeline de gravação.
+
+## 1.8.236 — 2026-08-22
+
+- Adiciona **Remover mídias duplicadas** diretamente às ferramentas dos três cofres.
+- A limpeza usa o mesmo mecanismo SHA-256 nos cofres principal, secundário e terciário.
+- Mantém a cópia mais antiga e envia somente cópias byte a byte idênticas para a Lixeira.
+- Impede a limpeza enquanto houver importação em andamento ou pendente, evitando corrida com arquivos que ainda estão entrando no cofre.
+- Mantém a limpeza específica do álbum no cofre principal.
+- Nenhuma alteração no pipeline de gravação.
+
+## 1.8.235 — 2026-08-22
+
+- Reestrutura o caminho crítico de 60 FPS a partir do vídeo real medido em ~56,9 FPS, sem interpolar, repetir quadros ou maquiar timestamps.
+- Remove `KEY_LATENCY = 1` do MediaCodec para permitir que o encoder de hardware use o buffering nativo em picos de complexidade.
+- Separa o drain do MediaCodec da escrita no MediaMuxer: o encoder libera seus buffers em thread urgente e um writer dedicado grava no armazenamento através de uma fila limitada de 64 samples com pool reutilizável.
+- Mantém VBR quando suportado, `KEY_PRIORITY = 0`, `KEY_OPERATING_RATE` igual ao FPS solicitado, B-frames desabilitados e `KEY_ALLOW_FRAME_DROP = 0` quando disponível.
+- Corrige a validação de 60 FPS para consultar primeiro o tempo mínimo da Surface real do `MediaCodec`, em vez de aceitar o menor tempo publicado por outro tipo de stream.
+- Prioriza encoder de hardware com `PerformancePoint` oficial cobrindo resolução/FPS e suporte exato ao tamanho/taxa.
+- Remove o Sustained Performance Mode da tela de captura para não limitar artificialmente o pico de desempenho disponível do aparelho.
+- Durante uma gravação, importação em andamento pausa o item atual sem contabilizá-lo como falha e o retoma depois; thumbnails, metadados e pós-processamento também cedem CPU/I/O ao pipeline de câmera.
+- Registra em Diagnósticos a cadência real produzida: FPS efetivo, número de quadros, lacunas longas, maior lacuna e pico da fila do muxer.
+- Mantém `[60,60]` como primeira escolha; se o hardware/HAL realmente não sustentar o modo, a política existente continua gravando com fallback e aviso em vez de deixar de gravar.
+
+## 1.8.234 — 2026-08-22
+
+- Adiciona “Remover mídias duplicadas” ao gerenciamento do álbum atual no cofre principal.
+- A limpeza compara arquivos candidatos por tamanho e confirma duplicidade pelo SHA-256 do conteúdo completo; nome, caminho ou data não são usados como prova de duplicidade.
+- Mantém a cópia mais antiga de cada conteúdo idêntico e move somente as cópias extras para a Lixeira, permitindo restauração.
+- Exibe progresso durante a análise e a remoção e informa quantas duplicatas foram encontradas, movidas ou não puderam ser movidas.
+- A limpeza atua somente nas mídias associadas ao álbum escolhido e não altera mídias iguais que estejam apenas fora dele.
+- Não altera câmera, encoder, FPS, áudio, timestamps ou o pipeline de gravação.
+
+## 1.8.233 — 2026-08-22
+
+- Refeito o fechamento da fila de importação nos três cofres: todos os itens precisam terminar como importados, repetidos ou falhos antes da conclusão.
+- Deduplicação por SHA-256 do conteúdo calculado durante a própria cópia, evitando cópias repetidas mesmo com nomes ou URIs diferentes.
+- A leitura da origem não depende mais de consulta de tamanho via ContentResolver antes de copiar; o tamanho é obtido pelo descritor quando disponível.
+- Ao concluir, a interface confirma explicitamente processados/total e atualiza o cofre automaticamente.
+- Metadados de vídeo e thumbnails passam a ser preparados em segundo plano logo após cada importação aceita.
+- Thumbnails da grade foram reduzidas para 384 px, com quatro workers e descarte de backlog antigo para responder melhor ao scroll.
+
+## 1.8.232 — 2026-08-22
+
+- Unifica a robustez da fila de importação nos cofres principal, secundário e terciário: todos continuam usando o mesmo `VaultBulkImportRunner`, `VaultImportQueueStore` e `VaultImportService`.
+- Corrige uma corrida no encerramento do serviço: uma nova mídia adicionada exatamente quando a fila anterior terminava não pode mais ficar pendente em estados como `104/107` sem um processador ativo.
+- Torna a substituição do arquivo persistente da fila atômica (`ATOMIC_MOVE` + `REPLACE_EXISTING`), eliminando a janela em que a fila podia desaparecer entre apagar o arquivo antigo e publicar o novo.
+- Persiste o estado terminal de cada item antes de avançar o checkpoint; ao retomar após interrupção, o maior checkpoint válido é reconciliado e a fila não volta para um item já concluído.
+- Uma interrupção inesperada da thread de processamento não entra mais em loop no mesmo item exibindo `Verificando 1/N`; a fila é pausada com checkpoint preservado para retomada segura.
+- Para URIs de mídia cujo nome/extensão já está presente no próprio URI, evita consultas desnecessárias ao `ContentResolver` durante `Verificando`, reduzindo travas em providers lentos.
+- Remove o corte após várias falhas consecutivas ao persistir permissões: todos os URIs recebidos do seletor são tentados e falhas são registradas sem impedir o restante do lote.
+- Mantém a regra de item terminal: cada mídia processada termina como importada, repetida ignorada ou falha; apenas cancelamento/pausa explícitos deixam o item para retomada.
+- Não altera câmera, encoder, FPS, áudio, timestamps ou qualquer código do pipeline de gravação.
+
+## 1.8.230 — 2026-08-21
+
+- Corrige a fila de importação para preservar exatamente a quantidade selecionada; URIs repetidas deixam de desaparecer antes de entrar na fila e passam a ser contabilizadas como repetidas ignoradas.
+- Impede uma nova seleção de sobrescrever uma importação ainda pendente: novos arquivos são acrescentados à fila existente e processados pelo mesmo serviço.
+- Torna o total do progresso monotônico para que o contador nunca regrida de 107 para 104/100 por concorrência entre a tela e o serviço.
+- Faz o processador reler a fila ao chegar ao fim, permitindo continuar automaticamente quando novos arquivos são anexados enquanto uma importação está em andamento.
+- Exibe progresso do arquivo atual por porcentagem/bytes em cópias grandes, evitando a falsa impressão de travamento em um número como 7/100.
+- Adiciona watchdog de leitura: uma origem que fica 30 s sem entregar bytes é fechada, tentada novamente e, após as tentativas, registrada como falha sem prender o restante do lote.
+- Tenta persistir permissões de leitura para lotes grandes em vez de abandonar toda a persistência quando há mais de 64 itens.
+- Evita espera infinita por um estado antigo de prioridade da câmera; uma gravação realmente ativa continua tendo prioridade e a importação mostra claramente que está aguardando e retoma sozinha.
+- Mantém câmera, encoder, FPS, áudio, timestamps e pipeline de gravação inalterados.
+
 ## 1.8.228 — 2026-08-21
 
 - Torna o seek interativo do player imediato: toque na timeline e botões ±10 s usam busca rápida por quadro sincronizado, evitando decodificar um GOP inteiro em 4K60 antes de responder.
@@ -1251,3 +1330,11 @@ As alterações anteriores à versão 1.8.46 não foram reconstruídas por falta
 - Cofres: adicionadas as direções menor duração e menor resolução para completar os pares crescente/decrescente.
 - Cofres: a grade continua carregando miniaturas sob demanda, sem limitar a ordenação ao antigo lote de 160 itens.
 - Gravação: nenhum arquivo de captura, câmera, encoder, FPS, timestamps ou áudio foi alterado nesta versão.
+
+## 1.8.239
+- Melhorada a geração de thumbnails nos três cofres para aparecerem mais rápido.
+- Thumbnails de vídeo agora rejeitam frames quase totalmente pretos e tentam um frame alternativo automaticamente.
+- Cache de thumbnails pretas antigas é invalidado e regenerado.
+- Mais threads para geração de thumbnails e fila maior para reduzir demora ao abrir cofres grandes.
+- Tamanho alvo das miniaturas reduzido para carregar mais rápido sem perder qualidade perceptível na grade.
+- Nenhuma alteração no pipeline de gravação.

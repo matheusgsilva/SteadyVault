@@ -22,21 +22,31 @@ internal object PrivateVaultRepositoryCore {
         return PrivateVaultMediaIndex.summary(context, area).bytes
     }
 
-    fun importFromUri(context: Context, area: String, uri: Uri): VaultRepository.MediaItem {
+    fun importFromUri(context: Context, area: String, uri: Uri, onProgress: ((Long, Long) -> Unit)? = null): VaultRepository.MediaItem {
         val resolver = context.contentResolver
         var displayName: String? = null
         runCatching {
             resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor -> if (cursor.moveToFirst()) displayName = cursor.getString(0) }
         }
-        val mime = resolver.getType(uri).orEmpty()
+        return importFromUri(context, area, uri, displayName, runCatching { resolver.getType(uri).orEmpty() }.getOrDefault(""), onProgress)
+    }
+
+    fun importFromUri(context: Context, area: String, uri: Uri, displayName: String?, mime: String, onProgress: ((Long, Long) -> Unit)? = null, shouldCancel: () -> Boolean = { false }): VaultRepository.MediaItem =
+        importFromUriVerified(context, area, uri, displayName, mime, onProgress, shouldCancel).item
+
+    fun importFromUriVerified(context: Context, area: String, uri: Uri, displayName: String?, mime: String, onProgress: ((Long, Long) -> Unit)? = null, shouldCancel: () -> Boolean = { false }): VaultRepository.ImportedMedia {
+        check(!shouldCancel()) { "Importação cancelada" }
         val requested = VaultMediaFormats.importFileName(displayName, mime, "IMG")
         require(VaultMediaFormats.isSupported(requested, mime)) { "Use uma foto ou vídeo compatível" }
         val target = uniqueFile(directory(context, area), requested)
         try {
-            PrivateMediaFileWriter.copyFromUri(context, uri, target)
+            val copy = PrivateMediaFileWriter.copyFromUri(context, uri, target, onProgress, shouldCancel)
+            check(!shouldCancel()) { "Importação cancelada" }
             val item = VaultRepository.readItem(target, fast = true) ?: throw IllegalStateException("Use uma foto ou vídeo compatível")
+            check(!shouldCancel()) { "Importação cancelada" }
             PrivateVaultMediaIndex.update(context, area, item)
-            return item
+            check(!shouldCancel()) { "Importação cancelada" }
+            return VaultRepository.ImportedMedia(item, copy.sha256)
         } catch (throwable: Throwable) {
             target.delete()
             PrivateVaultMediaIndex.invalidate(area)

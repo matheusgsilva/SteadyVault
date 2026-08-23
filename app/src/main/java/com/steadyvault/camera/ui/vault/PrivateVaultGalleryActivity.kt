@@ -33,6 +33,7 @@ import java.io.File
 import java.util.Collections
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ThreadPoolExecutor
 
 abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     protected abstract val vaultArea: String
@@ -72,6 +73,10 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     private val metadataExecutor = Executors.newSingleThreadExecutor { task ->
         Thread({ runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }; task.run() }, "SteadyVault-PrivateVaultMetadata")
     }
+    private val visibleMetadataExecutor = Executors.newFixedThreadPool(2) { task ->
+        Thread({ runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }; task.run() }, "SteadyVault-PrivateVisibleMetadata")
+    }
+    private val visibleMetadataRequests = Collections.synchronizedSet(mutableSetOf<String>())
     private val mainHandler = Handler(Looper.getMainLooper())
     private val selectedPaths = linkedSetOf<String>()
     private val allItems = mutableListOf<VaultRepository.MediaItem>()
@@ -82,6 +87,7 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     private var sortMode = SortMode.NEWEST
     private var gridColumns = VaultGridRules.DEFAULT_COLUMNS
     private val importSession = VaultImportSession()
+    private var importWasRunning = false
     private val importMediaLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val trustedReturn = importSession.consume()
         if (trustedReturn) unlockVaultSession()
@@ -107,9 +113,14 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     }
     private val importStatusRefresh = object : Runnable {
         override fun run() {
+            val state = VaultBulkImportRunner.snapshot(this@PrivateVaultGalleryActivity, vaultArea)
+            val wasRunning = importWasRunning
+            importWasRunning = state.running || VaultImportQueueStore.hasPending(this@PrivateVaultGalleryActivity, vaultArea)
             renderImportState(showPopup = isVaultUnlocked())
-            if (VaultBulkImportRunner.snapshot(this@PrivateVaultGalleryActivity, vaultArea).running) {
+            if (importWasRunning) {
                 mainHandler.postDelayed(this, IMPORT_STATUS_REFRESH_MS)
+            } else if (wasRunning && isVaultUnlocked()) {
+                mainHandler.postDelayed({ refresh() }, 120L)
             }
         }
     }
@@ -203,6 +214,8 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
         if (VaultBulkImportRunner.snapshot(this, vaultArea).running) ioExecutor.shutdown() else ioExecutor.shutdownNow()
         detailsExecutor.shutdownNow()
         metadataExecutor.shutdownNow()
+        visibleMetadataExecutor.shutdownNow()
+        visibleMetadataRequests.clear()
         if (::adapter.isInitialized) adapter.release()
         super.onDestroy()
     }
@@ -245,13 +258,14 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     private fun showFilterAndSortChooser() {
         OneUiDialog.choices(
             activity = this,
-            title = "Filtros e ordenação",
+            title = "Filtros, ordenação e ferramentas",
             message = gallerySummaryText(),
             choices = listOf(
                 OneUiDialog.Choice("Tipo: ${typeFilter.label}", "Todas, somente fotos ou somente vídeos."),
                 OneUiDialog.Choice("Período: ${periodFilter.label}", "Hoje, últimos 7 dias, últimos 30 dias ou tudo."),
                 OneUiDialog.Choice("Ordenar: ${sortMode.label}", "Data, nome, tamanho, duração ou resolução."),
-                OneUiDialog.Choice("Limpar filtros", "Volta para todas as mídias, mais recentes primeiro.")
+                OneUiDialog.Choice("Limpar filtros", "Volta para todas as mídias, mais recentes primeiro."),
+                OneUiDialog.Choice("Remover mídias duplicadas", "Verifica todo este cofre pelo conteúdo real, mantém uma cópia e envia somente as cópias idênticas para a lixeira.")
             )
         ) { option ->
             when (option) {
@@ -265,6 +279,55 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
                     clearSelection()
                     persistGalleryPrefs()
                     applyGalleryView()
+                }
+                4 -> removeVaultDuplicates()
+            }
+        }
+    }
+
+    private fun removeVaultDuplicates() {
+        if (VaultBulkImportRunner.snapshot(this, vaultArea).running || VaultImportQueueStore.hasPending(this, vaultArea)) {
+            OneUiDialog.message(this, "Importação em andamento", "Aguarde a importação terminar antes de remover duplicados. Assim nenhum arquivo é movido enquanto ainda está entrando no cofre.")
+            return
+        }
+        OneUiDialog.confirm(
+            activity = this,
+            title = "Remover duplicados de $vaultTitle?",
+            message = "O SteadyVault compara o conteúdo completo dos arquivos com SHA-256. Mantém a cópia mais antiga de cada mídia idêntica e envia somente as cópias extras para a lixeira, onde ainda podem ser restauradas.",
+            positiveLabel = "Procurar e remover",
+            destructive = true
+        ) {
+            clearSelection()
+            setBusy(true, "Analisando duplicados do cofre…")
+            ioExecutor.execute {
+                val result = runCatching {
+                    VaultDuplicateCleaner.cleanVault(applicationContext, vaultArea) { progress ->
+                        runOnUiThread { if (!isFinishing && !isDestroyed) updateBusy(progress.label()) }
+                    }
+                }
+                runOnUiThread {
+                    setBusy(false)
+                    result.onSuccess { cleaned ->
+                        when {
+                            cleaned.duplicatesFound == 0 -> {
+                                Haptics.tap(this)
+                                OneUiDialog.message(this, "Nenhuma duplicata encontrada", "Foram verificadas ${cleaned.checkedItems} mídia(s). Não há arquivos com conteúdo idêntico neste cofre.")
+                            }
+                            cleaned.failedToMove == 0 -> {
+                                Haptics.success(this)
+                                OneUiDialog.message(this, "Duplicados removidos", "${cleaned.movedToTrash} cópia(s) duplicada(s) foram movidas para a lixeira. Uma cópia de cada mídia foi mantida.")
+                            }
+                            else -> {
+                                Haptics.error(this)
+                                OneUiDialog.message(this, "Limpeza concluída com avisos", "Encontradas ${cleaned.duplicatesFound} cópia(s) duplicada(s). ${cleaned.movedToTrash} foram movidas para a lixeira e ${cleaned.failedToMove} não puderam ser movidas agora.")
+                            }
+                        }
+                        refresh()
+                    }.onFailure { error ->
+                        Haptics.error(this)
+                        Toast.makeText(this, error.message ?: "Não foi possível remover os duplicados", Toast.LENGTH_LONG).show()
+                        refresh()
+                    }
                 }
             }
         }
@@ -464,13 +527,21 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
             if (::empty.isInitialized) empty.visibility = View.GONE
             return
         }
+        if (VaultImportQueueStore.hasPending(this, vaultArea) && !state.cancelRequested) {
+            VaultBulkImportRunner.resumeIfPending(this, vaultArea)
+            val message = "Retomando fila de importação…"
+            summary.text = message
+            setImportProgress(true, message, canCancel = true)
+            if (::empty.isInitialized) empty.visibility = View.GONE
+            return
+        }
         setImportProgress(false)
         if (showPopup && isVaultUnlocked()) {
             val message = VaultBulkImportRunner.consumeResult(this, vaultArea)
             if (message != null) {
                 OneUiDialog.message(
                     activity = this,
-                    title = "Importação finalizada com falhas",
+                    title = if (state.failures > 0) "Importação concluída com falhas" else "Importação concluída",
                     message = message,
                     positiveLabel = "Ver cofre"
                 )
@@ -789,7 +860,7 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
                         updateVaultSummary(page.bytes)
                         renderImportState(showPopup = true)
                         if (sortMode.requiresDetailedMetadata()) prepareDetailedSort()
-                        else scheduleMetadataEnrichment(generation, page.items.take(METADATA_WARMUP_ITEMS))
+                        else scheduleMetadataEnrichment(generation, page.items)
                     }.onFailure {
                         totalMediaCount = 0
                         allItems.clear()
@@ -808,6 +879,30 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
 
     private fun updateVaultSummary(bytes: Long) {
         summary.text = "$totalMediaCount mídia(s) • ${VaultRepository.formatBytes(bytes)} • ${typeFilter.label.lowercase()} • ${sortMode.label.lowercase()}"
+    }
+
+    private fun requestVisibleMetadata(item: VaultRepository.MediaItem) {
+        if (!item.video || (item.durationMs > 0L && item.width > 0 && item.height > 0)) return
+        val generation = refreshGeneration
+        val key = "${item.file.absolutePath}|${item.file.length()}|${item.file.lastModified()}"
+        if (!visibleMetadataRequests.add(key)) return
+        runCatching {
+            visibleMetadataExecutor.execute {
+                try {
+                    if (generation != refreshGeneration || !isVaultUnlocked()) return@execute
+                    val detailed = runCatching { VaultRepository.loadMediaDetails(applicationContext, item) }.getOrDefault(item)
+                    if (detailed.durationMs <= 0L && detailed.width <= 0 && detailed.height <= 0) return@execute
+                    runOnUiThread {
+                        if (generation != refreshGeneration || !isVaultUnlocked()) return@runOnUiThread
+                        val path = detailed.file.absolutePath
+                        allItems.indices.forEach { index -> if (allItems[index].file.absolutePath == path) allItems[index] = detailed }
+                        adapter.updateMetadata(mapOf(path to detailed))
+                    }
+                } finally {
+                    visibleMetadataRequests.remove(key)
+                }
+            }
+        }.onFailure { visibleMetadataRequests.remove(key) }
     }
 
     private fun scheduleMetadataEnrichment(generation: Int, snapshot: List<VaultRepository.MediaItem>) {
@@ -952,6 +1047,7 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
             val durationLabel = if (item.video) VaultRepository.thumbnailDurationLabel(item) else ""
             holder.duration.visibility = if (durationLabel.isNotBlank()) View.VISIBLE else View.GONE
             holder.duration.text = durationLabel
+            if (item.video && (durationLabel.isBlank() || item.width <= 0 || item.height <= 0)) requestVisibleMetadata(item)
             holder.more.visibility = if (selectionMode) View.GONE else View.VISIBLE
             holder.more.setOnClickListener { onMore(item) }
             holder.overlay.visibility = if (selectedNow) View.VISIBLE else View.GONE
@@ -962,6 +1058,12 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
                 holder.image.setImageDrawable(null)
                 if (!released && loadingEnabled && loading.add(key)) {
                     val generation = loadingGeneration
+                    (executor as? ThreadPoolExecutor)?.let { pool ->
+                        if (pool.queue.size >= THUMBNAIL_BACKLOG_LIMIT) {
+                            pool.queue.clear()
+                            loading.clear()
+                        }
+                    }
                     runCatching {
                         executor.execute {
                             try {
@@ -988,12 +1090,12 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     }
 
     companion object {
-        private const val THUMB_SIZE = 512
-        private const val THUMBNAIL_THREADS = 3
+        private const val THUMB_SIZE = 320
+        private const val THUMBNAIL_THREADS = 6
+        private const val THUMBNAIL_BACKLOG_LIMIT = 48
         private const val IMPORT_STATUS_REFRESH_MS = 500L
         private const val BULK_PROGRESS_STEP = 25
         private const val METADATA_BATCH_SIZE = 8
-        private const val METADATA_WARMUP_ITEMS = 48
         private const val SORT_METADATA_BATCH_SIZE = 32
         private const val KEY_GRID_COLUMNS = "grid_columns"
         private const val KEY_TYPE_FILTER = "type_filter"

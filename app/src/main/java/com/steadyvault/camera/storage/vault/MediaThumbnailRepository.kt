@@ -73,8 +73,12 @@ object MediaThumbnailRepository {
         val side = maximumSide.coerceIn(192, 1024)
         if (expectedGeneration != cacheGeneration.get()) return placeholder(side, video)
         if (!file.isFile || file.length() <= 0L) return placeholder(side, video)
+        // Durante a gravação, nem a decodificação de thumbnails já cacheadas deve
+        // disputar CPU/memória com Camera2/MediaCodec. A grade recebe placeholder e volta
+        // a carregar normalmente assim que a captura termina.
+        if (VaultStartupCoordinator.isCapturePriorityActive(context)) return placeholder(side, video)
         val cache = cacheFile(context, file, side)
-        decodeCached(cache)?.let { return it }
+        decodeCached(cache, video)?.let { return it }
 
         val generated = runCatching {
             if (video) videoThumbnail(file, side) else imageThumbnail(file, side)
@@ -92,6 +96,7 @@ object MediaThumbnailRepository {
 
     fun warmUp(context: Context, file: File, video: Boolean, maximumSide: Int = DEFAULT_MAX_SIDE) {
         val appContext = context.applicationContext
+        if (VaultStartupCoordinator.isCapturePriorityActive(appContext)) return
         val key = runCatching { "${fingerprint(file)}_${maximumSide.coerceIn(192, 1024)}" }.getOrNull() ?: return
         if (!warming.add(key)) return
         val generation = cacheGeneration.get()
@@ -186,19 +191,27 @@ object MediaThumbnailRepository {
         return digest.digest().joinToString("") { "%02x".format(it) }.take(32)
     }
 
-    private fun decodeCached(file: File): Bitmap? {
+    private fun decodeCached(file: File, video: Boolean): Bitmap? {
         if (!file.isFile || file.length() <= 0L) return null
-        return runCatching { BitmapFactory.decodeFile(file.absolutePath) }
-            .getOrNull()
+        val bitmap = runCatching { BitmapFactory.decodeFile(file.absolutePath) }.getOrNull()
             ?.takeIf { it.width > 0 && it.height > 0 && !it.isRecycled }
-            ?: run { file.delete(); null }
+        if (bitmap == null) {
+            file.delete()
+            return null
+        }
+        if (video && isLikelyBlackFrame(bitmap)) {
+            runCatching { bitmap.recycle() }
+            file.delete()
+            return null
+        }
+        return bitmap
     }
 
     private fun persist(target: File, bitmap: Bitmap) {
         runCatching {
             val temporary = File(target.parentFile, target.name + ".tmp")
             temporary.outputStream().buffered().use { output ->
-                check(bitmap.compress(Bitmap.CompressFormat.JPEG, 94, output))
+                check(bitmap.compress(Bitmap.CompressFormat.JPEG, 88, output))
             }
             if (!temporary.renameTo(target)) {
                 target.delete()
@@ -238,10 +251,16 @@ object MediaThumbnailRepository {
         // Em Android/Samsung recentes o ThumbnailUtils usa caminho nativo/cache do sistema
         // e costuma ser mais rápido que abrir MediaMetadataRetriever para cada item.
         val platformFrame = videoThumbnailFromPlatform(file, maximumSide)
-        if (platformFrame != null && !platformFrame.isRecycled) return centerCropSquare(platformFrame, maximumSide)
+        if (platformFrame != null && !platformFrame.isRecycled) {
+            if (!isLikelyBlackFrame(platformFrame)) return centerCropSquare(platformFrame, maximumSide)
+            runCatching { platformFrame.recycle() }
+        }
 
         val retrieverFrame = videoThumbnailFromRetriever(file, maximumSide)
-        if (retrieverFrame != null && !retrieverFrame.isRecycled) return retrieverFrame
+        if (retrieverFrame != null && !retrieverFrame.isRecycled) {
+            if (!isLikelyBlackFrame(retrieverFrame)) return retrieverFrame
+            runCatching { retrieverFrame.recycle() }
+        }
 
         return null
     }
@@ -265,13 +284,14 @@ object MediaThumbnailRepository {
                     add((durationMs * 1_000L / 2L).coerceAtLeast(0L))
                     add((durationMs * 3_000L / 4L).coerceAtLeast(0L))
                     add(minOf(850_000L, durationMs * 1_000L))
+                    add(minOf(1_500_000L, durationMs * 1_000L))
                 }
                 add(0L)
                 add(-1L)
             }
             val options = intArrayOf(
-                MediaMetadataRetriever.OPTION_CLOSEST,
-                MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                MediaMetadataRetriever.OPTION_CLOSEST
             )
             var frame: Bitmap? = null
             for (timeUs in candidateTimes) {
@@ -296,6 +316,30 @@ object MediaThumbnailRepository {
         } finally {
             runCatching { retriever.release() }
         }
+    }
+
+    private fun isLikelyBlackFrame(bitmap: Bitmap): Boolean {
+        if (bitmap.width <= 0 || bitmap.height <= 0 || bitmap.isRecycled) return true
+        val xs = intArrayOf(bitmap.width / 6, bitmap.width / 3, bitmap.width / 2, (bitmap.width * 2) / 3, (bitmap.width * 5) / 6)
+        val ys = intArrayOf(bitmap.height / 6, bitmap.height / 3, bitmap.height / 2, (bitmap.height * 2) / 3, (bitmap.height * 5) / 6)
+        var lumaTotal = 0.0
+        var lumaMax = 0.0
+        var samples = 0
+        ys.forEach { yRaw ->
+            val y = yRaw.coerceIn(0, bitmap.height - 1)
+            xs.forEach { xRaw ->
+                val x = xRaw.coerceIn(0, bitmap.width - 1)
+                val pixel = bitmap.getPixel(x, y)
+                val alpha = Color.alpha(pixel) / 255.0
+                val luma = (0.2126 * Color.red(pixel) + 0.7152 * Color.green(pixel) + 0.0722 * Color.blue(pixel)) * alpha
+                lumaTotal += luma
+                if (luma > lumaMax) lumaMax = luma
+                samples++
+            }
+        }
+        if (samples <= 0) return true
+        val averageLuma = lumaTotal / samples.toDouble()
+        return averageLuma < 14.0 && lumaMax < 32.0
     }
 
     private fun videoThumbnailFromPlatform(file: File, maximumSide: Int): Bitmap? =

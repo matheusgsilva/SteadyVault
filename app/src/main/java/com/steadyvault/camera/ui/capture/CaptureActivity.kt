@@ -8,7 +8,6 @@ import com.steadyvault.camera.core.capability.CaptureModeCatalog
 import com.steadyvault.camera.core.capability.HardwareSupportPolicy
 import com.steadyvault.camera.core.capability.HardwareSupportPolicy.Support
 import com.steadyvault.camera.core.capability.PowerPolicy
-import com.steadyvault.camera.core.performance.SustainedPerformanceController
 import com.steadyvault.camera.core.camera.CameraLensCatalog
 import com.steadyvault.camera.core.camera.CameraResourceCoordinator
 import com.steadyvault.camera.core.feedback.Haptics
@@ -704,7 +703,6 @@ class CaptureActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        SustainedPerformanceController.set(this, CaptureStateStore.isBusy(this))
         photoBusy = PhotoCaptureStateStore.isBusy(this)
         updateBatteryStatus()
         renderBackgroundRecordingZoom()
@@ -736,7 +734,6 @@ class CaptureActivity : ComponentActivity() {
     }
 
     override fun onStop() {
-        SustainedPerformanceController.set(this, false)
         if (navigatingToAdvancedSettings) {
             hidePreviewSettingsSheet(animated = false)
             navigatingToAdvancedSettings = false
@@ -3161,7 +3158,7 @@ class CaptureActivity : ComponentActivity() {
         }
 
         CameraProfileStore.saveCurrent(this)
-        val targetResolution = CaptureSettings.resolutionForFps(this, targetFps)
+        val targetResolution = preferredResolutionForFps(targetFps)
         val profile = configuredProfile(targetFps, targetResolution)
         CaptureStateStore.clearEffectiveMode(this)
         CaptureSettings.updateResolutionAndFps(this, targetResolution, targetFps)
@@ -3249,6 +3246,12 @@ class CaptureActivity : ComponentActivity() {
 
     private fun synchronizeSelectedModeWithCapabilities() {
         val settings = CaptureSettings.snapshot(this)
+        val preferredResolution = preferredResolutionForFps(settings.fps)
+        if (preferredResolution != settings.resolution) {
+            CaptureSettings.updateResolutionAndFps(this, preferredResolution, settings.fps)
+            CaptureStateStore.clearEffectiveMode(this)
+            return
+        }
         val profile = configuredProfile(settings.fps, settings.resolution)
         if (!profile.selectable) CaptureStateStore.clearEffectiveMode(this)
     }
@@ -3280,9 +3283,17 @@ class CaptureActivity : ComponentActivity() {
         scanInProgress = capabilityMatrix == null && capabilityScanInProgress
     )
 
+    private fun preferredResolutionForFps(fpsValue: Int): String = CaptureModeCatalog.preferredResolution(
+        context = this,
+        fps = fpsValue,
+        requestedResolution = CaptureSettings.resolutionForFps(this, fpsValue),
+        matrix = selectedCapabilityMatrix()?.takeIf { it.modes.isNotEmpty() },
+        scanInProgress = capabilityMatrix == null && capabilityScanInProgress
+    )
+
     private fun configuredProfile(
         fpsValue: Int,
-        resolutionValue: String = CaptureSettings.resolutionForFps(this, fpsValue)
+        resolutionValue: String = preferredResolutionForFps(fpsValue)
     ): CaptureModeCatalog.Profile = CaptureModeCatalog.resolveSelection(
         context = this,
         fps = fpsValue,
@@ -3456,10 +3467,13 @@ class CaptureActivity : ComponentActivity() {
             return
         }
 
-        val recordingProfile = configuredProfile(
-            CaptureSettings.snapshot(this).fps,
-            CaptureSettings.snapshot(this).resolution
-        )
+        var startSettings = CaptureSettings.snapshot(this)
+        val preferredResolution = preferredResolutionForFps(startSettings.fps)
+        if (preferredResolution != startSettings.resolution) {
+            CaptureSettings.updateResolutionAndFps(this, preferredResolution, startSettings.fps)
+            startSettings = CaptureSettings.snapshot(this)
+        }
+        val recordingProfile = configuredProfile(startSettings.fps, startSettings.resolution)
         if (!recordingProfile.selectable) {
             refreshCapabilityMatrix()
             Haptics.error(this)
@@ -3981,7 +3995,6 @@ class CaptureActivity : ComponentActivity() {
         statusText.text = message
 
         val busy = CaptureStateStore.isBusyMessage(message)
-        SustainedPerformanceController.set(this, busy)
         val stopping = UiBehaviorRules.isRecordingFinalizing(message)
         val failure = message.startsWith("Falha") ||
             message.contains("permita", ignoreCase = true)

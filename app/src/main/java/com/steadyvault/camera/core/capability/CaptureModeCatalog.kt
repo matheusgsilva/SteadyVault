@@ -15,8 +15,8 @@ object CaptureModeCatalog {
         val source: Source,
         val highSpeed: Boolean = false
     ) {
-        val selectable: Boolean get() = source == Source.VALIDATED || source == Source.DETECTED
-        val available: Boolean get() = selectable
+        val selectable: Boolean get() = source == Source.VALIDATED || source == Source.DETECTED || source == Source.CACHED
+        val available: Boolean get() = source != Source.UNAVAILABLE && source != Source.ANALYZING && source != Source.UNVERIFIED
         val buttonText: String get() = when (source) {
             Source.UNAVAILABLE -> "Indisponível\n$fps FPS"
             Source.ANALYZING -> "Analisando\n$fps FPS"
@@ -66,9 +66,9 @@ object CaptureModeCatalog {
             val cached = cachedProfile(context, fps)
             when {
                 detected != null -> if (validated != null && validated.resolutionValue == detected.resolutionValue) validated.copy(highSpeed = detected.highSpeed) else detected
-                matrix != null && fps != CaptureModeStore.FPS_240 -> unavailable(fps)
                 validated != null -> validated
                 cached != null -> cached
+                matrix != null -> unavailable(fps)
                 scanInProgress -> Profile(fps, null, "Analisando", Source.ANALYZING)
                 else -> Profile(fps, null, "Não validado", Source.UNVERIFIED)
             }
@@ -88,12 +88,26 @@ object CaptureModeCatalog {
         matrix?.bestMode(safeResolution, fps)?.let { current ->
             return if (validated != null) Profile(fps, safeResolution, validated.resolutionLabel, Source.VALIDATED, current.highSpeed) else current.toProfile(Source.DETECTED)
         }
-        if (matrix != null && matrix.modes.any { it.fps == fps }) return unavailable(fps)
-        if (matrix == null && validated != null) return Profile(fps, safeResolution, validated.resolutionLabel, Source.VALIDATED, fps >= CaptureModeStore.FPS_120)
+        if (validated != null) return Profile(fps, safeResolution, validated.resolutionLabel, Source.VALIDATED, fps >= CaptureModeStore.FPS_120)
         cachedProfile(context, fps)?.takeIf { it.resolutionValue == safeResolution }?.let { return it }
+        if (matrix != null) return unavailable(fps)
         val fpsCapability = resolve(context, matrix, scanInProgress).profile(fps)
         if (fpsCapability.source == Source.UNAVAILABLE) return unavailable(fps)
         return Profile(fps, safeResolution, CaptureSettings.resolutionLabel(safeResolution), if (scanInProgress) Source.ANALYZING else Source.UNVERIFIED, fps >= CaptureModeStore.FPS_120)
+    }
+
+
+    fun preferredResolution(
+        context: Context,
+        fps: Int,
+        requestedResolution: String = CaptureSettings.resolutionForFps(context, fps),
+        matrix: CaptureCapabilityMatrix.Matrix? = CaptureCapabilityMatrix.cached(),
+        scanInProgress: Boolean = false
+    ): String {
+        val safeRequested = requestedResolution.takeIf { it in CaptureSettings.supportedResolutionValues }
+            ?: CaptureSettings.RESOLUTION_4K
+        if (matrix?.bestMode(safeRequested, fps) != null) return safeRequested
+        return resolve(context, matrix, scanInProgress).profile(fps).resolutionValue ?: safeRequested
     }
 
     fun remember(context: Context, matrix: CaptureCapabilityMatrix.Matrix) {

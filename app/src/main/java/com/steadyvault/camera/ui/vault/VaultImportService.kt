@@ -23,8 +23,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class VaultImportService : Service() {
     private val executor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "SteadyVault-ImportService") }
     private val busy = AtomicBoolean(false)
+    private val serviceLifecycleLock = Any()
     private var wakeLock: PowerManager.WakeLock? = null
     private var activeArea: String? = null
+    @Volatile private var latestStartId: Int = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -40,54 +42,73 @@ class VaultImportService : Service() {
             return START_STICKY
         }
 
-        val resolvedArea = area ?: VaultImportQueueStore.pendingAreas(this).firstOrNull()
-        if (resolvedArea == null) {
-            stopSelf(startId)
-            return START_NOT_STICKY
-        }
-        if (busy.compareAndSet(false, true)) {
-            activeArea = resolvedArea
-            promote(resolvedArea)
-            acquireWakeLock()
-            executor.execute { drainPendingQueues(resolvedArea) }
-        } else {
-            promote(activeArea ?: resolvedArea)
+        synchronized(serviceLifecycleLock) {
+            latestStartId = maxOf(latestStartId, startId)
+            val resolvedArea = area ?: VaultImportQueueStore.pendingAreas(this).firstOrNull()
+            if (resolvedArea == null) {
+                stopSelf(startId)
+                return START_NOT_STICKY
+            }
+            if (busy.compareAndSet(false, true)) {
+                activeArea = resolvedArea
+                promote(resolvedArea)
+                acquireWakeLock()
+                executor.execute { drainPendingQueues(resolvedArea) }
+            } else {
+                promote(activeArea ?: resolvedArea)
+            }
         }
         return START_STICKY
     }
 
     private fun drainPendingQueues(initialArea: String) {
         val blocked = mutableSetOf<String>()
-        var area: String? = initialArea
+        var preferredArea: String? = initialArea
         var pausedBySystem = false
-        while (area != null) {
+
+        while (true) {
+            val area = preferredArea?.takeIf { VaultImportQueueStore.hasPending(this, it) && it !in blocked }
+                ?: VaultImportQueueStore.pendingAreas(this).firstOrNull { it !in blocked }
+
+            if (area == null) {
+                busy.set(false)
+                val latePending = VaultImportQueueStore.pendingAreas(this).firstOrNull { it !in blocked }
+                if (latePending != null && busy.compareAndSet(false, true)) {
+                    preferredArea = latePending
+                    continue
+                }
+                break
+            }
+
+            preferredArea = null
             activeArea = area
             updateNotification(area)
-            val currentArea = area
             val outcome = runCatching {
-                VaultBulkImportRunner.processPending(this, currentArea) { updateNotification(currentArea) }
+                VaultBulkImportRunner.processPending(this, area) { updateNotification(area) }
             }.onFailure { error ->
                 AppLogRepository.error(this, "import", "Falha fatal no serviço de importação", error)
-                VaultBulkImportRunner.failPending(this, currentArea, error)
+                VaultBulkImportRunner.failPending(this, area, error)
             }.getOrElse { ProcessingOutcome.FAILED }
+
             when (outcome) {
                 ProcessingOutcome.PAUSED_BY_SYSTEM -> {
                     pausedBySystem = true
                     break
                 }
-                ProcessingOutcome.FAILED -> blocked += currentArea
-                else -> Unit
+                ProcessingOutcome.FAILED -> blocked += area
+                else -> blocked.remove(area)
             }
-            area = VaultImportQueueStore.pendingAreas(this).firstOrNull { it !in blocked }
         }
-        busy.set(false)
-        releaseWakeLock()
-        val finalArea = activeArea
-        if (pausedBySystem) {
-            finalArea?.let(::updateNotification)
-        } else {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
+
+        synchronized(serviceLifecycleLock) {
+            if (!pausedBySystem && !busy.get() && VaultImportQueueStore.pendingAreas(this).none { it !in blocked }) {
+                releaseWakeLock()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf(latestStartId)
+            } else if (pausedBySystem) {
+                releaseWakeLock()
+                activeArea?.let(::updateNotification)
+            }
         }
     }
 

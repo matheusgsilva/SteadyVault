@@ -1276,23 +1276,50 @@ class CaptureService : Service() {
         targetFps: Int,
         allowHdr: Boolean
     ): Pair<CameraProfile, EncoderProfile> {
-        return try {
-            selectBestCaptureConfiguration(targetFps, allowHdr)
-        } catch (primaryError: Throwable) {
-            if (targetFps != CaptureModeStore.FPS_60) throw primaryError
-            runCatching {
-                selectBestCaptureConfiguration(CaptureModeStore.FPS_30, allowHdr)
-            }.getOrElse { fallbackError ->
-                primaryError.addSuppressed(fallbackError)
-                throw primaryError
+        val fpsOrder = CaptureSettings.supportedFpsValues
+            .filter { it <= targetFps }
+            .sortedDescending()
+            .let { values -> if (targetFps in values) values else listOf(targetFps) + values }
+        var primaryError: Throwable? = null
+        fpsOrder.forEach { candidateFps ->
+            try {
+                return selectBestCaptureConfiguration(candidateFps, allowHdr && candidateFps < CaptureModeStore.FPS_120)
+            } catch (error: Throwable) {
+                if (primaryError == null) primaryError = error else primaryError?.addSuppressed(error)
             }
         }
+        throw primaryError ?: IllegalStateException("Nenhuma taxa de quadros pôde ser preparada")
     }
 
     private fun CameraProfile.hasExactFpsRange(): Boolean =
         fpsRange.lower == targetFps && fpsRange.upper == targetFps
 
     private fun Size.toPolicyDimensions() = StrictCaptureModePolicy.Dimensions(width, height)
+
+    /**
+     * O stream real da gravação é a Surface criada pelo MediaCodec. Usar o menor valor
+     * entre PRIVATE/MediaCodec/MediaRecorder podia validar uma câmera cuja Surface do
+     * encoder só garantia 30 FPS. Consulte primeiro a classe realmente configurada e
+     * use os demais formatos apenas quando o HAL não publicar esse dado.
+     */
+    private fun encoderSurfaceMinFrameDurationNs(
+        map: android.hardware.camera2.params.StreamConfigurationMap,
+        size: Size
+    ): Long {
+        val encoderDuration = runCatching {
+            map.getOutputMinFrameDuration(MediaCodec::class.java, size)
+        }.getOrNull()?.takeIf { it > 0L }
+        if (encoderDuration != null) return encoderDuration
+
+        val privateDuration = runCatching {
+            map.getOutputMinFrameDuration(ImageFormat.PRIVATE, size)
+        }.getOrNull()?.takeIf { it > 0L }
+        if (privateDuration != null) return privateDuration
+
+        return runCatching {
+            map.getOutputMinFrameDuration(MediaRecorder::class.java, size)
+        }.getOrNull()?.takeIf { it > 0L } ?: 0L
+    }
 
     private fun findRegularCameraProfiles(
         targetFps: Int,
@@ -1339,11 +1366,7 @@ class CaptureService : Service() {
             for (size in recordingSettings.preferredSizes()) {
                 if (!outputSizes.contains(size)) continue
 
-                val minFrameDuration = listOfNotNull(
-                    runCatching { map.getOutputMinFrameDuration(ImageFormat.PRIVATE, size) }.getOrNull(),
-                    runCatching { map.getOutputMinFrameDuration(MediaCodec::class.java, size) }.getOrNull(),
-                    runCatching { map.getOutputMinFrameDuration(MediaRecorder::class.java, size) }.getOrNull()
-                ).filter { it >= 0L }.minOrNull() ?: 0L
+                val minFrameDuration = encoderSurfaceMinFrameDurationNs(map, size)
                 val exactRange = selectedRange.lower == targetFps && selectedRange.upper == targetFps
                 val timingIsValid = minFrameDuration <= 0L ||
                         minFrameDuration <= frameDurationNs(targetFps) + FRAME_DURATION_TOLERANCE_NS
@@ -1787,7 +1810,13 @@ class CaptureService : Service() {
         fps: Int,
         requireMain10: Boolean
     ): EncoderProfile? {
-        var fallback: EncoderProfile? = null
+        val targetPerformancePoint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaCodecInfo.VideoCapabilities.PerformancePoint(size.width, size.height, fps)
+        } else {
+            null
+        }
+        var best: Pair<Long, EncoderProfile>? = null
+
         for (codecInfo in MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos) {
             if (!codecInfo.isEncoder || codecInfo.isSoftwareOnly) continue
             if (!codecInfo.supportedTypes.any { it.equals(mime, ignoreCase = true) }) continue
@@ -1797,15 +1826,32 @@ class CaptureService : Service() {
             if (requireMain10 && profileLevel == null) continue
             val videoCapabilities = capabilities.videoCapabilities ?: continue
             if (!runCatching { videoCapabilities.isSizeSupported(size.width, size.height) }.getOrDefault(false)) continue
+
+            val bitrateRange = videoCapabilities.bitrateRange
             val bitrate = desiredBitrate.coerceIn(videoCapabilities.bitrateRange.lower, videoCapabilities.bitrateRange.upper)
             val candidate = EncoderProfile(codecInfo.name, mime, bitrate, requireMain10, profileLevel?.first, profileLevel?.second)
             val exactRateSupported = runCatching {
                 videoCapabilities.areSizeAndRateSupported(size.width, size.height, fps.toDouble())
             }.getOrDefault(false)
-            if (exactRateSupported) return candidate
-            if (fallback == null) fallback = candidate
+            val performanceGuaranteed = targetPerformancePoint != null && runCatching {
+                videoCapabilities.supportedPerformancePoints?.any { it.covers(targetPerformancePoint) } == true
+            }.getOrDefault(false)
+            val bitrateUnclamped = desiredBitrate in bitrateRange
+
+            // A ordem do MediaCodecList não é uma garantia de desempenho. Para 4K60/HFR,
+            // priorize o codec que o próprio fabricante garante por PerformancePoint;
+            // depois considere suporte exato, taxa medida, vendor/hardware e bitrate.
+            val score =
+                (if (performanceGuaranteed) 1_000_000_000L else 0L) +
+                (if (exactRateSupported) 500_000_000L else 0L) +
+                (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && codecInfo.isVendor) 100_000_000L else 0L) +
+                (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && codecInfo.isHardwareAccelerated) 50_000_000L else 0L) +
+                (if (bitrateUnclamped) 10_000_000L else 0L) +
+                bitrate.toLong().coerceAtMost(9_000_000L)
+
+            if (best == null || score > best!!.first) best = score to candidate
         }
-        return fallback
+        return best?.second
     }
 
     private fun preferredEncoderProfileLevel(
@@ -2309,8 +2355,8 @@ class CaptureService : Service() {
         val suffix = if (highSpeed) "high-speed" else stabilizationName(profile)
         val fpsStatus = when {
             profile.targetFps < requestedTargetFps -> "⚠ ${profile.targetFps} FPS (pedido ${requestedTargetFps})"
-            requestedTargetFps == CaptureModeStore.FPS_60 && !profile.hasExactFpsRange() ->
-                "⚠ ${profile.fpsRange.lower}–${profile.fpsRange.upper} FPS (60 fixo indisponível)"
+            !profile.hasExactFpsRange() ->
+                "⚠ ${profile.fpsRange.lower}–${profile.fpsRange.upper} FPS (pedido ${requestedTargetFps} fixo)"
             else -> "${profile.targetFps} FPS"
         }
         val message = "Gravando ${sizeName(profile.videoSize)} • $fpsStatus • " +
@@ -2753,11 +2799,13 @@ class CaptureService : Service() {
         val claimed = claimRecording()
         val finalFile = claimed.output
         val rawFile = claimed.raw
+        val recorder = claimed.recorder
         val validOutput = claimed.wasStarted &&
-            runCatching { claimed.recorder?.stop() == true }.getOrDefault(false)
+            runCatching { recorder?.stop() == true }.getOrDefault(false)
+        val cadenceStats = recorder?.videoCadenceStats()
 
         releaseCameraOnly()
-        runCatching { claimed.recorder?.release() }
+        runCatching { recorder?.release() }
         sendBroadcast(Intent(ACTION_RECORDING_VISUAL_FINISHED).setPackage(packageName))
 
         val rawContainsData =
@@ -2797,6 +2845,7 @@ class CaptureService : Service() {
 
         val profile = selectedCamera
         val fps = profile?.targetFps ?: requestedTargetFps
+        logMeasuredCadence(cadenceStats, fps, profile)
 
         sendStateOnMain("Salvando original no cofre…")
         updateNotificationOnMain("Salvando original no cofre…")
@@ -2828,7 +2877,7 @@ class CaptureService : Service() {
         val repairStatus = "Original salvo sem processamento automático"
         val message = buildString {
             append("Vídeo salvo no cofre\n")
-            append(sizeName(size)).append(" • ").append(fps).append(" FPS • ")
+            append(sizeName(size)).append(" • ").append(cadenceDisplay(cadenceStats, fps)).append(" • ")
             append(qualityLabel).append(" • ").append(formatDuration(durationSeconds))
             append('\n').append(repairStatus)
         }
@@ -3570,6 +3619,38 @@ class CaptureService : Service() {
         super.onDestroy()
     }
 
+    private fun cadenceDisplay(
+        stats: HardwareRecorder.VideoCadenceStats?,
+        targetFps: Int
+    ): String {
+        if (stats == null || stats.frames < 2L || stats.effectiveFps <= 0.0) return "$targetFps FPS"
+        return if (stats.effectiveFps < targetFps * 0.99) {
+            "⚠ ${String.format(Locale.US, "%.2f", stats.effectiveFps)} FPS reais (pedido $targetFps)"
+        } else {
+            "${String.format(Locale.US, "%.2f", stats.effectiveFps)} FPS reais"
+        }
+    }
+
+    private fun logMeasuredCadence(
+        stats: HardwareRecorder.VideoCadenceStats?,
+        targetFps: Int,
+        profile: CameraProfile?
+    ) {
+        if (stats == null || stats.frames < 2L || stats.effectiveFps <= 0.0) return
+        val message =
+            "Cadência medida: ${String.format(Locale.US, "%.3f", stats.effectiveFps)} FPS, " +
+                "alvo=$targetFps, quadros=${stats.frames}, lacunasLongas=${stats.longGaps}, " +
+                "maiorLacuna=${stats.maxGapUs / 1000.0}ms, filaMuxPico=${stats.muxQueuePeak}, " +
+                "câmera=${profile?.cameraId ?: "?"}, resolução=${profile?.videoSize?.width ?: 0}x${profile?.videoSize?.height ?: 0}"
+        if (stats.effectiveFps < targetFps * 0.99 || stats.longGaps > 0L) {
+            AppLogRepository.warn(this, "recording_fps", message)
+            Log.w(LOG_TAG, message)
+        } else {
+            AppLogRepository.info(this, "recording_fps", message)
+            Log.i(LOG_TAG, message)
+        }
+    }
+
     private fun logRecordingStartup(profile: CameraProfile) {
         val requestedAt = recordingRequestedAtElapsedNs
         if (requestedAt <= 0L) return
@@ -3585,8 +3666,8 @@ class CaptureService : Service() {
         val warning = when {
             profile.targetFps < requestedTargetFps ->
                 "FPS reduzido para manter a gravação: solicitado=${requestedTargetFps}, efetivo=${profile.targetFps}, faixaAE=${profile.fpsRange.lower}-${profile.fpsRange.upper}, câmera=${profile.cameraId}, resolução=${profile.videoSize.width}x${profile.videoSize.height}"
-            requestedTargetFps == CaptureModeStore.FPS_60 && !profile.hasExactFpsRange() ->
-                "60 FPS fixo não pôde ser garantido; gravação mantida: solicitado=60-60, efetivo=${profile.fpsRange.lower}-${profile.fpsRange.upper}, câmera=${profile.cameraId}, resolução=${profile.videoSize.width}x${profile.videoSize.height}"
+            !profile.hasExactFpsRange() ->
+                "FPS fixo não pôde ser garantido; gravação mantida: solicitado=${requestedTargetFps}-${requestedTargetFps}, efetivo=${profile.fpsRange.lower}-${profile.fpsRange.upper}, câmera=${profile.cameraId}, resolução=${profile.videoSize.width}x${profile.videoSize.height}"
             else -> null
         } ?: return
         fpsFallbackWarningLogged = true

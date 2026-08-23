@@ -24,6 +24,7 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.ArrayDeque
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -66,11 +67,62 @@ class HardwareRecorder(
         val microphoneDirection: Int = MicrophoneDirection.MIC_DIRECTION_UNSPECIFIED
     )
 
+    data class VideoCadenceStats(
+        val frames: Long,
+        val effectiveFps: Double,
+        val longGaps: Long,
+        val maxGapUs: Long,
+        val muxQueuePeak: Long
+    )
+
     private data class BufferedVideoSample(
         val data: ByteArray,
         val presentationTimeUs: Long,
         val flags: Int
     )
+
+    private data class QueuedVideoSample(
+        val data: ByteArray?,
+        val size: Int,
+        val presentationTimeUs: Long,
+        val flags: Int,
+        val endOfStream: Boolean = false,
+        val stop: Boolean = false
+    )
+
+    /**
+     * Pequeno pool por potência de dois para desacoplar o drain do MediaCodec da escrita
+     * no MediaMuxer sem criar centenas de MB/s de lixo para o GC. O objetivo é liberar
+     * o output buffer do encoder imediatamente e absorver picos curtos do armazenamento.
+     */
+    private class VideoSamplePool {
+        private val lock = Any()
+        private val buckets = mutableMapOf<Int, ArrayDeque<ByteArray>>()
+
+        fun acquire(required: Int): ByteArray {
+            val bucket = bucketSize(required)
+            if (bucket > MAX_POOLED_VIDEO_SAMPLE_BYTES) return ByteArray(required)
+            synchronized(lock) {
+                val queue = buckets[bucket]
+                if (queue != null && queue.isNotEmpty()) return queue.removeFirst()
+            }
+            return ByteArray(bucket)
+        }
+
+        fun release(buffer: ByteArray) {
+            if (buffer.size > MAX_POOLED_VIDEO_SAMPLE_BYTES) return
+            synchronized(lock) {
+                val queue = buckets.getOrPut(buffer.size) { ArrayDeque() }
+                if (queue.size < MAX_POOLED_VIDEO_SAMPLES_PER_BUCKET) queue.addLast(buffer)
+            }
+        }
+
+        private fun bucketSize(required: Int): Int {
+            var size = MIN_POOLED_VIDEO_SAMPLE_BYTES
+            while (size < required && size < MAX_POOLED_VIDEO_SAMPLE_BYTES) size = size shl 1
+            return if (size >= required) size else required
+        }
+    }
 
     private val stateLock = Any()
     private val armed = AtomicBoolean(false)
@@ -78,18 +130,30 @@ class HardwareRecorder(
     private val stopRequested = AtomicBoolean(false)
     private val released = AtomicBoolean(false)
     private val videoDone = CountDownLatch(1)
+    private val videoMuxDone = CountDownLatch(1)
     private val audioDone = CountDownLatch(1)
     private val audioPreparationDone = CountDownLatch(1)
     private val recordingStartedElapsedMs = AtomicLong(0L)
     private val recordingStartedCaptureNs = AtomicLong(0L)
     private val lastVideoSampleElapsedMs = AtomicLong(0L)
     private val firstVideoSampleNs = AtomicLong(0L)
+    private val maxVideoMuxQueueDepth = AtomicLong(0L)
+    private var cadenceFrames = 0L
+    private var cadenceFirstPtsUs = Long.MIN_VALUE
+    private var cadenceLastPtsUs = Long.MIN_VALUE
+    private var cadenceLongGaps = 0L
+    private var cadenceMaxGapUs = 0L
     private val requestedAudioEndPtsUs = AtomicLong(0L)
     private val audioCaptureStarted = AtomicBoolean(false)
     private val audioAvailable = AtomicBoolean(false)
     private val audioPreparationAbandoned = AtomicBoolean(false)
     private val videoWriteInProgress = AtomicBoolean(false)
     private val videoDrainActive = AtomicBoolean(false)
+    private val videoMuxActive = AtomicBoolean(false)
+    private val videoMuxFailed = AtomicBoolean(false)
+    private val videoMuxStopSignaled = AtomicBoolean(false)
+    private val videoMuxQueue = ArrayBlockingQueue<QueuedVideoSample>(VIDEO_MUX_QUEUE_CAPACITY)
+    private val videoSamplePool = VideoSamplePool()
     private val audioCaptureActive = AtomicBoolean(false)
     private val audioPreparationActive = AtomicBoolean(false)
     private val audioResourcesReleased = AtomicBoolean(false)
@@ -101,6 +165,7 @@ class HardwareRecorder(
     private lateinit var muxerCoordinator: MuxerCoordinator
     private var inputSurface: Surface? = null
     private var videoThread: Thread? = null
+    private var videoMuxThread: Thread? = null
     private var audioThread: Thread? = null
     private var audioPreparationThread: Thread? = null
     private var agc: AutomaticGainControl? = null
@@ -124,6 +189,10 @@ class HardwareRecorder(
 
         try {
             prepareVideoEncoder()
+            // O drain do codec nunca escreve no disco diretamente. Um writer dedicado
+            // absorve picos curtos do MediaMuxer/armazenamento para não criar backpressure
+            // na Surface da câmera e perder períodos de 16,7 ms em 60 FPS.
+            startVideoMuxThread()
             // A Surface de vídeo fica disponível imediatamente. Microfone e AAC são
             // preparados em paralelo e nunca atrasam a criação da sessão Camera2.
             startVideoDrainThread()
@@ -154,6 +223,12 @@ class HardwareRecorder(
             check(!recording.get()) { "gravação já iniciada" }
             lastVideoSampleElapsedMs.set(0L)
             firstVideoSampleNs.set(0L)
+            maxVideoMuxQueueDepth.set(0L)
+            cadenceFrames = 0L
+            cadenceFirstPtsUs = Long.MIN_VALUE
+            cadenceLastPtsUs = Long.MIN_VALUE
+            cadenceLongGaps = 0L
+            cadenceMaxGapUs = 0L
             audioCaptureStarted.set(false)
             stopRequested.set(false)
             armed.set(true)
@@ -208,6 +283,25 @@ class HardwareRecorder(
 
     fun isVideoWriteInProgress(): Boolean = videoWriteInProgress.get()
 
+    fun videoCadenceStats(): VideoCadenceStats {
+        val spanUs = if (cadenceFirstPtsUs != Long.MIN_VALUE && cadenceLastPtsUs > cadenceFirstPtsUs) {
+            cadenceLastPtsUs - cadenceFirstPtsUs
+        } else {
+            0L
+        }
+        val effectiveFps = if (spanUs > 0L && cadenceFrames > 1L) {
+            (cadenceFrames - 1L) * 1_000_000.0 / spanUs.toDouble()
+        } else {
+            0.0
+        }
+        return VideoCadenceStats(
+            frames = cadenceFrames,
+            effectiveFps = effectiveFps,
+            longGaps = cadenceLongGaps,
+            maxGapUs = cadenceMaxGapUs,
+            muxQueuePeak = maxVideoMuxQueueDepth.get()
+        )
+    }
 
     fun stop(): Boolean {
         if (!recording.get() || released.get()) return false
@@ -223,10 +317,11 @@ class HardwareRecorder(
         runCatching { videoCodec.signalEndOfInputStream() }
 
         val videoFinished = videoDone.await(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        val videoMuxFinished = videoMuxDone.await(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         val audioFinished = !audioAvailable.get() || audioDone.await(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         recording.set(false)
 
-        if (!videoFinished || !audioFinished) {
+        if (!videoFinished || !videoMuxFinished || !audioFinished) {
             release()
             return false
         }
@@ -251,6 +346,8 @@ class HardwareRecorder(
         if (::videoCodec.isInitialized) runCatching { videoCodec.signalEndOfInputStream() }
         val current = Thread.currentThread()
         if (videoThread !== current) runCatching { videoThread?.join(RELEASE_JOIN_TIMEOUT_MS) }
+        signalVideoMuxEnd()
+        if (videoMuxThread !== current) runCatching { videoMuxThread?.join(RELEASE_JOIN_TIMEOUT_MS) }
         if (audioThread !== current) runCatching { audioThread?.join(RELEASE_JOIN_TIMEOUT_MS) }
         if (audioPreparationThread !== current) {
             runCatching { audioPreparationThread?.join(AUDIO_PREPARATION_JOIN_TIMEOUT_MS) }
@@ -285,10 +382,10 @@ class HardwareRecorder(
                 setInteger(MediaFormat.KEY_PROFILE, videoConfig.profile)
                 setInteger(MediaFormat.KEY_LEVEL, videoConfig.level)
             }
-            // Um único perfil do encoder em todos os FPS: tempo real, sem reordenação,
-            // baixa latência, taxa operacional explícita e sem descarte pela Surface.
+            // Gravação não é streaming interativo: não force KEY_LATENCY=1. Dar ao
+            // encoder a latência nativa permite que o hardware use sua fila interna para
+            // sustentar a cadência sob picos de complexidade sem bloquear a Camera2.
             setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
-            setInteger(MediaFormat.KEY_LATENCY, 1)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
             setFloat(MediaFormat.KEY_OPERATING_RATE, videoConfig.fps.toFloat())
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 0)
@@ -299,6 +396,9 @@ class HardwareRecorder(
         val capabilities = videoCodec.codecInfo.getCapabilitiesForType(videoConfig.mime)
         val encoderCapabilities = capabilities.encoderCapabilities
         when {
+            // Preserve o caminho VBR que já era estável no aparelho. O ganho de cadência
+            // vem da fila assíncrona e do buffering nativo do codec, sem impor um rate
+            // control CBR adicional ao encoder em 4K60.
             encoderCapabilities?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) == true ->
                 format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
             encoderCapabilities?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) == true ->
@@ -417,6 +517,99 @@ class HardwareRecorder(
         return record to channelMask
     }
 
+    private fun startVideoMuxThread() {
+        videoMuxActive.set(true)
+        videoMuxThread = Thread(
+            {
+                try {
+                    // Escrita de arquivo precisa andar rápido, mas nunca deve competir com
+                    // o drain urgente que libera buffers do encoder.
+                    Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+                    val info = MediaCodec.BufferInfo()
+                    while (true) {
+                        val sample = videoMuxQueue.take()
+                        if (sample.stop) break
+                        if (sample.endOfStream) {
+                            muxerCoordinator.writeVideoEndOfStream(sample.presentationTimeUs)
+                            continue
+                        }
+                        val data = sample.data ?: continue
+                        videoWriteInProgress.set(true)
+                        try {
+                            info.set(0, sample.size, sample.presentationTimeUs, sample.flags)
+                            muxerCoordinator.writeVideo(ByteBuffer.wrap(data, 0, sample.size), info, sample.presentationTimeUs)
+                        } finally {
+                            videoWriteInProgress.set(false)
+                            videoSamplePool.release(data)
+                        }
+                    }
+                } catch (t: Throwable) {
+                    videoMuxFailed.set(true)
+                    onError(t)
+                } finally {
+                    videoWriteInProgress.set(false)
+                    videoMuxActive.set(false)
+                    videoMuxDone.countDown()
+                    releasePipelineResourcesWhenQuiescent()
+                }
+            },
+            "SteadyVault-VideoMux"
+        ).apply { start() }
+    }
+
+    private fun enqueueVideoSample(buffer: ByteBuffer, sampleInfo: MediaCodec.BufferInfo, ptsUs: Long) {
+        val data = videoSamplePool.acquire(sampleInfo.size)
+        try {
+            buffer.duplicate().apply {
+                position(sampleInfo.offset)
+                limit(sampleInfo.offset + sampleInfo.size)
+            }.get(data, 0, sampleInfo.size)
+            enqueueVideoMuxItem(
+                QueuedVideoSample(
+                    data = data,
+                    size = sampleInfo.size,
+                    presentationTimeUs = ptsUs,
+                    flags = sampleInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM.inv()
+                )
+            )
+        } catch (t: Throwable) {
+            videoSamplePool.release(data)
+            throw t
+        }
+    }
+
+    private fun enqueueVideoEndOfStream(ptsUs: Long) {
+        enqueueVideoMuxItem(
+            QueuedVideoSample(
+                data = null,
+                size = 0,
+                presentationTimeUs = ptsUs,
+                flags = MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+                endOfStream = true
+            )
+        )
+    }
+
+    private fun enqueueVideoMuxItem(sample: QueuedVideoSample) {
+        while (!videoMuxFailed.get()) {
+            if (videoMuxQueue.offer(sample, VIDEO_MUX_QUEUE_OFFER_MS, TimeUnit.MILLISECONDS)) {
+                val depth = videoMuxQueue.size.toLong()
+                maxVideoMuxQueueDepth.accumulateAndGet(depth) { current, candidate -> max(current, candidate) }
+                return
+            }
+            if (released.get() && !sample.stop) throw IllegalStateException("writer de vídeo encerrado")
+        }
+        throw IllegalStateException("writer de vídeo falhou")
+    }
+
+    private fun signalVideoMuxEnd() {
+        if (!videoMuxStopSignaled.compareAndSet(false, true)) return
+        val stop = QueuedVideoSample(null, 0, 0L, 0, stop = true)
+        while (videoMuxActive.get() && !videoMuxFailed.get()) {
+            if (videoMuxQueue.offer(stop, VIDEO_MUX_QUEUE_OFFER_MS, TimeUnit.MILLISECONDS)) return
+        }
+    }
+
     private fun startVideoDrainThread() {
         videoDrainActive.set(true)
         videoThread = Thread(
@@ -427,6 +620,7 @@ class HardwareRecorder(
                 } catch (t: Throwable) {
                     onError(t)
                 } finally {
+                    signalVideoMuxEnd()
                     videoDone.countDown()
                     videoDrainActive.set(false)
                     releasePipelineResourcesWhenQuiescent()
@@ -468,7 +662,9 @@ class HardwareRecorder(
                 try {
                     // Vídeo é a carga irrecuperável. O buffer do AudioRecord absorve
                     // pequenas variações sem deixar o áudio preemptar o drain visual.
-                    Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+                    Process.setThreadPriority(
+                        if (videoConfig.fps >= 60) Process.THREAD_PRIORITY_DEFAULT else Process.THREAD_PRIORITY_DISPLAY
+                    )
                     captureAndEncodeAudio()
                 } catch (_: Throwable) {
                     // Áudio é complementar. Uma falha do microfone/AAC não deve
@@ -518,14 +714,18 @@ class HardwareRecorder(
         fun writeVideoSample(buffer: ByteBuffer, sampleInfo: MediaCodec.BufferInfo) {
             if (firstVideoPtsUs == Long.MIN_VALUE) establishVideoEpoch(sampleInfo.presentationTimeUs)
             val sourcePtsUs = (sampleInfo.presentationTimeUs - firstVideoPtsUs).coerceAtLeast(0L)
+            if (cadenceFirstPtsUs == Long.MIN_VALUE) cadenceFirstPtsUs = sourcePtsUs
+            if (cadenceLastPtsUs != Long.MIN_VALUE) {
+                val gapUs = (sourcePtsUs - cadenceLastPtsUs).coerceAtLeast(0L)
+                cadenceMaxGapUs = max(cadenceMaxGapUs, gapUs)
+                val nominalUs = 1_000_000L / videoConfig.fps.coerceAtLeast(1)
+                if (gapUs > nominalUs * 3L / 2L) cadenceLongGaps++
+            }
+            cadenceLastPtsUs = sourcePtsUs
+            cadenceFrames++
             val outputPtsUs = timestampNormalizer.normalize(sourcePtsUs)
             lastVideoOutputPtsUs = outputPtsUs
-            videoWriteInProgress.set(true)
-            try {
-                muxerCoordinator.writeVideo(buffer, sampleInfo, outputPtsUs)
-            } finally {
-                videoWriteInProgress.set(false)
-            }
+            enqueueVideoSample(buffer, sampleInfo, outputPtsUs)
         }
 
         fun clearStartupBuffer() {
@@ -650,7 +850,7 @@ class HardwareRecorder(
                     }
                     if (eos) openMuxerIfReady(info.presentationTimeUs, forceVideoOnly = true)
                     if (eos && lastVideoOutputPtsUs >= 0L) {
-                        muxerCoordinator.writeVideoEndOfStream(lastVideoOutputPtsUs + 1_000_000L / videoConfig.fps.coerceAtLeast(1))
+                        enqueueVideoEndOfStream(lastVideoOutputPtsUs + 1_000_000L / videoConfig.fps.coerceAtLeast(1))
                     }
                     videoCodec.releaseOutputBuffer(index, false)
                     if (eos) break
@@ -773,6 +973,7 @@ class HardwareRecorder(
         if (!released.get()) return
         if (
             videoDrainActive.get() ||
+            videoMuxActive.get() ||
             audioCaptureActive.get() ||
             audioPreparationActive.get()
         ) {
@@ -1136,6 +1337,11 @@ class HardwareRecorder(
         private const val AUDIO_CODEC_INPUT_BYTES = 32 * 1024
         private const val PCM_BYTES_PER_SAMPLE = 2
         private const val CODEC_TIMEOUT_US = 10_000L
+        private const val VIDEO_MUX_QUEUE_CAPACITY = 64
+        private const val VIDEO_MUX_QUEUE_OFFER_MS = 50L
+        private const val MIN_POOLED_VIDEO_SAMPLE_BYTES = 64 * 1024
+        private const val MAX_POOLED_VIDEO_SAMPLE_BYTES = 4 * 1024 * 1024
+        private const val MAX_POOLED_VIDEO_SAMPLES_PER_BUCKET = 4
         private const val AUDIO_EOS_IDLE_LIMIT = 300
         private const val STOP_TIMEOUT_SECONDS = 8L
         private const val RELEASE_JOIN_TIMEOUT_MS = 1_500L

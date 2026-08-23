@@ -27,7 +27,7 @@
 
 SteadyVault é um aplicativo Android de câmera e cofre de mídia voltado a gravação discreta em segundo plano, captura de alta qualidade e armazenamento privado no dispositivo. O projeto foi ajustado principalmente para o Galaxy S25 Ultra, preservando compatibilidade com outros aparelhos Android que exponham os modos necessários pelo Camera2.
 
-- Versão documentada: 1.8.220
+- Versão documentada: 1.8.237
 - Pacote Android: com.steadyvault.camera
 - Android mínimo: 10 / API 29
 - Compile SDK 37 e Target SDK 36
@@ -62,7 +62,7 @@ SteadyVault é um aplicativo Android de câmera e cofre de mídia voltado a grav
 - Análise, reparo de timeline e transcodificação por hardware opcionais, com presets para Apple, Android, web, social, criação e arquivo.
 - Navegador/downloader profissional com abertura de links http/https, identificação do player, mídia direta, análise por extrator, sessão/cookies, miniatura, qualidade/resolução, destino por cofre, perfis de desempenho, Wi‑Fi opcional, aria2, metadados, verificação de espaço e cancelamento.
 - Importação por arquivos ou pasta em fila persistente, executada em foreground service, cancelável pelo app ou pela notificação e retomável após interrupção do processo/sistema.
-- Saúde da gravação e desempenho da foto analisados fora do caminho crítico, cedendo imediatamente se uma nova captura começar.
+- Saúde da gravação e desempenho da foto são analisados fora do caminho crítico; importação, thumbnails e metadados cedem imediatamente se uma nova captura começar.
 - Importação transacional por cofre com arquivo `.svimport.partial`, `fsync`, validação e publicação final somente depois da cópia íntegra.
 - Cofre principal, Cofre secundário e Cofre terciário permanecem independentes; não há unificação de armazenamento ou galeria.
 
@@ -77,7 +77,7 @@ SteadyVault é um aplicativo Android de câmera e cofre de mídia voltado a grav
 - Preparar foco e exposição: ligado.
 - Perfil `VIDEO_RECORD`: aplicado automaticamente quando a câmera o suporta.
 - Proteção térmica: ligada.
-- Modo de desempenho sustentado: usado quando o aparelho oferece suporte e somente enquanto há gravação ativa.
+- O modo de desempenho sustentado do Android não é ativado durante a captura; o pipeline prioriza o pico disponível do hardware e registra a cadência real alcançada.
 - Android 16/API 36: AE Exposure-Time Priority adaptativo protege 60+ FPS regulares somente quando exposição/frame realmente ultrapassam o orçamento; em cenas claras volta ao AE normal quando o ISO chega ao piso. Sessões constrained high-speed continuam sem esse controle adicional.
 - Preview durante a gravação em segundo plano: desligado para reduzir carga.
 

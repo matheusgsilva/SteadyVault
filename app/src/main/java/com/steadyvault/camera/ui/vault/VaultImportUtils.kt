@@ -12,7 +12,6 @@ import java.util.Locale
 
 internal object VaultImportUtils {
     const val MAX_FOLDER_IMPORT_FILES = Int.MAX_VALUE
-    private const val MAX_EAGER_PERSISTED_DOCUMENTS = 64
 
     data class SourceInfo(
         val uri: Uri,
@@ -38,18 +37,25 @@ internal object VaultImportUtils {
 
     fun selectedDocumentUris(data: Intent?): List<Uri> {
         if (data == null) return emptyList()
-        val values = linkedSetOf<Uri>()
         val clip = data.clipData
-        if (clip != null) {
-            for (index in 0 until clip.itemCount) clip.getItemAt(index)?.uri?.let(values::add)
+        if (clip != null && clip.itemCount > 0) {
+            return buildList(clip.itemCount) {
+                for (index in 0 until clip.itemCount) clip.getItemAt(index)?.uri?.let(::add)
+            }
         }
-        data.data?.let(values::add)
-        return values.toList()
+        return data.data?.let(::listOf) ?: emptyList()
     }
 
     fun displayName(context: Context, uri: Uri): String = sourceInfo(context, uri).displayName
 
     fun sourceInfo(context: Context, uri: Uri): SourceInfo {
+        val fallbackName = fallbackDisplayName(uri)
+        val fallbackExtension = VaultMediaFormats.extensionOf(fallbackName)
+        if (fallbackExtension in VaultMediaFormats.ALL_EXTENSIONS) {
+            val video = fallbackExtension in VaultMediaFormats.VIDEO_EXTENSIONS
+            return SourceInfo(uri, fallbackName, VaultMediaFormats.mimeFor(fallbackExtension, video), -1L)
+        }
+
         var name: String? = null
         var size = -1L
         runCatching {
@@ -60,21 +66,35 @@ internal object VaultImportUtils {
                 }
             }
         }
-        val mime = runCatching { context.contentResolver.getType(uri).orEmpty() }.getOrDefault("")
-        return SourceInfo(uri, name.orEmpty().ifBlank { fallbackDisplayName(uri) }, mime, size)
+        val resolvedName = name.orEmpty().ifBlank { fallbackName }
+        val resolvedExtension = VaultMediaFormats.extensionOf(resolvedName)
+        val mime = if (resolvedExtension in VaultMediaFormats.ALL_EXTENSIONS) {
+            VaultMediaFormats.mimeFor(resolvedExtension, resolvedExtension in VaultMediaFormats.VIDEO_EXTENSIONS)
+        } else {
+            runCatching { context.contentResolver.getType(uri).orEmpty() }.getOrDefault("")
+        }
+        return SourceInfo(uri, resolvedName, mime, size)
     }
 
     fun persistDocumentReadPermissions(context: Context, data: Intent?, uris: List<Uri>) {
-        if (uris.isEmpty() || uris.size > MAX_EAGER_PERSISTED_DOCUMENTS) return
+        if (uris.isEmpty()) return
         val flags = (data?.flags ?: 0) and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         val persistFlags = flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
         if (persistFlags == 0) return
-        uris.forEach { uri -> runCatching { context.contentResolver.takePersistableUriPermission(uri, persistFlags) } }
+        var failures = 0
+        for (uri in uris.distinctBy { it.toString() }) {
+            if (runCatching { context.contentResolver.takePersistableUriPermission(uri, persistFlags) }.isFailure) failures++
+        }
+        if (failures > 0) AppLogRepository.warn(context, "import", "$failures URI(s) não aceitaram permissão persistente; a importação continuará com a permissão concedida pelo seletor enquanto disponível")
     }
 
     fun releaseDocumentReadPermissions(context: Context, uris: List<Uri>) {
-        if (uris.isEmpty() || uris.size > MAX_EAGER_PERSISTED_DOCUMENTS) return
-        uris.forEach { uri -> runCatching { context.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } }
+        if (uris.isEmpty()) return
+        val persisted: Set<String> = runCatching { context.contentResolver.persistedUriPermissions.mapTo(hashSetOf<String>()) { it.uri.toString() } }.getOrElse { emptySet() }
+        if (persisted.isEmpty()) return
+        uris.distinctBy { it.toString() }.filter { it.toString() in persisted }.forEach { uri ->
+            runCatching { context.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        }
     }
 
     fun persistTreeReadPermission(context: Context, data: Intent?, treeUri: Uri) {
@@ -87,7 +107,7 @@ internal object VaultImportUtils {
         runCatching { context.contentResolver.releasePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
     }
 
-    fun mediaUrisFromTree(context: Context, treeUri: Uri, maxFiles: Int = MAX_FOLDER_IMPORT_FILES, shouldCancel: () -> Boolean = { false }): List<Uri> {
+    fun mediaUrisFromTree(context: Context, treeUri: Uri, maxFiles: Int = MAX_FOLDER_IMPORT_FILES, onProgress: (Int) -> Unit = {}, shouldCancel: () -> Boolean = { false }): List<Uri> {
         val resolver = context.contentResolver
         val rootId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: return emptyList()
         val queue = ArrayDeque<String>()
@@ -132,6 +152,7 @@ internal object VaultImportUtils {
                     }
                 }
             }
+            onProgress(result.size)
         }
         return result.toList()
     }
@@ -153,7 +174,7 @@ internal object VaultImportUtils {
         return false
     }
 
-    private fun fallbackDisplayName(uri: Uri): String {
+    fun fallbackDisplayName(uri: Uri): String {
         val documentId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull().orEmpty()
         val raw = documentId.ifBlank { uri.lastPathSegment.orEmpty() }.ifBlank { uri.toString() }
         return compactDocumentName(raw)

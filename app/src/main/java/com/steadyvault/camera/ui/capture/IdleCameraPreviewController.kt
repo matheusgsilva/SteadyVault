@@ -1274,11 +1274,11 @@ class IdleCameraPreviewController(
         // fixa solicitada; quando o HAL não publica 120-120 mas publica 240-240, usa a
         // sessão fixa superior apenas para o preview. A gravação continua no FPS escolhido.
         val fixedRanges = ranges.filter { it.lower == it.upper }
+        fixedRanges.firstOrNull { it.lower == targetFps }?.let { return it }
         if (targetFps == CaptureModeStore.FPS_120) {
             fixedRanges.firstOrNull { it.lower == CaptureModeStore.FPS_240 }?.let { return it }
         }
-        return fixedRanges.firstOrNull { it.lower == targetFps }
-            ?: fixedRanges.filter { it.lower > targetFps }.minByOrNull { it.lower }
+        return fixedRanges.filter { it.lower > targetFps }.minByOrNull { it.lower }
     }
 
 

@@ -46,7 +46,7 @@ object VaultTrashRepository {
     }
 
     @Synchronized
-    fun moveToTrash(context: Context, item: VaultRepository.MediaItem): TrashItem? {
+    fun moveToTrash(context: Context, item: VaultRepository.MediaItem, warmThumbnail: Boolean = true): TrashItem? {
         if (VaultRepository.isBeingProcessed(item.file) || VaultRepository.isBeingViewed(item.file)) return null
         val origin = originFor(context, item.file) ?: return null
         val deletedAt = System.currentTimeMillis()
@@ -65,8 +65,8 @@ object VaultTrashRepository {
         target.setLastModified(item.modifiedAt)
         if (albumId != null) prefs(context).edit().putString(PREFIX_ALBUM + target.name, albumId).apply()
         if (origin == Origin.PRIMARY) VaultAlbumStore.removeMetadata(context, item.file)
-        MediaThumbnailRepository.warmUp(context, target, item.video)
-        return parse(target)
+        if (warmThumbnail) MediaThumbnailRepository.warmUp(context, target, item.video)
+        return TrashItem(target, item.name, deletedAt, origin, item.copy(file = target))
     }
 
     @Synchronized

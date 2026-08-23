@@ -2,6 +2,8 @@ package com.steadyvault.camera.storage.vault
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -25,6 +27,8 @@ object VaultRepository {
         val height: Int,
         val rotationDegrees: Int
     )
+
+    data class ImportedMedia(val item: MediaItem, val contentSha256: String)
 
     data class ReplacementResult(
         val file: File,
@@ -334,7 +338,7 @@ object VaultRepository {
     }
 
 
-    fun importFromUri(context: Context, uri: Uri): MediaItem {
+    fun importFromUri(context: Context, uri: Uri, onProgress: ((Long, Long) -> Unit)? = null): MediaItem {
         val resolver = context.contentResolver
         var displayName: String? = null
         runCatching {
@@ -342,14 +346,25 @@ object VaultRepository {
                 if (cursor.moveToFirst()) displayName = cursor.getString(0)
             }
         }
-        val mime = resolver.getType(uri).orEmpty()
+        return importFromUri(context, uri, displayName, runCatching { resolver.getType(uri).orEmpty() }.getOrDefault(""), onProgress)
+    }
+
+    fun importFromUri(context: Context, uri: Uri, displayName: String?, mime: String, onProgress: ((Long, Long) -> Unit)? = null, shouldCancel: () -> Boolean = { false }): MediaItem =
+        importFromUriVerified(context, uri, displayName, mime, onProgress, shouldCancel).item
+
+    fun importFromUriVerified(context: Context, uri: Uri, displayName: String?, mime: String, onProgress: ((Long, Long) -> Unit)? = null, shouldCancel: () -> Boolean = { false }): ImportedMedia {
+        check(!shouldCancel()) { "Importação cancelada" }
         val requestedName = VaultMediaFormats.importFileName(displayName, mime, "Importado")
         require(VaultMediaFormats.isSupported(requestedName, mime)) { "Formato de mídia não compatível" }
         val target = uniqueFile(primaryDirectory(context), requestedName)
         try {
-            PrivateMediaFileWriter.copyFromUri(context, uri, target)
-            return (readItem(target, fast = true) ?: throw IllegalStateException("Formato de mídia não reconhecido"))
-                .also { VaultMediaIndex.update(context, it) }
+            val copy = PrivateMediaFileWriter.copyFromUri(context, uri, target, onProgress, shouldCancel)
+            check(!shouldCancel()) { "Importação cancelada" }
+            val item = readItem(target, fast = true) ?: throw IllegalStateException("Formato de mídia não reconhecido")
+            check(!shouldCancel()) { "Importação cancelada" }
+            VaultMediaIndex.update(context, item)
+            check(!shouldCancel()) { "Importação cancelada" }
+            return ImportedMedia(item, copy.sha256)
         } catch (t: Throwable) {
             target.delete()
             throw t
@@ -505,29 +520,53 @@ object VaultRepository {
         if (video && !fast && !isBeingProcessed(file)) {
             val pathKey = normalizedPath(file)
             val length = file.length()
-            val retriever = MediaMetadataRetriever()
+            var encodedWidth = 0
+            var encodedHeight = 0
+
+            // Para a grade, MediaExtractor lê duração/resolução direto do contêiner e
+            // evita abrir decoder. Isso é muito mais rápido para centenas/milhares de vídeos.
+            val extractor = MediaExtractor()
             runCatching {
-                retriever.setDataSource(file.absolutePath)
-                val detectedDuration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                if (detectedDuration > 0L) {
-                    duration = detectedDuration
-                    synchronized(videoDurationCache) {
-                        videoDurationCache[pathKey] = length to detectedDuration
+                extractor.setDataSource(file.absolutePath)
+                for (trackIndex in 0 until extractor.trackCount) {
+                    val format = extractor.getTrackFormat(trackIndex)
+                    val trackMime = format.getString(MediaFormat.KEY_MIME).orEmpty()
+                    if (!trackMime.startsWith("video/")) continue
+                    val detectedDurationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else 0L
+                    if (detectedDurationUs > 0L) duration = detectedDurationUs / 1_000L
+                    if (format.containsKey(MediaFormat.KEY_WIDTH)) encodedWidth = format.getInteger(MediaFormat.KEY_WIDTH).coerceAtLeast(0)
+                    if (format.containsKey(MediaFormat.KEY_HEIGHT)) encodedHeight = format.getInteger(MediaFormat.KEY_HEIGHT).coerceAtLeast(0)
+                    if (format.containsKey(MediaFormat.KEY_ROTATION)) {
+                        rotationDegrees = ((format.getInteger(MediaFormat.KEY_ROTATION) % 360) + 360) % 360
                     }
-                }
-                val encodedWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-                val encodedHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
-                rotationDegrees = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
-                    ?.toIntOrNull()?.let { ((it % 360) + 360) % 360 } ?: 0
-                if (rotationDegrees == 90 || rotationDegrees == 270) {
-                    width = encodedHeight
-                    height = encodedWidth
-                } else {
-                    width = encodedWidth
-                    height = encodedHeight
+                    break
                 }
             }
-            runCatching { retriever.release() }
+            runCatching { extractor.release() }
+
+            // Alguns contêineres/provedores não expõem todos os campos no MediaExtractor.
+            // Só nesses casos usamos o retriever, evitando o custo dele na maioria dos vídeos.
+            if (duration <= 0L || encodedWidth <= 0 || encodedHeight <= 0) {
+                val retriever = MediaMetadataRetriever()
+                runCatching {
+                    retriever.setDataSource(file.absolutePath)
+                    if (duration <= 0L) duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                    if (encodedWidth <= 0) encodedWidth = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                    if (encodedHeight <= 0) encodedHeight = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                    rotationDegrees = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
+                        ?.toIntOrNull()?.let { ((it % 360) + 360) % 360 } ?: rotationDegrees
+                }
+                runCatching { retriever.release() }
+            }
+
+            if (duration > 0L) synchronized(videoDurationCache) { videoDurationCache[pathKey] = length to duration }
+            if (rotationDegrees == 90 || rotationDegrees == 270) {
+                width = encodedHeight
+                height = encodedWidth
+            } else {
+                width = encodedWidth
+                height = encodedHeight
+            }
         }
         else if (image && !fast) {
             runCatching {
@@ -577,6 +616,9 @@ object VaultRepository {
             updateMediaIndex(context, it)
             return it
         }
+        // Metadados de vídeo podem abrir um decoder pelo MediaMetadataRetriever. Durante
+        // a gravação preserve todo recurso do codec/ISP para Camera2 -> MediaCodec.
+        if (VaultStartupCoordinator.isCapturePriorityActive(context)) return item
         val generation = metadataCacheGeneration
         val detailed = readItem(item.file, fast = false) ?: item
         persistMetadata(context, detailed, generation)
@@ -585,6 +627,7 @@ object VaultRepository {
 
     /** Completa metadados depois da primeira renderização e persiste o resultado. */
     fun enrichVideoMetadata(context: Context, items: List<MediaItem>): List<MediaItem> {
+        if (VaultStartupCoordinator.isCapturePriorityActive(context)) return items
         val generation = metadataCacheGeneration
         val enriched = items.map { item ->
             val needsMetadata = item.video && (item.durationMs <= 0L || item.width <= 0 || item.height <= 0)

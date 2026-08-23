@@ -1308,8 +1308,7 @@ class SettingsActivity : FragmentActivity() {
         var capability = catalog.profile(selectedFps)
 
         editingFps = selectedFps
-        val requestedResolution = resolutionSelections[selectedFps]
-            ?: CaptureSettings.resolutionForFps(this, selectedFps)
+        val requestedResolution = preferredResolutionForFps(selectedFps)
         updateOptions(
             resolution,
             resolutionOptions(selectedFps),
@@ -1412,7 +1411,7 @@ class SettingsActivity : FragmentActivity() {
             CaptureSettings.save(this, previousForm)
         }
 
-        val targetResolution = resolutionSelections[targetFps] ?: CaptureSettings.resolutionForFps(this, targetFps)
+        val targetResolution = preferredResolutionForFps(targetFps)
         val fallback = previousForm.copy(fps = targetFps, resolution = targetResolution)
         val activated = if (cameraId != null) {
             CameraProfileStore.ensureProfiles(this, cameraId, fallback)
@@ -2393,10 +2392,17 @@ class SettingsActivity : FragmentActivity() {
         }
     }
 
+    private fun preferredResolutionForFps(fpsValue: Int): String = CaptureModeCatalog.preferredResolution(
+        context = this,
+        fps = fpsValue,
+        requestedResolution = resolutionSelections[fpsValue] ?: CaptureSettings.resolutionForFps(this, fpsValue),
+        matrix = selectedCapabilityMatrix()?.takeIf { it.modes.isNotEmpty() },
+        scanInProgress = capabilityMatrix == null && capabilityScanInProgress
+    )
+
     private fun configuredProfile(
         fpsValue: Int,
-        resolutionValue: String = resolutionSelections[fpsValue]
-            ?: CaptureSettings.resolutionForFps(this, fpsValue)
+        resolutionValue: String = preferredResolutionForFps(fpsValue)
     ): CaptureModeCatalog.Profile = CaptureModeCatalog.resolveSelection(
         context = this,
         fps = fpsValue,
