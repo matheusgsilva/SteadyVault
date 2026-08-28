@@ -136,6 +136,16 @@ object MediaThumbnailRepository {
         memoryCaches.remove(cache)
     }
 
+    /**
+     * Libera pressão de memória antes de uma gravação e invalida warm-ups que começaram
+     * antes de a câmera assumir prioridade. O cache em disco é preservado.
+     */
+    fun prepareForCapture() {
+        cacheGeneration.incrementAndGet()
+        warming.clear()
+        memoryCacheHandles().forEach { cache -> runCatching { cache.clearMemoryCache() } }
+    }
+
     fun cacheStats(context: Context): CacheStats {
         var files = 0
         var bytes = 0L

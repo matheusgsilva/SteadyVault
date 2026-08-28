@@ -29,6 +29,7 @@ import com.steadyvault.camera.storage.vault.VaultRepository
 import com.steadyvault.camera.storage.vault.RecordingFilePublisher
 import com.steadyvault.camera.storage.vault.RecordingRecoveryRepository
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
+import com.steadyvault.camera.storage.vault.MediaThumbnailRepository
 import com.steadyvault.camera.ui.capture.CaptureActivity
 import com.steadyvault.camera.ui.capture.CameraPreviewRegistry
 import com.steadyvault.camera.ui.apps.VaultScreenCaptureService
@@ -298,6 +299,10 @@ class CaptureService : Service() {
             return
         }
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
+        // Antes de abrir Camera2, elimine bitmaps/cache em RAM e invalide warm-ups que
+        // possam ter começado instantes antes. Isso reduz GC e decoder concorrente no
+        // trecho crítico de 4K60 sem apagar o cache persistente de thumbnails.
+        MediaThumbnailRepository.prepareForCapture()
         VaultScreenCaptureService.yieldToCameraCapture(this)
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
 
@@ -1724,13 +1729,15 @@ class CaptureService : Service() {
                     0L
             }
 
-        return (
-                if (isLogical) {
-                    1_000_000_000L
-                } else {
-                    0L
-                }
-                ) + levelScore
+        val routeScore = if (profile.targetFps >= CaptureModeStore.FPS_60) {
+            // Para cadência alta, uma câmera física dedicada evita a camada de roteamento/
+            // fusão de uma logical multi-camera quando o fabricante expõe ambas como IDs
+            // abríveis. Em 30 FPS mantemos a preferência lógica para recursos de lente.
+            if (isLogical) 0L else 1_000_000_000L
+        } else {
+            if (isLogical) 1_000_000_000L else 0L
+        }
+        return routeScore + levelScore
     }
 
     private fun highSpeedSizeScore(
@@ -3718,14 +3725,14 @@ class CaptureService : Service() {
         private const val CAMERA_RECOVERY_MAX_DELAY_STEPS = 8
         private const val CAMERA_RECOVERY_MAX_DELAY_MS = 2_800L
         private const val INITIAL_CAMERA_BUSY_RETRY_MS = 90L
-        private const val RECORDING_HEALTH_CHECK_INTERVAL_MS = 1_000L
-        private const val SCREEN_TRANSITION_HEALTH_DELAY_MS = 650L
-        private const val VIDEO_FRAME_STALL_RECOVERY_MS = 1_500L
+        private const val RECORDING_HEALTH_CHECK_INTERVAL_MS = 200L
+        private const val SCREEN_TRANSITION_HEALTH_DELAY_MS = 250L
+        private const val VIDEO_FRAME_STALL_RECOVERY_MS = 450L
         private const val FIRST_VIDEO_FRAME_GRACE_MS = 3_500L
         private const val SEGMENT_RESTART_DELAY_MS = 500L
         private const val SEGMENT_RETRY_DELAY_MS = 1_000L
 
-        private const val CAPTURE_PIPELINE_REVISION = "manual-direct-single-buffer-1.8.221"
+        private const val CAPTURE_PIPELINE_REVISION = "vbr-dedicated-camera-4k60-1.8.243"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"

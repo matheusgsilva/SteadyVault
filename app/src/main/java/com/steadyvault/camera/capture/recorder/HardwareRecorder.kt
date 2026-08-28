@@ -395,10 +395,11 @@ class HardwareRecorder(
         videoCodec = MediaCodec.createByCodecName(videoConfig.codecName)
         val capabilities = videoCodec.codecInfo.getCapabilitiesForType(videoConfig.mime)
         val encoderCapabilities = capabilities.encoderCapabilities
+        // VBR foi empiricamente mais estável no caminho 4K60 deste aparelho. Forçar
+        // CBR em 60 FPS introduziu quedas periódicas de aproximadamente um quadro a
+        // cada 0,3 s. Portanto deixe o encoder hardware administrar o orçamento de bits
+        // sem impor uma segunda cadência de rate-control sobre a Surface da Camera2.
         when {
-            // Preserve o caminho VBR que já era estável no aparelho. O ganho de cadência
-            // vem da fila assíncrona e do buffering nativo do codec, sem impor um rate
-            // control CBR adicional ao encoder em 4K60.
             encoderCapabilities?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) == true ->
                 format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
             encoderCapabilities?.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR) == true ->
@@ -662,9 +663,7 @@ class HardwareRecorder(
                 try {
                     // Vídeo é a carga irrecuperável. O buffer do AudioRecord absorve
                     // pequenas variações sem deixar o áudio preemptar o drain visual.
-                    Process.setThreadPriority(
-                        if (videoConfig.fps >= 60) Process.THREAD_PRIORITY_DEFAULT else Process.THREAD_PRIORITY_DISPLAY
-                    )
+                    Process.setThreadPriority(Process.THREAD_PRIORITY_DEFAULT)
                     captureAndEncodeAudio()
                 } catch (_: Throwable) {
                     // Áudio é complementar. Uma falha do microfone/AAC não deve
@@ -1337,11 +1336,11 @@ class HardwareRecorder(
         private const val AUDIO_CODEC_INPUT_BYTES = 32 * 1024
         private const val PCM_BYTES_PER_SAMPLE = 2
         private const val CODEC_TIMEOUT_US = 10_000L
-        private const val VIDEO_MUX_QUEUE_CAPACITY = 64
+        private const val VIDEO_MUX_QUEUE_CAPACITY = 180
         private const val VIDEO_MUX_QUEUE_OFFER_MS = 50L
         private const val MIN_POOLED_VIDEO_SAMPLE_BYTES = 64 * 1024
         private const val MAX_POOLED_VIDEO_SAMPLE_BYTES = 4 * 1024 * 1024
-        private const val MAX_POOLED_VIDEO_SAMPLES_PER_BUCKET = 4
+        private const val MAX_POOLED_VIDEO_SAMPLES_PER_BUCKET = 8
         private const val AUDIO_EOS_IDLE_LIMIT = 300
         private const val STOP_TIMEOUT_SECONDS = 8L
         private const val RELEASE_JOIN_TIMEOUT_MS = 1_500L

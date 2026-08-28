@@ -1026,7 +1026,7 @@ for required_token in (
     "lastVideoSampleElapsedMs.set(SystemClock.elapsedRealtime())",
     "startVideoMuxThread()",
     "ArrayBlockingQueue<QueuedVideoSample>",
-    "VIDEO_MUX_QUEUE_CAPACITY = 64",
+    "VIDEO_MUX_QUEUE_CAPACITY = 180",
     "enqueueVideoSample(buffer, sampleInfo, outputPtsUs)",
     "muxerCoordinator.writeVideo(ByteBuffer.wrap(data, 0, sample.size)",
     "MediaFormat.KEY_OPERATING_RATE",
@@ -1673,7 +1673,7 @@ for required in (
     "startMicrophoneWithoutBlockingVideo(token)",
     "professionalRecorder?.startAudioCapture() == true",
     "professionalRecorder?.continueWithoutAudio()",
-    'CAPTURE_PIPELINE_REVISION = "manual-direct-single-buffer-1.8.221"',
+    'CAPTURE_PIPELINE_REVISION = "vbr-dedicated-camera-4k60-1.8.243"',
 ):
     if required not in capture_service_text:
         errors.append(f"início imediato + request congelado incompleto: {required}")
@@ -1736,8 +1736,8 @@ if "MAX_STARTUP_BUFFER_BYTES = 16L * 1024L * 1024L" not in hardware_recorder_tex
     errors.append("buffer único de startup não está limitado a 16 MB")
 if "SERVICE_HEARTBEAT_INTERVAL_MS = 15_000L" not in capture_service_text:
     errors.append("heartbeat voltou a gravar SharedPreferences com frequência excessiva")
-if "RECORDING_HEALTH_CHECK_INTERVAL_MS = 1_000L" not in capture_service_text:
-    errors.append("watchdog voltou a acordar a cada 500 ms")
+if "RECORDING_HEALTH_CHECK_INTERVAL_MS = 200L" not in capture_service_text:
+    errors.append("watchdog de cadência não está na janela rápida de 200 ms")
 if "preparePreviewRecordingTransition { beginRecordingFlow() }" in capture_text:
     errors.append("PixelCopy voltou ao caminho de início da gravação pelo preview")
 frozen_request_pos = capture_service_text.find("session.setRepeatingRequest(request, null, null)")

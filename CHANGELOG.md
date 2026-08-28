@@ -1357,3 +1357,19 @@ As alterações anteriores à versão 1.8.46 não foram reconstruídas por falta
 - Cofre: a tela de escolha após a digital é aberta antes da vibração de sucesso e não pode ser empilhada sobre outra.
 - Cofre principal: manutenção de inicialização foi retirada do caminho crítico do primeiro carregamento após desbloquear; a grade é entregue antes e a manutenção roda em seguida.
 - Gravação: nenhuma alteração no pipeline de captura.
+
+## 1.8.242
+- Pipeline 60 FPS em modo cadence-first: CBR em 60+ quando suportado e menor complexidade do encoder hardware.
+- Fila de vídeo ampliada para absorver picos de I/O sem devolver backpressure à Surface da câmera.
+- Thread de muxer fica abaixo do drain urgente do vídeo; áudio mantém prioridade padrão para preservar continuidade sem preemptar o encoder.
+- Cache de thumbnails em RAM é liberado antes da gravação, preservando o cache em disco.
+- Em 60+ FPS, estabilização solicitada usa OIS quando disponível para reduzir carga do ISP sem perder estabilização.
+- Watchdog de stall reage muito mais cedo a uma interrupção real do pipeline.
+- Mantida a regra de continuar gravando com fallback e aviso, nunca parar apenas por queda de FPS.
+
+## 1.8.243
+- Revertido o CBR obrigatório de 60+ FPS após o vídeo de teste mostrar quedas periódicas de ~33,5 ms; VBR volta a ser preferido.
+- Removida a complexidade mínima forçada do encoder em 60+ FPS.
+- A estabilização volta a respeitar exatamente a escolha do usuário, sem troca automática para OIS.
+- Em 60 FPS, câmeras físicas dedicadas passam a ter prioridade sobre logical multi-camera quando o fabricante as expõe diretamente.
+- Mantidos o buffer assíncrono do muxer, a proteção contra stall longo e o isolamento de tarefas de cofre durante a gravação.
