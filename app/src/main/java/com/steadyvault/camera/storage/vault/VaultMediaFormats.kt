@@ -1,6 +1,5 @@
 package com.steadyvault.camera.storage.vault
 
-import java.io.File
 import java.util.Locale
 
 /** Centraliza formatos aceitos pelos cofres, importação, thumbnails e visualização. */
@@ -93,13 +92,6 @@ object VaultMediaFormats {
         .take(120)
         .trim()
         .ifBlank { "Midia_${System.currentTimeMillis()}.mp4" }
-
-    fun hasEquivalentFile(directory: File, displayName: String, sizeBytes: Long, mime: String = ""): Boolean {
-        val safe = importFileName(displayName, mime, "Importado")
-        val exact = File(directory, safe)
-        if (!exact.isFile || sizeBytes <= 0L) return false
-        return exact.length() == sizeBytes
-    }
 
     private val SUPPORTED_MIMES = ALL_EXTENSIONS.mapTo(mutableSetOf()) { mimeFor(it, it in VIDEO_EXTENSIONS) }.apply {
         add("image/jpg")

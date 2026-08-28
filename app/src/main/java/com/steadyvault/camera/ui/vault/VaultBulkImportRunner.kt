@@ -111,11 +111,12 @@ internal object VaultBulkImportRunner {
         )
     }
 
-    fun start(context: Context, area: String, uris: List<Uri>, label: String) {
+    fun start(context: Context, area: String, uris: List<Uri>, label: String, keepDuplicates: Boolean = false) {
         if (uris.isEmpty()) return
         val app = context.applicationContext
+        val effectiveKeepDuplicates = VaultImportQueueStore.job(app, area)?.keepDuplicates ?: keepDuplicates
         val enqueue = synchronized(queueLifecycleLock) {
-            val result = VaultImportQueueStore.enqueueDocuments(app, area, uris, label)
+            val result = VaultImportQueueStore.enqueueDocuments(app, area, uris, label, effectiveKeepDuplicates)
             if (result.createdNewJob) {
                 initialize(app, area, "Importando 0/${result.total} $label…", result.total)
             } else {
@@ -131,10 +132,10 @@ internal object VaultBulkImportRunner {
             result
         }
         VaultImportService.start(app, area)
-        AppLogRepository.info(app, "import", if (enqueue.createdNewJob) "Fila persistente criada para $area com ${uris.size} arquivo(s)" else "${uris.size} arquivo(s) acrescentado(s) à fila de $area • total ${enqueue.total}")
+        AppLogRepository.info(app, "import", if (enqueue.createdNewJob) "Fila persistente criada para $area com ${uris.size} arquivo(s) • repetidos=${if (effectiveKeepDuplicates) "manter" else "ignorar"}" else "${uris.size} arquivo(s) acrescentado(s) à fila de $area • total ${enqueue.total}")
     }
 
-    fun startTree(context: Context, area: String, treeUri: Uri, label: String) {
+    fun startTree(context: Context, area: String, treeUri: Uri, label: String, keepDuplicates: Boolean = false) {
         val app = context.applicationContext
         synchronized(queueLifecycleLock) {
             if (VaultImportQueueStore.hasPending(app, area)) {
@@ -142,7 +143,7 @@ internal object VaultBulkImportRunner {
                 VaultImportService.start(app, area)
                 return
             }
-            VaultImportQueueStore.createTree(app, area, treeUri, label)
+            VaultImportQueueStore.createTree(app, area, treeUri, label, keepDuplicates)
             initialize(app, area, "Lendo pasta…", 0)
         }
         VaultImportService.start(app, area)
@@ -336,9 +337,10 @@ internal object VaultBulkImportRunner {
             onProgress()
 
             val uriKey = uri.toString()
-            if (!seenUris.add(uriKey)) {
+            if (!job.keepDuplicates && !seenUris.add(uriKey)) {
                 skipped++
             } else {
+                if (job.keepDuplicates) seenUris.add(uriKey)
                 var lastProgressElapsed = 0L
                 val result = processItemWithWatchdog(
                     context = app,
@@ -350,6 +352,7 @@ internal object VaultBulkImportRunner {
                     skipped = skipped,
                     failureCount = failureCount,
                     done = done,
+                    keepDuplicates = job.keepDuplicates,
                     onCopyProgress = { copied, expected ->
                         val now = SystemClock.elapsedRealtime()
                         if (copied >= expected && expected > 0L || now - lastProgressElapsed >= 450L) {
@@ -477,6 +480,7 @@ internal object VaultBulkImportRunner {
         skipped: Int,
         failureCount: Int,
         done: Int,
+        keepDuplicates: Boolean,
         onCopyProgress: (Long, Long) -> Unit
     ): ItemResult {
         val fallbackName = VaultImportUtils.fallbackDisplayName(uri)
@@ -496,7 +500,9 @@ internal object VaultBulkImportRunner {
             heartbeat.set(SystemClock.elapsedRealtime())
             ensureItemActive(cancelToken)
             require(VaultMediaFormats.isSupported(source.displayName, source.mime)) { "Formato não compatível" }
-            if (alreadyImported(context, area, source)) return@submit ItemResult(ItemStatus.SKIPPED, source.displayName)
+            // Não decide duplicidade por nome, tamanho, URI ou histórico da origem.
+            // Em "Ignorar repetidos", somente o SHA-256 calculado durante a cópia
+            // pode confirmar que o conteúdo já existe no cofre.
             stage.set(ItemStage.COPYING)
             heartbeat.set(SystemClock.elapsedRealtime())
             val importedMedia = importOne(context, area, uri, source, {
@@ -510,12 +516,14 @@ internal object VaultBulkImportRunner {
             heartbeat.set(SystemClock.elapsedRealtime())
             ensureItemActive(cancelToken)
             val item = importedMedia.item
-            val duplicate = VaultImportDedupStore.findContentDuplicate(context, area, importedMedia.contentSha256, item.file.length(), directoryForArea(context, area), item.file) { heartbeat.set(SystemClock.elapsedRealtime()) }
-            if (duplicate != null) {
-                discardImported(context, area, item)
-                rememberImported(context, area, source, duplicate, importedMedia.contentSha256)
-                heartbeat.set(SystemClock.elapsedRealtime())
-                return@submit ItemResult(ItemStatus.SKIPPED, source.displayName)
+            if (!keepDuplicates) {
+                val duplicate = VaultImportDedupStore.findContentDuplicate(context, area, importedMedia.contentSha256, item.file.length(), directoryForArea(context, area), item.file) { heartbeat.set(SystemClock.elapsedRealtime()) }
+                if (duplicate != null) {
+                    discardImported(context, area, item)
+                    rememberImported(context, area, source, duplicate, importedMedia.contentSha256)
+                    heartbeat.set(SystemClock.elapsedRealtime())
+                    return@submit ItemResult(ItemStatus.SKIPPED, source.displayName)
+                }
             }
             rememberImported(context, area, source, item.file, importedMedia.contentSha256)
             VaultImportPostProcessor.enqueue(context, item)
@@ -698,13 +706,6 @@ internal object VaultBulkImportRunner {
             .putBoolean(key(area, KEY_CANCEL_REQUESTED), false)
             .putBoolean(key(area, KEY_SYSTEM_PAUSE_REQUESTED), false)
             .apply()
-    }
-
-    private fun alreadyImported(context: Context, area: String, source: VaultImportUtils.SourceInfo): Boolean {
-        if (source.sizeBytes <= 0L) return false
-        val directory = directoryForArea(context, area)
-        if (VaultMediaFormats.hasEquivalentFile(directory, source.displayName, source.sizeBytes, source.mime)) return true
-        return VaultImportDedupStore.containsValid(context, area, sourceKey(source), directory)
     }
 
     private fun rememberImported(context: Context, area: String, source: VaultImportUtils.SourceInfo, file: File, contentSha256: String = "") {

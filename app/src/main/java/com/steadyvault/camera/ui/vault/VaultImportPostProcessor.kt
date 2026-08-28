@@ -45,7 +45,7 @@ internal object VaultImportPostProcessor {
                     val detailed = runCatching { VaultRepository.loadMediaDetails(context, item) }.getOrElse { item }
                     if (!VaultStartupCoordinator.isCapturePriorityActive(context)) {
                         runCatching {
-                            val thumb = MediaThumbnailRepository.load(context, detailed.file, detailed.video, 384)
+                            val thumb = MediaThumbnailRepository.load(context, detailed.file, detailed.video, 512)
                             if (!thumb.isRecycled) thumb.recycle()
                         }
                     }

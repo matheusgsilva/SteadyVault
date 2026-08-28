@@ -1,3 +1,14 @@
+# 1.8.240
+
+- A importação nos três cofres agora pergunta, a cada novo lote, se deve **Ignorar repetidos** ou **Manter repetidos**.
+- A política escolhida é persistida junto com a fila, inclusive para retomada após interrupção do app/serviço.
+- Em **Ignorar repetidos**, continuam valendo a detecção rápida da origem e a confirmação SHA-256 do conteúdo; cópias idênticas são contabilizadas como ignoradas.
+- Em **Manter repetidos**, o importador não elimina URI/conteúdo repetido e cria uma nova cópia com nome único, sem substituir arquivos existentes.
+- Não permite misturar políticas diferentes enquanto uma fila do mesmo cofre ainda está pendente.
+- Thumbnails dos três cofres passam a ser geradas em 512 px e persistidas em JPEG qualidade 95, mantendo seis workers, cache e rejeição/regeneração de frames pretos.
+- O pós-processamento da importação já aquece a thumbnail em 512 px para que a grade abra com a versão de alta qualidade pronta.
+- Nenhuma alteração no pipeline de gravação.
+
 # 1.8.238
 
 - Remove a linha explicativa do card “MODO DE VÍDEO” da tela inicial, mantendo as configurações acessíveis nos Ajustes.
@@ -1338,3 +1349,11 @@ As alterações anteriores à versão 1.8.46 não foram reconstruídas por falta
 - Mais threads para geração de thumbnails e fila maior para reduzir demora ao abrir cofres grandes.
 - Tamanho alvo das miniaturas reduzido para carregar mais rápido sem perder qualidade perceptível na grade.
 - Nenhuma alteração no pipeline de gravação.
+
+## 1.8.241
+- Importação: removidos falsos positivos de repetidos por nome, tamanho, URI ou histórico da origem; somente SHA-256 do conteúdo confirma duplicidade.
+- Importação: arquivos antigos de mesmo tamanho têm hash calculado e cacheado sem limite arbitrário de candidatos, evitando também falsos negativos em lotes grandes.
+- Cofre: fluxo biométrico bloqueia prompts/seletores duplicados e ignora callbacks repetidos em sequência.
+- Cofre: a tela de escolha após a digital é aberta antes da vibração de sucesso e não pode ser empilhada sobre outra.
+- Cofre principal: manutenção de inicialização foi retirada do caminho crítico do primeiro carregamento após desbloquear; a grade é entregue antes e a manutenção roda em seguida.
+- Gravação: nenhuma alteração no pipeline de captura.

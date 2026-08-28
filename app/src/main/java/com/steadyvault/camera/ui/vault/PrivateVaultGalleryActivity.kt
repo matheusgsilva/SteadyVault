@@ -88,6 +88,7 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     private var gridColumns = VaultGridRules.DEFAULT_COLUMNS
     private val importSession = VaultImportSession()
     private var importWasRunning = false
+    private var pendingImportKeepDuplicates = false
     private val importMediaLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val trustedReturn = importSession.consume()
         if (trustedReturn) unlockVaultSession()
@@ -655,6 +656,10 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     }
 
     private fun openImporter() {
+        if (VaultImportQueueStore.hasPending(this, vaultArea) || VaultBulkImportRunner.snapshot(this, vaultArea).running) {
+            OneUiDialog.message(this, "Importação em andamento", "Aguarde a fila atual terminar antes de iniciar outra importação. Assim a opção de arquivos repetidos não é misturada entre lotes.")
+            return
+        }
         OneUiDialog.choices(
             activity = this,
             title = "Adicionar ao $vaultTitle",
@@ -663,7 +668,22 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
                 OneUiDialog.Choice("Selecionar arquivos", "Permite marcar vários vídeos e fotos de uma vez."),
                 OneUiDialog.Choice("Selecionar uma pasta", "Importa fotos e vídeos da pasta escolhida, inclusive subpastas.")
             )
-        ) { option -> if (option == 0) openFileImporter() else openFolderImporter() }
+        ) { option -> chooseImportDuplicatePolicy { keep ->
+            pendingImportKeepDuplicates = keep
+            if (option == 0) openFileImporter() else openFolderImporter()
+        } }
+    }
+
+    private fun chooseImportDuplicatePolicy(onChosen: (Boolean) -> Unit) {
+        OneUiDialog.choices(
+            activity = this,
+            title = "Arquivos repetidos",
+            message = "Escolha como esta importação deve tratar fotos e vídeos que já existem neste cofre.",
+            choices = listOf(
+                OneUiDialog.Choice("Ignorar repetidos", "Compara o conteúdo e não salva uma segunda cópia idêntica. Recomendado para importações grandes."),
+                OneUiDialog.Choice("Manter repetidos", "Importa também cópias idênticas. Os arquivos recebem nomes únicos para não substituir os existentes.")
+            )
+        ) { option -> onChosen(option == 1) }
     }
 
     private fun openFileImporter() {
@@ -689,7 +709,8 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
         setImportProgress(true, "Lendo pasta…")
         summary.text = "Lendo pasta…"
         scheduleImportStatusRefresh()
-        VaultBulkImportRunner.startTree(this, vaultArea, treeUri, "arquivo(s) da pasta")
+        VaultBulkImportRunner.startTree(this, vaultArea, treeUri, "arquivo(s) da pasta", pendingImportKeepDuplicates)
+        pendingImportKeepDuplicates = false
     }
 
     private fun importMediaBatch(uris: List<android.net.Uri>, label: String) {
@@ -700,7 +721,8 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
         setImportProgress(true, "Importando 0/${uris.size} $label…")
         summary.text = "Importando 0/${uris.size} $label…"
         scheduleImportStatusRefresh()
-        VaultBulkImportRunner.start(this, vaultArea, uris, label)
+        VaultBulkImportRunner.start(this, vaultArea, uris, label, pendingImportKeepDuplicates)
+        pendingImportKeepDuplicates = false
     }
 
 
@@ -1090,7 +1112,7 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     }
 
     companion object {
-        private const val THUMB_SIZE = 320
+        private const val THUMB_SIZE = 512
         private const val THUMBNAIL_THREADS = 6
         private const val THUMBNAIL_BACKLOG_LIMIT = 48
         private const val IMPORT_STATUS_REFRESH_MS = 500L

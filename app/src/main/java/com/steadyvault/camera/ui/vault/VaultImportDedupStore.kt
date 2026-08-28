@@ -12,18 +12,6 @@ internal object VaultImportDedupStore {
     private val lock = Any()
     @Volatile private var helper: Helper? = null
 
-    fun containsValid(context: Context, area: String, sourceKey: String, directory: File): Boolean = synchronized(lock) {
-        val database = database(context).writableDatabase
-        database.query(TABLE, arrayOf(COLUMN_FILE_NAME, COLUMN_SIZE), "$COLUMN_AREA = ? AND $COLUMN_SOURCE_KEY = ?", arrayOf(area, sourceKey), null, null, null, "1").use { cursor ->
-            if (!cursor.moveToFirst()) return@synchronized false
-            val file = File(directory, cursor.getString(0))
-            val expectedSize = cursor.getLong(1)
-            if (file.isFile && (expectedSize <= 0L || file.length() == expectedSize)) return@synchronized true
-        }
-        database.delete(TABLE, "$COLUMN_AREA = ? AND $COLUMN_SOURCE_KEY = ?", arrayOf(area, sourceKey))
-        false
-    }
-
     fun remember(context: Context, area: String, sourceKey: String, file: File, contentSha256: String = "") = synchronized(lock) {
         val values = ContentValues().apply {
             put(COLUMN_AREA, area)
@@ -81,20 +69,15 @@ internal object VaultImportDedupStore {
             }
         }
 
-        var checked = 0
         val candidates = directory.listFiles { file ->
             file.isFile && file.length() == sizeBytes && VaultMediaFormats.isSupported(file.name) && !sameFile(file, exclude)
         }.orEmpty()
-        val maxCandidates = when {
-            sizeBytes >= 512L * 1024L * 1024L -> 2
-            sizeBytes >= 128L * 1024L * 1024L -> 4
-            sizeBytes >= 32L * 1024L * 1024L -> 8
-            else -> MAX_LEGACY_HASH_CANDIDATES
-        }
         for (candidate in candidates) {
-            if (checked++ >= maxCandidates) break
             onProgress()
-            val hash = runCatching { PrivateMediaFileWriter.sha256(candidate) }.getOrNull() ?: continue
+            val hash = contentHashForFile(context, area, candidate) ?:
+                runCatching { PrivateMediaFileWriter.sha256(candidate) }.getOrNull()?.also {
+                    rememberContentHash(context, area, candidate, it)
+                } ?: continue
             onProgress()
             if (hash == contentSha256) return@synchronized candidate
         }
@@ -157,6 +140,5 @@ internal object VaultImportDedupStore {
     private const val COLUMN_SIZE = "size_bytes"
     private const val COLUMN_MODIFIED = "modified_at"
     private const val COLUMN_CONTENT_HASH = "content_sha256"
-    private const val MAX_LEGACY_HASH_CANDIDATES = 64
     private const val LOCAL_HASH_SOURCE_PREFIX = "local_hash:"
 }

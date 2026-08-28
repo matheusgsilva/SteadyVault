@@ -23,14 +23,15 @@ internal object VaultImportQueueStore {
         val treeUri: Uri?,
         val nextIndex: Int,
         val queueReady: Boolean,
-        val expectedCount: Int
+        val expectedCount: Int,
+        val keepDuplicates: Boolean
     ) {
         val isTree: Boolean get() = type == TYPE_TREE
     }
 
     data class EnqueueResult(val total: Int, val createdNewJob: Boolean, val waitingForTreeScan: Boolean)
 
-    fun createDocuments(context: Context, area: String, uris: List<Uri>, label: String) = synchronized(lock) {
+    fun createDocuments(context: Context, area: String, uris: List<Uri>, label: String, keepDuplicates: Boolean) = synchronized(lock) {
         requireValidArea(area)
         pendingAppendFile(context, area).delete()
         writeQueueLocked(context, area, uris)
@@ -42,17 +43,19 @@ internal object VaultImportQueueStore {
             .putInt(key(area, "next_index"), 0)
             .putInt(key(area, "expected_count"), uris.size)
             .putBoolean(key(area, "queue_ready"), true)
+            .putBoolean(key(area, "keep_duplicates"), keepDuplicates)
             .commit()
     }
 
-    fun enqueueDocuments(context: Context, area: String, uris: List<Uri>, label: String): EnqueueResult = synchronized(lock) {
+    fun enqueueDocuments(context: Context, area: String, uris: List<Uri>, label: String, keepDuplicates: Boolean): EnqueueResult = synchronized(lock) {
         requireValidArea(area)
         if (uris.isEmpty()) return@synchronized EnqueueResult(currentQueueCountLocked(context, area), false, false)
         val existing = jobLocked(context, area)
         if (existing == null) {
-            createDocuments(context, area, uris, label)
+            createDocuments(context, area, uris, label, keepDuplicates)
             return@synchronized EnqueueResult(uris.size, true, false)
         }
+        check(existing.keepDuplicates == keepDuplicates) { "A importação atual usa outra opção para arquivos repetidos. Aguarde a fila terminar." }
         if (!existing.queueReady) {
             val deferred = readQueueFileLocked(pendingAppendFile(context, area), allowMissing = true) + uris
             writeQueueFileLocked(pendingAppendFile(context, area), deferred)
@@ -65,7 +68,7 @@ internal object VaultImportQueueStore {
         EnqueueResult(combined.size, false, false)
     }
 
-    fun createTree(context: Context, area: String, treeUri: Uri, label: String) = synchronized(lock) {
+    fun createTree(context: Context, area: String, treeUri: Uri, label: String, keepDuplicates: Boolean) = synchronized(lock) {
         requireValidArea(area)
         queueFile(context, area).delete()
         pendingAppendFile(context, area).delete()
@@ -77,6 +80,7 @@ internal object VaultImportQueueStore {
             .putInt(key(area, "next_index"), 0)
             .putInt(key(area, "expected_count"), 0)
             .putBoolean(key(area, "queue_ready"), false)
+            .putBoolean(key(area, "keep_duplicates"), keepDuplicates)
             .commit()
     }
 
@@ -110,7 +114,8 @@ internal object VaultImportQueueStore {
             treeUri = treeUri,
             nextIndex = prefs.getInt(key(area, "next_index"), 0).coerceAtLeast(0),
             queueReady = prefs.getBoolean(key(area, "queue_ready"), false),
-            expectedCount = prefs.getInt(key(area, "expected_count"), 0).coerceAtLeast(0)
+            expectedCount = prefs.getInt(key(area, "expected_count"), 0).coerceAtLeast(0),
+            keepDuplicates = prefs.getBoolean(key(area, "keep_duplicates"), false)
         )
     }
 
@@ -149,6 +154,7 @@ internal object VaultImportQueueStore {
             .remove(key(area, "next_index"))
             .remove(key(area, "expected_count"))
             .remove(key(area, "queue_ready"))
+            .remove(key(area, "keep_duplicates"))
             .commit()
     }
 

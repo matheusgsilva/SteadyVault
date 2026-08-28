@@ -211,7 +211,7 @@ object MediaThumbnailRepository {
         runCatching {
             val temporary = File(target.parentFile, target.name + ".tmp")
             temporary.outputStream().buffered().use { output ->
-                check(bitmap.compress(Bitmap.CompressFormat.JPEG, 88, output))
+                check(bitmap.compress(Bitmap.CompressFormat.JPEG, 95, output))
             }
             if (!temporary.renameTo(target)) {
                 target.delete()

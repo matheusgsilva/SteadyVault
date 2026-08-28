@@ -1,6 +1,7 @@
 package com.steadyvault.camera.ui.vault
 
 import com.steadyvault.camera.storage.vault.VaultAreaId
+import android.app.Dialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -111,6 +112,9 @@ class PrimaryVaultActivity : FragmentActivity() {
     private var switchingBiometricToPin = false
     private var pinUnlockDialogActive = false
     private var biometricPrompt: BiometricPrompt? = null
+    private var biometricVaultChooserDialog: Dialog? = null
+    private var biometricAssociationDialog: Dialog? = null
+    private var lastBiometricSuccessElapsedMs = 0L
     private var unlockTarget = UnlockTarget.PRIMARY
     private var skipAutomaticUnlockOnce = false
     @Volatile private var refreshGeneration = 0
@@ -123,6 +127,7 @@ class PrimaryVaultActivity : FragmentActivity() {
     private var sortMode = SortMode.NEWEST
     private val importSession = VaultImportSession()
     private var importWasRunning = false
+    private var pendingImportKeepDuplicates = false
 
     private val importMediaLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val trustedReturn = importSession.consume()
@@ -321,6 +326,10 @@ class PrimaryVaultActivity : FragmentActivity() {
         pinUnlockDialogActive = false
         biometricPrompt?.cancelAuthentication()
         biometricPrompt = null
+        biometricVaultChooserDialog?.dismiss()
+        biometricVaultChooserDialog = null
+        biometricAssociationDialog?.dismiss()
+        biometricAssociationDialog = null
         mainHandler.removeCallbacksAndMessages(null)
         refreshGeneration++
         importSession.cancel()
@@ -1136,7 +1145,7 @@ class PrimaryVaultActivity : FragmentActivity() {
             requestPinUnlock()
             return
         }
-        if (unlocking) return
+        if (unlocking || biometricPrompt != null || biometricVaultChooserDialog?.isShowing == true || biometricAssociationDialog?.isShowing == true) return
         unlocking = true
         unlockTarget = UnlockTarget.PRIMARY
         val useBiometric = VaultSecuritySettings.biometricEnabled(this) &&
@@ -1166,6 +1175,7 @@ class PrimaryVaultActivity : FragmentActivity() {
     }
 
     private fun showBiometricUnlock() {
+        if (biometricPrompt != null || biometricVaultChooserDialog?.isShowing == true || biometricAssociationDialog?.isShowing == true) return
         val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
             BiometricManager.Authenticators.BIOMETRIC_WEAK
         val prompt = BiometricPrompt(
@@ -1173,10 +1183,16 @@ class PrimaryVaultActivity : FragmentActivity() {
             ContextCompat.getMainExecutor(this),
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (biometricVaultChooserDialog?.isShowing == true || biometricAssociationDialog?.isShowing == true ||
+                        now - lastBiometricSuccessElapsedMs < BIOMETRIC_SUCCESS_DEBOUNCE_MS
+                    ) return
+                    lastBiometricSuccessElapsedMs = now
                     biometricPrompt = null
                     switchingBiometricToPin = false
-                    Haptics.success(this@PrimaryVaultActivity)
+                    // Mostra o destino imediatamente; a vibração não fica no caminho crítico visual.
                     showBiometricVaultChooser()
+                    mainHandler.post { if (!isFinishing && !isDestroyed) Haptics.success(this@PrimaryVaultActivity) }
                 }
 
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
@@ -1209,8 +1225,9 @@ class PrimaryVaultActivity : FragmentActivity() {
     }
 
     private fun showBiometricVaultChooser() {
+        if (isFinishing || isDestroyed) { unlocking = false; return }
+        if (biometricVaultChooserDialog?.isShowing == true || biometricAssociationDialog?.isShowing == true) return
         unlocking = false
-        if (isFinishing || isDestroyed) return
         val targets = availableBiometricTargets()
         val preferred = biometricTargetFromPreference(VaultSecuritySettings.biometricVaultTarget(this))
         if (preferred != null && preferred in targets) {
@@ -1225,14 +1242,19 @@ class PrimaryVaultActivity : FragmentActivity() {
             "Lembrar um cofre",
             "Associar a biometria para abrir automaticamente nas próximas vezes."
         )
-        OneUiDialog.choices(
+        val dialog = OneUiDialog.choices(
             activity = this,
             title = "Acesso confirmado",
             message = "Escolha onde entrar agora. Esta tela só aparece depois da biometria.",
             choices = choices
         ) { position ->
+            biometricVaultChooserDialog = null
             if (position < targets.size) openVaultAfterBiometric(targets[position])
             else showBiometricAssociationChooser(targets)
+        }
+        biometricVaultChooserDialog = dialog
+        dialog.setOnDismissListener {
+            if (biometricVaultChooserDialog === dialog) biometricVaultChooserDialog = null
         }
     }
 
@@ -1243,12 +1265,14 @@ class PrimaryVaultActivity : FragmentActivity() {
             val choice = biometricChoice(target)
             OneUiDialog.Choice(choice.title, "Abrir automaticamente este cofre após a biometria.")
         }
-        OneUiDialog.choices(
+        if (biometricAssociationDialog?.isShowing == true) return
+        val dialog = OneUiDialog.choices(
             activity = this,
             title = "Associar biometria",
             message = "A preferência pode ser alterada depois nos ajustes.",
             choices = choices
         ) { position ->
+            biometricAssociationDialog = null
             if (position == 0) {
                 VaultSecuritySettings.setBiometricVaultTarget(this, VaultSecuritySettings.BIOMETRIC_TARGET_ASK)
                 showBiometricVaultChooser()
@@ -1258,6 +1282,10 @@ class PrimaryVaultActivity : FragmentActivity() {
                 Toast.makeText(this, "Biometria associada a ${biometricChoice(target).title.lowercase()}.", Toast.LENGTH_SHORT).show()
                 openVaultAfterBiometric(target)
             }
+        }
+        biometricAssociationDialog = dialog
+        dialog.setOnDismissListener {
+            if (biometricAssociationDialog === dialog) biometricAssociationDialog = null
         }
     }
 
@@ -1287,6 +1315,9 @@ class PrimaryVaultActivity : FragmentActivity() {
     }
 
     private fun openVaultAfterBiometric(target: UnlockTarget) {
+        unlocking = false
+        biometricVaultChooserDialog = null
+        biometricAssociationDialog = null
         when (target) {
             UnlockTarget.PRIMARY -> {
                 PrimaryVaultLock.unlockSession()
@@ -1398,8 +1429,8 @@ class PrimaryVaultActivity : FragmentActivity() {
         runCatching {
             ioExecutor.execute {
                 val initial = runCatching {
-                    VaultRepository.runStartupMaintenance(this)
-                    VaultTrashRepository.purgeExpired(this)
+                    // Primeiro entrega a grade/index ao usuário. Manutenções que varrem arquivos
+                    // rodam depois e não ficam mais no caminho crítico do desbloqueio biométrico.
                     val items = VaultRepository.list(this)
                     val total = items.size
                     val used = VaultRepository.usedBytes(this)
@@ -1422,6 +1453,10 @@ class PrimaryVaultActivity : FragmentActivity() {
                         Haptics.error(this)
                         Toast.makeText(this, it.message ?: "Falha ao carregar o cofre", Toast.LENGTH_LONG).show()
                     }
+                }
+                if (initial.isSuccess && generation == refreshGeneration && PrimaryVaultLock.isUnlocked(this)) {
+                    runCatching { VaultRepository.runStartupMaintenance(this) }
+                    runCatching { VaultTrashRepository.purgeExpired(this) }
                 }
             }
         }.onFailure {
@@ -1512,6 +1547,10 @@ class PrimaryVaultActivity : FragmentActivity() {
     }
 
     private fun openImporter() {
+        if (VaultImportQueueStore.hasPending(this, VaultAreaId.PRIMARY) || VaultBulkImportRunner.snapshot(this, VaultAreaId.PRIMARY).running) {
+            OneUiDialog.message(this, "Importação em andamento", "Aguarde a fila atual terminar antes de iniciar outra importação. Assim a opção de arquivos repetidos não é misturada entre lotes.")
+            return
+        }
         OneUiDialog.choices(
             activity = this,
             title = "Importar para o cofre",
@@ -1520,7 +1559,22 @@ class PrimaryVaultActivity : FragmentActivity() {
                 OneUiDialog.Choice("Selecionar arquivos", "Permite marcar vários vídeos e fotos de uma vez."),
                 OneUiDialog.Choice("Selecionar uma pasta", "Importa fotos e vídeos da pasta escolhida, inclusive subpastas.")
             )
-        ) { option -> if (option == 0) openFileImporter() else openFolderImporter() }
+        ) { option -> chooseImportDuplicatePolicy { keep ->
+            pendingImportKeepDuplicates = keep
+            if (option == 0) openFileImporter() else openFolderImporter()
+        } }
+    }
+
+    private fun chooseImportDuplicatePolicy(onChosen: (Boolean) -> Unit) {
+        OneUiDialog.choices(
+            activity = this,
+            title = "Arquivos repetidos",
+            message = "Escolha como esta importação deve tratar fotos e vídeos que já existem no cofre.",
+            choices = listOf(
+                OneUiDialog.Choice("Ignorar repetidos", "Compara o conteúdo e não salva uma segunda cópia idêntica. Recomendado para importações grandes."),
+                OneUiDialog.Choice("Manter repetidos", "Importa também cópias idênticas. Os arquivos recebem nomes únicos para não substituir os existentes.")
+            )
+        ) { option -> onChosen(option == 1) }
     }
 
     private fun openFileImporter() {
@@ -1546,7 +1600,8 @@ class PrimaryVaultActivity : FragmentActivity() {
         setImportProgress(true, "Lendo pasta…")
         storageText.text = "Lendo pasta…"
         scheduleImportStatusRefresh()
-        VaultBulkImportRunner.startTree(this, VaultAreaId.PRIMARY, treeUri, "arquivo(s) da pasta")
+        VaultBulkImportRunner.startTree(this, VaultAreaId.PRIMARY, treeUri, "arquivo(s) da pasta", pendingImportKeepDuplicates)
+        pendingImportKeepDuplicates = false
     }
 
     private fun importMediaBatch(uris: List<android.net.Uri>, label: String) {
@@ -1557,7 +1612,8 @@ class PrimaryVaultActivity : FragmentActivity() {
         setImportProgress(true, "Importando 0/${uris.size} $label…")
         storageText.text = "Importando 0/${uris.size} $label…"
         scheduleImportStatusRefresh()
-        VaultBulkImportRunner.start(this, VaultAreaId.PRIMARY, uris, label)
+        VaultBulkImportRunner.start(this, VaultAreaId.PRIMARY, uris, label, pendingImportKeepDuplicates)
+        pendingImportKeepDuplicates = false
     }
 
 
@@ -2028,7 +2084,7 @@ class PrimaryVaultActivity : FragmentActivity() {
             MediaThumbnailRepository.load(context, item.file, item.video, THUMB_MAX_SIDE)
 
         companion object {
-            private const val THUMB_MAX_SIDE = 320
+            private const val THUMB_MAX_SIDE = 512
             private const val THUMBNAIL_THREADS = 6
             private const val THUMBNAIL_BACKLOG_LIMIT = 48
         }
@@ -2038,6 +2094,7 @@ class PrimaryVaultActivity : FragmentActivity() {
 
     companion object {
         private const val BIOMETRIC_CANCEL_FALLBACK_MS = 350L
+        private const val BIOMETRIC_SUCCESS_DEBOUNCE_MS = 900L
         private const val OPTIMIZATION_REFRESH_MS = 1_000L
         private const val PROCESSING_POLL_MS = 250L
         private const val IMPORT_STATUS_REFRESH_MS = 500L
