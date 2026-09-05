@@ -19,7 +19,7 @@ object HardwareSupportPolicy {
         else -> Support.UNSUPPORTED
     }
 
-    fun shouldExpose(support: Support): Boolean = support == Support.SUPPORTED
+    fun shouldExpose(support: Support): Boolean = support != Support.UNSUPPORTED
 
-    fun isSelectable(support: Support): Boolean = support == Support.SUPPORTED
+    fun isSelectable(support: Support): Boolean = support != Support.UNSUPPORTED
 }
