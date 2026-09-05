@@ -33,10 +33,11 @@ helper = '''    /**
      * escolhe a maior resolução que publica a faixa fixa exata solicitada.
      */
     private fun resolveCaptureResolutionForFps(
-        cameraId: String,
+        cameraId: String?,
         targetFps: Int,
         storedResolution: String
     ): String {
+        if (cameraId.isNullOrBlank()) return storedResolution
         val cachedMatrix = CaptureCapabilityMatrix.cached(this)?.forCamera(cameraId)
         val catalogResolution = CaptureModeCatalog.preferredResolution(
             context = this,
@@ -76,7 +77,8 @@ if text.count(anchor) != 1:
 text = text.replace(anchor, helper + anchor, 1)
 
 for marker in [
-    "resolveCaptureResolutionForFps(",
+    "cameraId: String?",
+    "if (cameraId.isNullOrBlank()) return storedResolution",
     "map.highSpeedVideoSizes",
     "getHighSpeedVideoFpsRangesFor(size)",
     "CaptureSettings.RESOLUTION_1080P to CaptureSettings.FHD_SIZE",
