@@ -12,14 +12,9 @@ object StrictCaptureModePolicy {
     fun matches(requestedSize: Dimensions, targetFps: Int, actualSize: Dimensions, actualFps: Int): Boolean =
         actualFps == targetFps && actualSize == requestedSize
 
-    fun requiresExactFpsRange(targetFps: Int): Boolean = targetFps == 60
 
     fun acceptsFpsRange(targetFps: Int, lower: Int, upper: Int): Boolean {
         require(targetFps > 0) { "targetFps must be positive" }
-        return if (requiresExactFpsRange(targetFps)) {
-            lower == targetFps && upper == targetFps
-        } else {
-            lower <= targetFps && upper >= targetFps
-        }
+        return lower == targetFps && upper == targetFps
     }
 }

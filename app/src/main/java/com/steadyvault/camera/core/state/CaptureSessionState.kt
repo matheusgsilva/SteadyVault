@@ -20,6 +20,5 @@ data class CaptureSessionState(
     val message: String,
     val sessionId: String,
     val owner: String,
-    val startedAtElapsedMs: Long,
-    val heartbeatElapsedMs: Long
+    val startedAtElapsedMs: Long
 )

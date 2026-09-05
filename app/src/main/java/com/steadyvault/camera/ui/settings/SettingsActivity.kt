@@ -232,7 +232,6 @@ class SettingsActivity : FragmentActivity() {
         capabilityMatrix = CaptureCapabilityMatrix.cached(this)
         capabilityScanCompleted = capabilityMatrix != null
         buildForm(activeSnapshot)
-        if (capabilityMatrix == null) scanCapabilities(force = true)
     }
 
     override fun onPause() {
@@ -2145,7 +2144,8 @@ class SettingsActivity : FragmentActivity() {
             FeatureOptionSpec(CaptureSettings.STABILIZATION_OIS, "OIS óptica", "Usa o movimento físico da lente."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_OFF, "Desativada", "Menor processamento e enquadramento integral.")
         )
-        fun directSupport(value: String): Support = if (value == CaptureSettings.STABILIZATION_PREVIEW && activeFps >= 120) Support.UNSUPPORTED else features?.stabilizationSupport(value) ?: Support.UNVERIFIED
+        fun directSupport(value: String): Support =
+            features?.stabilizationSupport(value) ?: Support.UNVERIFIED
         return featureOptions(specs, currentValue) { value -> if (value == CaptureSettings.STABILIZATION_OFF) Support.SUPPORTED else directSupport(value) }
     }
 

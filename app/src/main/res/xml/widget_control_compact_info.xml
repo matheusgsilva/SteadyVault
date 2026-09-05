@@ -3,7 +3,7 @@
     android:description="@string/widget_compact_description"
     android:initialLayout="@layout/widget_control_compact_large"
     android:initialKeyguardLayout="@layout/widget_control_compact_large"
-    android:previewLayout="@layout/widget_control_compact_large"
+    android:previewLayout="@layout/widget_control_compact_large_preview"
     android:minWidth="240dp"
     android:minHeight="66dp"
     android:minResizeWidth="220dp"

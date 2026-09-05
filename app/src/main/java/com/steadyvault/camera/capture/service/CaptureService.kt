@@ -1,35 +1,31 @@
 package com.steadyvault.camera.capture.service
 
 import com.steadyvault.camera.ui.theme.AppearanceStore
-import com.steadyvault.camera.capture.recorder.HardwareRecorder
-import com.steadyvault.camera.capture.timing.RecordingStopPolicy
+import com.steadyvault.camera.capture.recorder.RecordingBackend
+import com.steadyvault.camera.capture.recorder.DirectMediaRecorderBackend
+import com.steadyvault.camera.capture.timing.RecordingStabilizationPolicy
+import com.steadyvault.camera.capture.timing.CaptureCadencePolicy
 import com.steadyvault.camera.capture.timing.StrictCaptureModePolicy
-import com.steadyvault.camera.capture.health.RecordingHealthMonitor
+import com.steadyvault.camera.capture.timing.SensorCadencePolicy
 
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import com.steadyvault.camera.core.camera.Camera3AStateStore
+import com.steadyvault.camera.core.camera.CameraLensCatalog
 import com.steadyvault.camera.core.camera.CameraZoom
-import com.steadyvault.camera.core.capability.CaptureCapabilityMatrix
 import com.steadyvault.camera.core.camera.CameraResourceCoordinator
 import com.steadyvault.camera.core.camera.OpticalStabilizationCapability
 import com.steadyvault.camera.core.camera.WhiteBalanceCorrection
 import com.steadyvault.camera.core.camera.CctWhiteBalanceController
-import com.steadyvault.camera.core.settings.BackgroundRecordingZoom
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.settings.CameraProfileStore
 import com.steadyvault.camera.core.state.CapturePhase
 import com.steadyvault.camera.core.state.CaptureStateStore
-import com.steadyvault.camera.core.state.OptimizationStateStore
 import com.steadyvault.camera.core.storage.RecordingStorageGuard
-import com.steadyvault.camera.core.storage.RecordingStorageMonitor
-import com.steadyvault.camera.processing.service.VideoOptimizationService
 import com.steadyvault.camera.storage.vault.VaultRepository
-import com.steadyvault.camera.storage.vault.RecordingFilePublisher
 import com.steadyvault.camera.storage.vault.RecordingRecoveryRepository
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
-import com.steadyvault.camera.storage.vault.MediaThumbnailRepository
 import com.steadyvault.camera.ui.capture.CaptureActivity
 import com.steadyvault.camera.ui.capture.CameraPreviewRegistry
 import com.steadyvault.camera.ui.apps.VaultScreenCaptureService
@@ -44,10 +40,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.graphics.drawable.Icon
 import android.app.Service
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.ColorSpace
@@ -60,13 +54,13 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.DynamicRangeProfiles
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.camera2.params.TonemapCurve
 import android.media.MediaCodec
-import android.media.MediaCodecInfo
-import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaRecorder
 import android.media.MicrophoneDirection
@@ -81,7 +75,6 @@ import android.util.Log
 import android.util.Range
 import android.util.Size
 import android.view.Surface
-import androidx.core.content.ContextCompat
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ExecutorService
@@ -91,13 +84,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class CaptureService : Service() {
-
-    private enum class EffectiveStabilization {
-        OFF,
-        PREVIEW,
-        EIS,
-        OIS
-    }
 
     private data class CameraProfile(
         val cameraId: String,
@@ -125,9 +111,7 @@ class CaptureService : Service() {
         val codecName: String,
         val mime: String,
         val bitrate: Int,
-        val hdrHlg10: Boolean,
-        val profile: Int?,
-        val level: Int?
+        val hdrHlg10: Boolean
     )
 
     private data class CachedConfiguration(
@@ -137,7 +121,7 @@ class CaptureService : Service() {
     )
 
     private data class ClaimedRecording(
-        val recorder: HardwareRecorder?,
+        val recorder: RecordingBackend?,
         val output: File?,
         val raw: File?,
         val wasStarted: Boolean
@@ -145,24 +129,16 @@ class CaptureService : Service() {
 
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var encoderPreparationExecutor: ExecutorService
-    private lateinit var runtimeStorageMonitor: RecordingStorageMonitor
-    private lateinit var recordingHealthMonitor: RecordingHealthMonitor
     private val mainHandler = Handler(Looper.getMainLooper())
     private val threadCounter = AtomicInteger(0)
     private val serviceActive = AtomicBoolean(false)
     private val stopping = AtomicBoolean(false)
-    private val cameraRecoveryScheduled = AtomicBoolean(false)
-    private val initialCameraRetryScheduled = AtomicBoolean(false)
-    private val segmentRecoveryInProgress = AtomicBoolean(false)
     private val resourceLock = Any()
     private val cameraLeaseToken = Any()
-    private var screenReceiverRegistered = false
 
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
-    private var cameraAvailabilityManager: CameraManager? = null
-    private var cameraAvailabilityCallback: CameraManager.AvailabilityCallback? = null
-    private var professionalRecorder: HardwareRecorder? = null
+    private var professionalRecorder: RecordingBackend? = null
     private var recorderSurface: Surface? = null
     private var finalOutputFile: File? = null
     private var rawOutputFile: File? = null
@@ -189,13 +165,7 @@ class CaptureService : Service() {
     private var recordingStartedAtMs = 0L
     private var recordingStartedAtElapsedMs = 0L
     private var captureSessionId = ""
-    private var recordingWasEverStarted = false
-    private var recoveredSegmentCount = 0
-    private var cameraRecoveryAttempts = 0
     private var recordingRequestedAtElapsedNs = 0L
-    private var lastServiceHeartbeatElapsedMs = 0L
-    private var wakeLockAcquiredAtElapsedMs = 0L
-    @Volatile private var initialCameraRetryNotBeforeElapsedMs = 0L
     private var previewCaptureRequested = false
     private var headlessCaptureRequested = false
     private var deferredRawCleanup = false
@@ -208,22 +178,13 @@ class CaptureService : Service() {
     private var requestedTargetFps = CaptureModeStore.FPS_60
 
     private var fpsFallbackWarningLogged = false
+    private var activeRecorderBackendName = ""
+    private var activeRecorderMime: String? = null
 
     @Volatile
     private var foregroundNotificationStarted = false
 
-    @Volatile
-    private var lastScreenTransition = "estado inicial"
 
-    private val screenTransitionReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            when (intent?.action) {
-                Intent.ACTION_SCREEN_OFF,
-                Intent.ACTION_SCREEN_ON,
-                Intent.ACTION_USER_PRESENT -> handleScreenTransition(intent.action.orEmpty())
-            }
-        }
-    }
 
 
     override fun onCreate() {
@@ -235,29 +196,8 @@ class CaptureService : Service() {
         encoderPreparationExecutor = Executors.newSingleThreadExecutor(
             createThreadFactory("SteadyVault-EncoderPrepare", Process.THREAD_PRIORITY_URGENT_DISPLAY)
         )
-        recordingHealthMonitor = RecordingHealthMonitor(
-            handler = mainHandler,
-            intervalMs = RECORDING_HEALTH_CHECK_INTERVAL_MS,
-            shouldRun = { serviceActive.get() && recorderStarted && !userRequestedStop && !stopping.get() },
-            onTick = {
-                refreshRecordingServiceHeartbeat()
-                checkRecordingPipelineHealth("monitor contínuo")
-            }
-        )
-        runtimeStorageMonitor = RecordingStorageMonitor(
-            context = this,
-            threadName = "SteadyVault-StorageMonitor",
-            isRecording = {
-                serviceActive.get() && recorderStarted && !userRequestedStop && !stopping.get()
-            },
-            onCritical = {
-                sendState("Espaço crítico • finalizando e preservando o vídeo…")
-                stopCurrentRecording()
-            }
-        )
 
         createNotificationChannel()
-        registerScreenTransitionReceiver()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -299,10 +239,6 @@ class CaptureService : Service() {
             return
         }
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
-        // Antes de abrir Camera2, elimine bitmaps/cache em RAM e invalide warm-ups que
-        // possam ter começado instantes antes. Isso reduz GC e decoder concorrente no
-        // trecho crítico de 4K60 sem apagar o cache persistente de thumbnails.
-        MediaThumbnailRepository.prepareForCapture()
         VaultScreenCaptureService.yieldToCameraCapture(this)
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
 
@@ -315,12 +251,6 @@ class CaptureService : Service() {
             CameraPreviewRegistry.clear()
             previewCaptureRequested = false
         }
-        // Todo ponto de entrada recebe a mesma prioridade. A tela normalmente já
-        // aguarda o cancelamento, mas o serviço também protege widgets e intents diretos.
-        if (OptimizationStateStore.snapshot(this).running) {
-            runCatching { VideoOptimizationService.cancel(this) }
-            sendState("Cancelando otimização para liberar o processador da gravação…")
-        }
         previewCaptureRequested = if (headlessCaptureRequested) {
             false
         } else {
@@ -328,59 +258,41 @@ class CaptureService : Service() {
         }
         preferredCameraId = intent?.getStringExtra(EXTRA_PREFERRED_CAMERA_ID)?.takeIf { it.isNotBlank() }
         val currentSettings = CaptureSettings.snapshot(this)
-        val backgroundZoom = if (headlessCaptureRequested && preferredCameraId == null) {
-            BackgroundRecordingZoom.cameraSelection(this)
+        val allCameraOptions = CameraLensCatalog.options(this)
+        val storedOption = allCameraOptions.firstOrNull { it.id == (preferredCameraId ?: currentSettings.selectedCameraId) }
+        val profileCameraId = CameraLensCatalog.resolveRecordingCameraId(
+            this,
+            preferredCameraId ?: currentSettings.selectedCameraId,
+            currentSettings.resolution
+        )
+        val profileZoomRatio = if (storedOption?.isBack == true && !storedOption.logical && kotlin.math.abs(currentSettings.zoomRatio - 1f) < 0.05f) {
+            CameraLensCatalog.shortcutRatio(storedOption)
         } else {
-            null
+            currentSettings.zoomRatio
         }
-        val profileCameraId = preferredCameraId ?: backgroundZoom?.cameraId ?: currentSettings.selectedCameraId
-        recordingSettings = if (profileCameraId != null) {
-            CameraProfileStore.activate(
-                this,
-                profileCameraId,
-                CameraProfileStore.FunctionMode.VIDEO,
-                currentSettings.copy(selectedCameraId = profileCameraId)
-            )
-        } else {
-            CameraProfileStore.setActiveMode(this, CameraProfileStore.FunctionMode.VIDEO)
-            currentSettings
-        }
+        preferredCameraId = profileCameraId
+        // A configuração atualmente salva é a fonte da verdade. Não recarregue um
+        // perfil histórico da câmera no instante em que o usuário toca em Gravar.
+        CameraProfileStore.setActiveMode(this, CameraProfileStore.FunctionMode.VIDEO)
+        recordingSettings = currentSettings.copy(selectedCameraId = profileCameraId, zoomRatio = profileZoomRatio)
         requestedTargetFps = intent
             ?.getIntExtra(EXTRA_TARGET_FPS, recordingSettings.fps)
             ?.takeIf { it in CaptureSettings.supportedFpsValues }
             ?: recordingSettings.fps
+        activeRecorderBackendName = ""
+        activeRecorderMime = null
+        fpsFallbackWarningLogged = false
         if (requestedTargetFps != recordingSettings.fps) recordingSettings = recordingSettings.copy(fps = requestedTargetFps)
-        backgroundZoom?.let { selection ->
-            recordingSettings = recordingSettings.copy(
-                selectedCameraId = selection.cameraId,
-                zoomRatio = selection.requestZoomRatio
-            )
-        }
-
         userRequestedStop = false
         stopHapticAcknowledged = false
         stopping.set(false)
-        cameraRecoveryScheduled.set(false)
-        cancelInitialCameraAvailabilityRetry()
-        segmentRecoveryInProgress.set(false)
-        cameraRecoveryAttempts = 0
         recorderStarted = false
         recorderArmed = false
         recordingStartedAtMs = 0L
         recordingStartedAtElapsedMs = 0L
-        recordingWasEverStarted = false
-        recoveredSegmentCount = 0
         fpsFallbackWarningLogged = false
         foregroundNotificationStarted = false
         synchronized(resourceLock) { headlessSessionStartToken = -1 }
-        runtimeStorageMonitor.start(
-            videoBitrateBps = recordingSettings.bitrateMbps.toLong() * 1_000_000L,
-            audioBitrateBps = if (hasAudioPermission()) {
-                recordingSettings.audioBitrateKbps.toLong() * 1_000L
-            } else {
-                0L
-            }
-        )
         attemptToken++
         val token = attemptToken
 
@@ -395,7 +307,7 @@ class CaptureService : Service() {
             // Garante primeiro o prazo do FGS apenas com câmera. A promoção para
             // microfone acontece imediatamente antes do AudioRecord, evitando a
             // corrida de AppOps/FGS de microfone observada no Android 16.
-            startForegroundCameraOnly("Preparando ${requestedProfileLabel()}…")
+            startForegroundCaptureFast("Preparando ${requestedProfileLabel()}…")
         } catch (t: Throwable) {
             sendState("Falha ao iniciar serviço: ${errorText(t)}")
             abortBeforeCaptureStart()
@@ -403,17 +315,9 @@ class CaptureService : Service() {
         }
 
         acquireWakeLock()
-        lastServiceHeartbeatElapsedMs = 0L
-        refreshRecordingServiceHeartbeat(force = true)
         // Recuperação/limpeza pode copiar MP4s no mesmo armazenamento do muxer.
         // Sempre adie esse I/O até a captura terminar, inclusive com preview.
         deferredRawCleanup = true
-
-        val thermalStatus = getSystemService(PowerManager::class.java).currentThermalStatus
-        if (recordingSettings.thermalProtection && thermalStatus >= PowerManager.THERMAL_STATUS_CRITICAL) {
-            failAndStop("temperatura crítica; resfrie o aparelho antes de gravar ${requestedProfileLabel()}")
-            return
-        }
 
         val preparationMessage = when {
             headlessCaptureRequested -> "Preparando ${requestedProfileLabel()} em modo dedicado, sem preview compartilhado…"
@@ -432,16 +336,16 @@ class CaptureService : Service() {
     private fun prepareInitialConfigurationBeforeCameraHandoff(token: Int) {
         if (!isAttemptValid(token)) return
         try {
-            val (cameraProfile, encoderProfile) = selectCaptureConfigurationWithFpsFallback(
+            val (cameraProfile, encoderProfile) = selectExactCaptureConfiguration(
                 targetFps = requestedTargetFps,
                 allowHdr = recordingSettings.hdrHlg10
             )
-            check(matchesRequestedResolution(cameraProfile) && cameraProfile.targetFps <= requestedTargetFps) {
-                "A configuração efetiva não preservou a resolução solicitada ou excedeu o FPS pedido"
+            check(matchesRequestedResolution(cameraProfile) && cameraProfile.targetFps == requestedTargetFps) {
+                "A configuração efetiva não preservou exatamente a resolução/FPS solicitados"
             }
             selectedCamera = cameraProfile
             selectedEncoder = encoderProfile
-            if (!validateStorageForRecording(encoderProfile)) return
+            if (!validateStorageForRecording(cameraProfile, encoderProfile)) return
             if (headlessCaptureRequested) {
                 prepareHeadlessInParallel(
                     cameraProfile = cameraProfile,
@@ -581,333 +485,29 @@ class CaptureService : Service() {
                 true
             }
         }
-        if (canStart) createRecordingSession(camera, profile, token)
+        if (canStart) createRecordingSessionSafely(camera, profile, token)
     }
 
     private fun failSelectedConfigurationFromWorker(expectedToken: Int, reason: String) {
         if (!isAttemptValid(expectedToken)) return
-        selectedCamera?.let { profile ->
-            if (recorderStarted) {
-                scheduleCameraRecovery(profile, reason)
-                return
-            }
+        if (recorderStarted) {
+            failAndStopFromWorker(reason)
+            return
         }
 
         ++attemptToken
-        CaptureCapabilityMatrix.invalidate(this)
         releaseRecordingResources(deleteOutput = true)
         recorderStarted = false
         failAndStopFromWorker("${requestedProfileLabel()} não foi aceito: $reason")
     }
 
     private fun handleCameraInterruption(
-        profile: CameraProfile,
         token: Int,
-        reason: String,
-        temporarilyBusy: Boolean = false
+        reason: String
     ) {
         if (!isAttemptValid(token)) return
-        if (!recorderStarted) {
-            if (headlessCaptureRequested && temporarilyBusy) {
-                scheduleInitialCameraAvailabilityRetry(profile, token, reason)
-                return
-            }
-            failSelectedConfigurationFromWorker(token, reason)
-            return
-        }
-        scheduleCameraRecovery(profile, reason)
-    }
-
-    /**
-     * No bloqueio, o reconhecimento facial da One UI pode reservar a câmera por
-     * alguns instantes. Isso não invalida resolução, FPS ou encoder. Conservamos
-     * toda a preparação e repetimos somente openCamera assim que o HAL sinalizar
-     * que a lente escolhida voltou a ficar disponível.
-     */
-    private fun scheduleInitialCameraAvailabilityRetry(
-        profile: CameraProfile,
-        expectedToken: Int,
-        reason: String
-    ) {
-        if (
-            !isAttemptValid(expectedToken) ||
-            recorderStarted ||
-            !initialCameraRetryScheduled.compareAndSet(false, true)
-        ) {
-            return
-        }
-
-        val manager = getSystemService(CameraManager::class.java)
-        initialCameraRetryNotBeforeElapsedMs =
-            SystemClock.elapsedRealtime() + INITIAL_CAMERA_BUSY_RETRY_MS
-        val callback = object : CameraManager.AvailabilityCallback() {
-            override fun onCameraAvailable(cameraId: String) {
-                if (cameraId == profile.cameraId) {
-                    retryInitialCameraOpen(profile, expectedToken, "câmera liberada pelo sistema")
-                }
-            }
-        }
-        cameraAvailabilityManager = manager
-        cameraAvailabilityCallback = callback
-        runCatching {
-            manager.registerAvailabilityCallback(cameraExecutor, callback)
-        }.onFailure {
-            cameraAvailabilityManager = null
-            cameraAvailabilityCallback = null
-        }
-
-        sendStateOnMain("Preparando gravação • aguardando a câmera do desbloqueio facial…")
-        updateNotificationOnMain("Aguardando a câmera ficar disponível…")
-        Log.i(LOG_TAG, "Aguardando disponibilidade inicial da câmera: $reason")
-
-        mainHandler.postDelayed(
-            {
-                cameraExecutor.execute {
-                    retryInitialCameraOpen(
-                        profile,
-                        expectedToken,
-                        "verificação rápida de disponibilidade"
-                    )
-                }
-            },
-            INITIAL_CAMERA_BUSY_RETRY_MS
-        )
-    }
-
-    private fun retryInitialCameraOpen(
-        profile: CameraProfile,
-        expectedToken: Int,
-        reason: String
-    ) {
-        val remainingDelayMs =
-            initialCameraRetryNotBeforeElapsedMs - SystemClock.elapsedRealtime()
-        if (remainingDelayMs > 0L) {
-            mainHandler.postDelayed(
-                {
-                    if (initialCameraRetryScheduled.get()) {
-                        cameraExecutor.execute {
-                            retryInitialCameraOpen(profile, expectedToken, reason)
-                        }
-                    }
-                },
-                remainingDelayMs
-            )
-            return
-        }
-        if (!initialCameraRetryScheduled.compareAndSet(true, false)) return
-        unregisterInitialCameraAvailabilityCallback()
-        if (!isAttemptValid(expectedToken) || recorderStarted) return
-
-        val retryToken = ++attemptToken
-        synchronized(resourceLock) {
-            headlessSessionStartToken = -1
-        }
-        runCatching {
-            openSelectedCamera(profile, retryToken)
-        }.onFailure { throwable ->
-            if (isTemporaryCameraBusy(throwable)) {
-                scheduleInitialCameraAvailabilityRetry(
-                    profile,
-                    retryToken,
-                    "$reason: ${errorText(throwable)}"
-                )
-            } else {
-                failSelectedConfigurationFromWorker(
-                    retryToken,
-                    "$reason: ${errorText(throwable)}"
-                )
-            }
-        }
-    }
-
-    private fun cancelInitialCameraAvailabilityRetry() {
-        initialCameraRetryScheduled.set(false)
-        initialCameraRetryNotBeforeElapsedMs = 0L
-        unregisterInitialCameraAvailabilityCallback()
-    }
-
-    private fun unregisterInitialCameraAvailabilityCallback() {
-        val manager = cameraAvailabilityManager
-        val callback = cameraAvailabilityCallback
-        cameraAvailabilityManager = null
-        cameraAvailabilityCallback = null
-        if (manager != null && callback != null) {
-            runCatching { manager.unregisterAvailabilityCallback(callback) }
-        }
-    }
-
-    private fun isTemporaryCameraBusy(throwable: Throwable): Boolean =
-        throwable is CameraAccessException &&
-            throwable.reason in setOf(
-                CameraAccessException.CAMERA_IN_USE,
-                CameraAccessException.MAX_CAMERAS_IN_USE
-            )
-
-    private fun scheduleCameraRecovery(
-        profile: CameraProfile,
-        reason: String
-    ) {
-        if (
-            !serviceActive.get() ||
-            userRequestedStop ||
-            stopping.get() ||
-            !recorderStarted ||
-            !cameraRecoveryScheduled.compareAndSet(false, true)
-        ) {
-            return
-        }
-
-        val attempt = ++cameraRecoveryAttempts
-        val delayMs = (
-            CAMERA_RECOVERY_DELAY_MS * attempt.coerceAtMost(
-                CAMERA_RECOVERY_MAX_DELAY_STEPS
-            )
-        ).coerceAtMost(CAMERA_RECOVERY_MAX_DELAY_MS)
-        val message =
-            "Gravando • câmera temporariamente ocupada; retomando automaticamente…"
-        Log.w(LOG_TAG, "$message tentativa=$attempt motivo=$reason")
-        sendStateOnMain(message)
-        updateNotificationOnMain(message)
-
-        mainHandler.postDelayed(
-            {
-                cameraRecoveryScheduled.set(false)
-                cameraExecutor.execute {
-                    if (
-                        !serviceActive.get() ||
-                        userRequestedStop ||
-                        stopping.get() ||
-                        !recorderStarted
-                    ) {
-                        return@execute
-                    }
-
-                    val recoveryToken = ++attemptToken
-                    releaseCameraOnly()
-                    runCatching {
-                        openSelectedCamera(profile, recoveryToken)
-                    }.onFailure {
-                        scheduleCameraRecovery(
-                            profile,
-                            "nova tentativa: ${errorText(it)}"
-                        )
-                    }
-                }
-            },
-            delayMs
-        )
-    }
-
-    private fun registerScreenTransitionReceiver() {
-        if (screenReceiverRegistered) return
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_SCREEN_OFF)
-            addAction(Intent.ACTION_SCREEN_ON)
-            addAction(Intent.ACTION_USER_PRESENT)
-        }
-        screenReceiverRegistered = runCatching {
-            ContextCompat.registerReceiver(
-                this,
-                screenTransitionReceiver,
-                filter,
-                ContextCompat.RECEIVER_EXPORTED
-            )
-            true
-        }.getOrDefault(false)
-    }
-
-    private fun unregisterScreenTransitionReceiver() {
-        if (!screenReceiverRegistered) return
-        runCatching { unregisterReceiver(screenTransitionReceiver) }
-        screenReceiverRegistered = false
-    }
-
-    private fun handleScreenTransition(action: String) {
-        lastScreenTransition = when (action) {
-            Intent.ACTION_SCREEN_OFF -> "tela apagada"
-            Intent.ACTION_SCREEN_ON -> "tela acesa"
-            Intent.ACTION_USER_PRESENT -> "aparelho desbloqueado"
-            else -> "mudança da tela"
-        }
-        if (
-            !serviceActive.get() ||
-            !recorderStarted ||
-            userRequestedStop ||
-            stopping.get()
-        ) {
-            return
-        }
-
-        // Alguns firmwares Samsung suspendem a sessão Camera2 no ciclo
-        // apagar/acender mesmo mantendo o foreground service vivo. O wake lock
-        // protege o encoder e a verificação atrasada reabre somente a câmera se
-        // os quadros realmente tiverem parado.
-        if (wakeLock?.isHeld != true) acquireWakeLock()
-        mainHandler.postDelayed(
-            {
-                if (
-                    serviceActive.get() &&
-                    recorderStarted &&
-                    !userRequestedStop &&
-                    !stopping.get()
-                ) {
-                    checkRecordingPipelineHealth(lastScreenTransition)
-                }
-            },
-            SCREEN_TRANSITION_HEALTH_DELAY_MS
-        )
-    }
-
-    private fun startRecordingHealthWatchdog() {
-        recordingHealthMonitor.start()
-    }
-
-    private fun stopRecordingHealthWatchdog() {
-        if (::recordingHealthMonitor.isInitialized) recordingHealthMonitor.stop()
-    }
-
-    private fun checkRecordingPipelineHealth(reason: String) {
-        if (
-            !serviceActive.get() ||
-            !recorderStarted ||
-            userRequestedStop ||
-            stopping.get()
-        ) {
-            return
-        }
-
-        val recorder: HardwareRecorder?
-        val profile: CameraProfile?
-        synchronized(resourceLock) {
-            recorder = professionalRecorder
-            profile = selectedCamera
-        }
-        renewWakeLockIfNeeded()
-        val activeRecorder = recorder ?: return
-        val selectedProfile = profile ?: return
-        // Escrita síncrona lenta significa pressão do muxer/armazenamento, não HAL
-        // travada. Reabrir Camera2 nesse instante só ampliaria a lacuna do arquivo.
-        if (activeRecorder.isVideoWriteInProgress()) return
-        // Não reconfigura bitrate com MediaCodec.setParameters durante a captura.
-        // Em alguns codecs Samsung/Qualcomm essa troca em voo cria pequenas pausas.
-        // O teto seguro é escolhido uma vez antes de iniciar o encoder.
-        val silenceMs = activeRecorder.videoSilenceDurationMs()
-        val stallThresholdMs = if (activeRecorder.hasProducedVideoSample()) {
-            VIDEO_FRAME_STALL_RECOVERY_MS
-        } else {
-            FIRST_VIDEO_FRAME_GRACE_MS
-        }
-        if (silenceMs < stallThresholdMs) return
-
-        scheduleCameraRecovery(
-            selectedProfile,
-            "$reason sem quadros do encoder por ${silenceMs} ms"
-        )
-    }
-
-    private fun renewWakeLockIfNeeded() {
-        val now = SystemClock.elapsedRealtime()
-        if (now - wakeLockAcquiredAtElapsedMs >= WAKE_LOCK_RENEW_INTERVAL_MS) acquireWakeLock()
+        if (recorderStarted) failAndStopFromWorker(reason)
+        else failSelectedConfigurationFromWorker(token, reason)
     }
 
     private fun selectBestCaptureConfiguration(
@@ -918,84 +518,27 @@ class CaptureService : Service() {
         cachedConfiguration
             ?.takeIf { it.signature == signature }
             ?.takeIf { matchesRequestedMode(it.camera, targetFps) }
-            ?.takeIf { targetFps != CaptureModeStore.FPS_60 || it.camera.hasExactFpsRange() }
+            ?.takeIf { it.camera.hasExactFpsRange() }
             ?.takeIf { preferredCameraCompatible(it.camera) }
             ?.takeIf { profileSatisfiesExplicitStabilization(it.camera) }
-            ?.let {
-                Log.d(LOG_TAG, "Reutilizando câmera e encoder já validados")
-                return it.camera to it.encoder
-            }
+            ?.let { return it.camera to it.encoder }
 
         loadRememberedConfiguration(signature, targetFps, allowHdr)
             ?.takeIf { preferredCameraCompatible(it.first) }
             ?.takeIf { profileSatisfiesExplicitStabilization(it.first) }
             ?.let { (camera, encoder) ->
                 cacheConfiguration(signature, camera, encoder)
-                Log.d(LOG_TAG, "Reutilizando configuração validada em uma gravação anterior")
                 return camera to encoder
             }
 
         selectPreferredPreviewConfiguration(targetFps, allowHdr)?.let { (camera, encoder) ->
             cacheConfiguration(signature, camera, encoder)
-            Log.d(LOG_TAG, "Usando diretamente a mesma câmera do preview")
             return camera to encoder
         }
 
-        selectFromCapabilityMatrix(targetFps, allowHdr)?.let { (camera, encoder) ->
-            cacheConfiguration(signature, camera, encoder)
-            Log.d(LOG_TAG, "Usando capacidade já analisada pelo aplicativo")
-            return camera to encoder
-        }
-
-        val diagnostics = mutableListOf<String>()
-        val requestOrder = configurationRequestOrder(targetFps)
-        val profileCache = mutableMapOf<Int, List<CameraProfile>>()
-
-        for ((size, fps) in requestOrder) {
-            val profiles = profileCache.getOrPut(fps) {
-                val discovered = if (fps >= CaptureModeStore.FPS_60) {
-                    findRegularCameraProfiles(fps, diagnostics, allowHdr) +
-                        findHighSpeedCameraProfiles(fps, diagnostics)
-                } else {
-                    findRegularCameraProfiles(fps, diagnostics, allowHdr)
-                }
-                discovered.sortedByDescending { profilePriority(it) + preferredCameraScore(it) }
-            }
-
-            val matching = profiles
-                .asSequence()
-                .filter { it.videoSize == size }
-                .filter(::profileSatisfiesExplicitStabilization)
-                .sortedWith(
-                    compareByDescending<CameraProfile> {
-                        when {
-                            allowHdr && recordingSettings.hdrHlg10 && it.hdrHlg10 -> 2
-                            !it.hdrHlg10 -> 1
-                            else -> 0
-                        }
-                    }.thenByDescending { profilePriority(it) + preferredCameraScore(it) }
-                )
-
-            for (profile in matching) {
-                val encoder = selectBestHardwareEncoder(profile)
-                if (encoder == null) {
-                    diagnostics += "câmera ${profile.cameraId}: ${sizeName(size)} $fps FPS sem encoder compatível"
-                    continue
-                }
-                cacheConfiguration(signature, profile, encoder)
-                return profile to encoder
-            }
-        }
-
-        val conciseDiagnostics = diagnostics
-            .distinct()
-            .takeLast(8)
-            .joinToString(" | ")
         val requestedLabel = "${CaptureSettings.resolutionLabel(recordingSettings.resolution)} $targetFps FPS"
-        throw IllegalStateException(
-            "O modo solicitado $requestedLabel não foi aceito nesta tentativa" +
-                if (conciseDiagnostics.isBlank()) "" else ": $conciseDiagnostics"
-        )
+        val cameraLabel = CameraLensCatalog.labelFor(this, preferredCameraId)
+        throw IllegalStateException("$requestedLabel não pôde ser preparado para a câmera selecionada ($cameraLabel)")
     }
 
     private fun cacheConfiguration(
@@ -1056,13 +599,8 @@ class CaptureService : Service() {
             highSpeed = highSpeed,
             dynamicRangeProfile = dynamicRange
         )
-        val encoder = findHardwareEncoder(
-            mime = mime,
-            desiredBitrate = configuredVideoBitrate(),
-            size = size,
-            fps = fps,
-            requireMain10 = allowHdr
-        ) ?: return null
+        if (mime !in recordingSettings.codecMimes(profile.hdrHlg10)) return null
+        val encoder = selectDirectRecorderEncoder(profile) ?: return null
         return profile to encoder
     }
 
@@ -1082,8 +620,8 @@ class CaptureService : Service() {
      * A captura iniciada pelo preview já conhece a lente em uso. Validar primeiro essa
      * câmera evita percorrer todas as lentes novamente e reduz a pausa entre tocar no
      * obturador e o início do encoder. Se a combinação exata não for aceita, o fluxo
-     * completo continua sendo usado; a política final ainda pode preservar a
-     * resolução e reduzir apenas o FPS para manter a gravação ativa.
+     * completo continua sendo usado; em pedidos de alta taxa, 60 FPS é o piso e
+     * nunca existe downgrade automático para 30 FPS.
      */
     private fun selectPreferredPreviewConfiguration(
         targetFps: Int,
@@ -1093,6 +631,35 @@ class CaptureService : Service() {
         val manager = getSystemService(CameraManager::class.java)
         val characteristics = runCatching { manager.getCameraCharacteristics(cameraId) }.getOrNull()
             ?: return null
+        val dynamicRange = when {
+            allowHdr && supportsHlg10(characteristics) -> DynamicRangeProfiles.HLG10
+            allowHdr -> return null
+            else -> standardDynamicRangeProfile()
+        }
+
+        // 30/60 FPS: não bloqueie o Start usando metadados públicos de cadence/minFrame.
+        // Em aparelhos Samsung a HAL pode aceitar 4K60 mesmo quando esses metadados
+        // são conservadores. Monte exatamente o modo pedido e deixe createCaptureSession()
+        // ser a fonte de verdade. Se a HAL recusar, a tentativa falha de forma explícita.
+        if (targetFps < CaptureModeStore.FPS_120) {
+            val size = recordingSettings.exactPreferredSize() ?: return null
+            val profile = createCameraProfile(
+                cameraId = cameraId,
+                characteristics = characteristics,
+                videoSize = size,
+                targetFps = targetFps,
+                fpsRange = Range(targetFps, targetFps),
+                highSpeed = false,
+                dynamicRangeProfile = dynamicRange
+            )
+            if (!matchesRequestedMode(profile, targetFps)) return null
+            if (!profileSatisfiesExplicitStabilization(profile)) return null
+            val encoder = selectDirectRecorderEncoder(profile) ?: return null
+            return profile to encoder
+        }
+
+        // 120/240 FPS continuam dependentes da lista high-speed porque exigem uma
+        // sessão de alta velocidade válida segundo a API pública do Camera2.
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val regularSizes = linkedSetOf<Size>().apply {
             runCatching { map.getOutputSizes(ImageFormat.PRIVATE)?.toList().orEmpty() }
@@ -1104,22 +671,10 @@ class CaptureService : Service() {
         }
         val highSpeedSizes = runCatching { map.highSpeedVideoSizes?.toSet().orEmpty() }
             .getOrDefault(emptySet())
-        val dynamicRange = when {
-            allowHdr && supportsHlg10(characteristics) -> DynamicRangeProfiles.HLG10
-            allowHdr -> return null
-            else -> standardDynamicRangeProfile()
-        }
 
         for ((size, fps) in configurationRequestOrder(targetFps)) {
             if (fps != targetFps) continue
-            var coveringFallback: Pair<CameraProfile, EncoderProfile>? = null
-            val highSpeedFirst = fps >= CaptureModeStore.FPS_120
-            val sessionKinds = when {
-                highSpeedFirst -> listOf(true, false)
-                fps >= CaptureModeStore.FPS_60 -> listOf(false, true)
-                else -> listOf(false)
-            }
-            for (highSpeed in sessionKinds) {
+            for (highSpeed in listOf(true, false)) {
                 if (highSpeed && size !in highSpeedSizes) continue
                 if (!highSpeed && size !in regularSizes) continue
                 val fpsRange = resolveFpsRange(characteristics, size, fps, highSpeed) ?: continue
@@ -1134,86 +689,9 @@ class CaptureService : Service() {
                 )
                 if (!matchesRequestedMode(profile, targetFps)) continue
                 if (!profileSatisfiesExplicitStabilization(profile)) continue
-                val encoder = selectBestHardwareEncoder(profile) ?: continue
+                val encoder = selectDirectRecorderEncoder(profile) ?: continue
                 if (profile.hasExactFpsRange()) return profile to encoder
-                if (coveringFallback == null) coveringFallback = profile to encoder
             }
-            coveringFallback?.let { return it }
-        }
-        return null
-    }
-
-    /**
-     * The capture screen already scans the camera/encoder matrix. Reusing that
-     * result avoids walking every lens, size and codec again on every press.
-     * HDR still uses the full path because it needs ten-bit profile checks.
-     */
-    private fun selectFromCapabilityMatrix(
-        targetFps: Int,
-        allowHdr: Boolean
-    ): Pair<CameraProfile, EncoderProfile>? {
-        // A matriz descreve resolução/FPS/encoder, mas não conserva a origem lógica
-        // ou física do OIS. Com OIS explícito, a varredura completa precisa avaliar
-        // as lentes antes de aceitar uma configuração.
-        if (allowHdr || explicitOisRequested()) return null
-        val matrix = CaptureCapabilityMatrix.cached(this) ?: return null
-        val manager = getSystemService(CameraManager::class.java)
-        val allowedMimes = recordingSettings.codecMimes(hdr = false)
-
-        for ((size, fps) in configurationRequestOrder(targetFps)) {
-            var coveringFallback: Pair<CameraProfile, EncoderProfile>? = null
-            val modes = matrix.modes.asSequence()
-                .filter { it.size == size && it.fps == fps && it.encoderMime in allowedMimes }
-                .filter { preferredCameraId == null || it.cameraId == preferredCameraId }
-                .sortedWith(
-                    compareByDescending<com.steadyvault.camera.core.capability.CaptureCapabilityMatrix.Mode> {
-                        if (preferredCameraId != null && it.cameraId == preferredCameraId) 1 else 0
-                    }.thenByDescending { mode ->
-                        when {
-                            fps >= CaptureModeStore.FPS_120 && mode.highSpeed -> 3
-                            fps >= CaptureModeStore.FPS_120 -> 2
-                            !mode.highSpeed -> 3
-                            else -> 1
-                        }
-                    }
-                )
-
-            for (mode in modes) {
-                val characteristics = runCatching {
-                    manager.getCameraCharacteristics(mode.cameraId)
-                }.getOrNull() ?: continue
-                val fpsRange = resolveFpsRange(
-                    characteristics = characteristics,
-                    size = mode.size,
-                    targetFps = mode.fps,
-                    highSpeed = mode.highSpeed
-                ) ?: continue
-                val profile = createCameraProfile(
-                    cameraId = mode.cameraId,
-                    characteristics = characteristics,
-                    videoSize = mode.size,
-                    targetFps = mode.fps,
-                    fpsRange = fpsRange,
-                    highSpeed = mode.highSpeed,
-                    dynamicRangeProfile = standardDynamicRangeProfile()
-                )
-                if (!profileSatisfiesExplicitStabilization(profile)) continue
-                val bitrate = configuredVideoBitrate()
-                val encoder = findHardwareEncoder(
-                    mime = mode.encoderMime,
-                    desiredBitrate = bitrate,
-                    size = mode.size,
-                    fps = mode.fps,
-                    requireMain10 = false
-                ) ?: continue
-                if (
-                    matchesRequestedMode(profile, targetFps)
-                ) {
-                    if (profile.hasExactFpsRange()) return profile to encoder
-                    if (coveringFallback == null) coveringFallback = profile to encoder
-                }
-            }
-            coveringFallback?.let { return it }
         }
         return null
     }
@@ -1224,37 +702,28 @@ class CaptureService : Service() {
         targetFps: Int,
         highSpeed: Boolean
     ): Range<Int>? {
-        val ranges: List<Range<Int>> = if (highSpeed) {
-            val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                ?: return null
-            runCatching { map.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }
-                .getOrDefault(emptyList())
-        } else {
-            characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-                ?.toList().orEmpty()
+        if (!highSpeed) {
+            // Em sessão regular o request é forçado para a taxa fixa escolhida, mesmo
+            // quando a HAL não a anuncia na lista pública. Se o firmware recusar, a
+            // sessão falha claramente; nunca substituímos por uma faixa variável.
+            return Range(targetFps, targetFps)
         }
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: return null
+        val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }
+            .getOrDefault(emptyList())
         return selectTargetFpsRange(ranges, targetFps)
     }
 
     /**
-     * A faixa fixa exata é sempre a primeira escolha. Para 60 FPS, se a HAL não
-     * publicar [60,60] naquele instante, ainda aceitamos uma faixa que alcance 60
-     * para não transformar uma limitação transitória em falha de gravação.
-     * Se nem isso existir, o fluxo superior tenta 30 FPS na mesma resolução.
+     * FPS selecionado é contrato exato. Nenhuma faixa variável é aceita: 30 usa
+     * [30,30], 60 usa [60,60], 120 usa [120,120] e 240 usa [240,240].
      */
     private fun selectTargetFpsRange(
         ranges: List<Range<Int>>,
         targetFps: Int
-    ): Range<Int>? {
-        ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }?.let { return it }
-        if (StrictCaptureModePolicy.requiresExactFpsRange(targetFps)) {
-            return ranges
-                .filter { it.lower <= targetFps && it.upper >= targetFps }
-                .maxByOrNull { fpsRangeScore(it, targetFps) }
-        }
-        return ranges
-            .filter { StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper) }
-            .maxByOrNull { fpsRangeScore(it, targetFps) }
+    ): Range<Int>? = ranges.firstOrNull {
+        StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper)
     }
 
     private fun configurationRequestOrder(targetFps: Int): List<Pair<Size, Int>> {
@@ -1277,243 +746,51 @@ class CaptureService : Service() {
     private fun matchesRequestedResolution(camera: CameraProfile): Boolean =
         recordingSettings.exactPreferredSize() == camera.videoSize
 
-    private fun selectCaptureConfigurationWithFpsFallback(
+    private fun selectExactCaptureConfiguration(
         targetFps: Int,
         allowHdr: Boolean
-    ): Pair<CameraProfile, EncoderProfile> {
-        val fpsOrder = CaptureSettings.supportedFpsValues
-            .filter { it <= targetFps }
-            .sortedDescending()
-            .let { values -> if (targetFps in values) values else listOf(targetFps) + values }
-        var primaryError: Throwable? = null
-        fpsOrder.forEach { candidateFps ->
-            try {
-                return selectBestCaptureConfiguration(candidateFps, allowHdr && candidateFps < CaptureModeStore.FPS_120)
-            } catch (error: Throwable) {
-                if (primaryError == null) primaryError = error else primaryError?.addSuppressed(error)
-            }
-        }
-        throw primaryError ?: IllegalStateException("Nenhuma taxa de quadros pôde ser preparada")
-    }
+    ): Pair<CameraProfile, EncoderProfile> =
+        selectBestCaptureConfiguration(
+            targetFps = targetFps,
+            allowHdr = allowHdr && targetFps < CaptureModeStore.FPS_120
+        )
 
     private fun CameraProfile.hasExactFpsRange(): Boolean =
         fpsRange.lower == targetFps && fpsRange.upper == targetFps
 
     private fun Size.toPolicyDimensions() = StrictCaptureModePolicy.Dimensions(width, height)
 
-    /**
-     * O stream real da gravação é a Surface criada pelo MediaCodec. Usar o menor valor
-     * entre PRIVATE/MediaCodec/MediaRecorder podia validar uma câmera cuja Surface do
-     * encoder só garantia 30 FPS. Consulte primeiro a classe realmente configurada e
-     * use os demais formatos apenas quando o HAL não publicar esse dado.
-     */
+    /** A gravação usa somente Surface do MediaRecorder; não há MediaCodec/MediaMuxer manual. */
     private fun encoderSurfaceMinFrameDurationNs(
         map: android.hardware.camera2.params.StreamConfigurationMap,
-        size: Size
+        size: Size,
+        preferMediaRecorder: Boolean = true
     ): Long {
-        val encoderDuration = runCatching {
-            map.getOutputMinFrameDuration(MediaCodec::class.java, size)
-        }.getOrNull()?.takeIf { it > 0L }
-        if (encoderDuration != null) return encoderDuration
-
-        val privateDuration = runCatching {
-            map.getOutputMinFrameDuration(ImageFormat.PRIVATE, size)
-        }.getOrNull()?.takeIf { it > 0L }
-        if (privateDuration != null) return privateDuration
-
-        return runCatching {
+        val recorderDuration = runCatching {
             map.getOutputMinFrameDuration(MediaRecorder::class.java, size)
+        }.getOrNull()?.takeIf { it > 0L }
+        if (recorderDuration != null) return recorderDuration
+        return runCatching {
+            map.getOutputMinFrameDuration(ImageFormat.PRIVATE, size)
         }.getOrNull()?.takeIf { it > 0L } ?: 0L
     }
 
-    private fun findRegularCameraProfiles(
-        targetFps: Int,
-        diagnostics: MutableList<String>,
-        allowHdr: Boolean
-    ): List<CameraProfile> {
-        val manager = getSystemService(CameraManager::class.java)
-        val candidates = mutableListOf<Pair<Long, CameraProfile>>()
-
-        for (cameraId in manager.cameraIdList) {
-            val characteristics = manager.getCameraCharacteristics(cameraId)
-            if (!isEligibleCamera(cameraId, characteristics)) continue
-
-            val map = characteristics.get(
-                CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
-            )
-            if (map == null) {
-                diagnostics += "câmera $cameraId: sem mapa de streams"
-                continue
-            }
-
-            val outputSizes = linkedSetOf<Size>().apply {
-                runCatching { map.getOutputSizes(ImageFormat.PRIVATE) }
-                    .getOrNull()?.let(::addAll)
-                runCatching { map.getOutputSizes(MediaCodec::class.java) }
-                    .getOrNull()?.let(::addAll)
-                runCatching { map.getOutputSizes(MediaRecorder::class.java) }
-                    .getOrNull()?.let(::addAll)
-            }
-            val fpsRanges = characteristics.get(
-                CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
-            ) ?: emptyArray()
-            val selectedRange = selectTargetFpsRange(fpsRanges.toList(), targetFps)
-
-            if (selectedRange == null) {
-                diagnostics += if (StrictCaptureModePolicy.requiresExactFpsRange(targetFps)) {
-                    "câmera $cameraId: nenhuma faixa alcança $targetFps fps; fallback inferior será tentado"
-                } else {
-                    "câmera $cameraId: sem faixa compatível com $targetFps fps"
-                }
-                continue
-            }
-
-            for (size in recordingSettings.preferredSizes()) {
-                if (!outputSizes.contains(size)) continue
-
-                val minFrameDuration = encoderSurfaceMinFrameDurationNs(map, size)
-                val exactRange = selectedRange.lower == targetFps && selectedRange.upper == targetFps
-                val timingIsValid = minFrameDuration <= 0L ||
-                        minFrameDuration <= frameDurationNs(targetFps) + FRAME_DURATION_TOLERANCE_NS
-
-                if (!timingIsValid) {
-                    diagnostics += "câmera $cameraId: ${sizeName(size)} $targetFps FPS não foi confirmado pelo tempo mínimo público; a combinação será testada diretamente"
-                }
-
-                val timingScore = when {
-                    timingIsValid && exactRange -> 220_000_000L
-                    timingIsValid -> 120_000_000L
-                    else -> 20_000_000L
-                }
-                val stabilityScore = sizePreferenceScore(size)
-                val sdrProfile = createCameraProfile(
-                    cameraId = cameraId,
-                    characteristics = characteristics,
-                    videoSize = size,
-                    targetFps = targetFps,
-                    fpsRange = selectedRange,
-                    highSpeed = false,
-                    dynamicRangeProfile = standardDynamicRangeProfile()
-                )
-                candidates += cameraScore(sdrProfile) + timingScore + stabilityScore to sdrProfile
-
-                if (allowHdr && supportsHlg10(characteristics)) {
-                    val hdrProfile = createCameraProfile(
-                        cameraId = cameraId,
-                        characteristics = characteristics,
-                        videoSize = size,
-                        targetFps = targetFps,
-                        fpsRange = selectedRange,
-                        highSpeed = false,
-                        dynamicRangeProfile = DynamicRangeProfiles.HLG10
-                    )
-                    candidates += cameraScore(hdrProfile) + timingScore + HDR_SCORE_BONUS to hdrProfile
-                }
-            }
+    private fun cadenceConfidence(profile: CameraProfile): CaptureCadencePolicy.Confidence {
+        if (profile.highSpeed || profile.targetFps < CaptureModeStore.FPS_60) {
+            return CaptureCadencePolicy.Confidence.CONFIRMED
         }
-
-        return candidates.sortedByDescending { it.first }.map { it.second }
-    }
-
-    private fun findHighSpeedCameraProfiles(
-        targetFps: Int,
-        diagnostics: MutableList<String>
-    ): List<CameraProfile> {
-        val manager =
-            getSystemService(
-                CameraManager::class.java
-            )
-
-        val candidates =
-            mutableListOf<Pair<Long, CameraProfile>>()
-
-        for (cameraId in manager.cameraIdList) {
-            val characteristics =
-                manager.getCameraCharacteristics(
-                    cameraId
-                )
-
-            if (!isEligibleCamera(cameraId, characteristics)) continue
-
-            val capabilities =
-                characteristics.get(
-                    CameraCharacteristics
-                        .REQUEST_AVAILABLE_CAPABILITIES
-                ) ?: intArrayOf()
-
-            if (
-                !capabilities.contains(
-                    CameraCharacteristics
-                        .REQUEST_AVAILABLE_CAPABILITIES_CONSTRAINED_HIGH_SPEED_VIDEO
-                )
-            ) {
-                diagnostics +=
-                    "câmera $cameraId: sem capacidade high-speed"
-                continue
-            }
-
-            val map =
-                characteristics.get(
-                    CameraCharacteristics
-                        .SCALER_STREAM_CONFIGURATION_MAP
-                )
-
-            if (map == null) {
-                diagnostics +=
-                    "câmera $cameraId: sem mapa high-speed"
-                continue
-            }
-
-            val highSpeedSizes =
-                runCatching {
-                    map.highSpeedVideoSizes
-                        .toList()
-                }.getOrDefault(
-                    emptyList()
-                )
-
-            for (size in highSpeedSizes) {
-                if (size !in recordingSettings.preferredSizes()) continue
-                if (size.width * 9 != size.height * 16) continue
-
-                val ranges =
-                    runCatching {
-                        map.getHighSpeedVideoFpsRangesFor(
-                            size
-                        )
-                            .toList()
-                    }.getOrDefault(
-                        emptyList()
-                    )
-
-                val selectedRange = selectTargetFpsRange(ranges, targetFps) ?: continue
-
-                val sdrProfile = createCameraProfile(
-                    cameraId = cameraId,
-                    characteristics = characteristics,
-                    videoSize = size,
-                    targetFps = targetFps,
-                    fpsRange = selectedRange,
-                    highSpeed = true,
-                    dynamicRangeProfile = standardDynamicRangeProfile()
-                )
-                val candidateScore = highSpeedSizeScore(size) + cameraScore(sdrProfile)
-                candidates += candidateScore to sdrProfile
-
-                diagnostics +=
-                    "câmera $cameraId: " +
-                            "${size.width}×${size.height} " +
-                            "${selectedRange.lower}-${selectedRange.upper} fps"
-            }
-        }
-
-        return candidates
-            .sortedByDescending {
-                it.first
-            }
-            .map {
-                it.second
-            }
+        val map = profile.characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: return CaptureCadencePolicy.Confidence.UNKNOWN
+        val minFrameDurationNs = encoderSurfaceMinFrameDurationNs(
+            map,
+            profile.videoSize,
+            preferMediaRecorder = true
+        )
+        return CaptureCadencePolicy.confidence(
+            minFrameDurationNs = minFrameDurationNs,
+            targetFps = profile.targetFps,
+            toleranceNs = FRAME_DURATION_TOLERANCE_NS
+        )
     }
 
     private fun createCameraProfile(
@@ -1634,22 +911,14 @@ class CaptureService : Service() {
         )
     }
 
-    private fun isEligibleCamera(
-        cameraId: String,
-        characteristics: CameraCharacteristics
-    ): Boolean {
-        val selected = preferredCameraId
-        if (!selected.isNullOrBlank()) return cameraId == selected
-        return characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
-    }
 
     private fun explicitOisRequested(): Boolean = recordingSettings.stabilization == CaptureSettings.STABILIZATION_OIS
 
-    private fun profileSatisfiesExplicitStabilization(profile: CameraProfile): Boolean = when (recordingSettings.stabilization) {
-        CaptureSettings.STABILIZATION_OIS -> profile.oisSupported
-        CaptureSettings.STABILIZATION_EIS -> profile.eisSupported
-        CaptureSettings.STABILIZATION_PREVIEW -> !profile.highSpeed && profile.previewStabilizationSupported
-        else -> true
+    private fun profileSatisfiesExplicitStabilization(profile: CameraProfile): Boolean {
+        // Metadados de estabilização da câmera lógica podem ser incompletos em Samsung.
+        // A escolha do perfil não é mais descartada aqui; configureCaptureRequest()
+        // tenta exatamente o modo escolhido e a própria HAL decide se o request é válido.
+        return profile.targetFps == requestedTargetFps
     }
 
     private fun preferredCameraCompatible(profile: CameraProfile): Boolean {
@@ -1657,151 +926,26 @@ class CaptureService : Service() {
         return profile.cameraId == selected
     }
 
-    private fun preferredCameraScore(profile: CameraProfile): Long =
-        if (preferredCameraId != null && profile.cameraId == preferredCameraId) PREFERRED_PREVIEW_CAMERA_SCORE else 0L
 
-    private fun profilePriority(profile: CameraProfile): Long {
-        // Em 30/60/120/240, uma faixa AE fixa publicada pela própria HAL vem antes
-        // de heurísticas de lente/sessão. Se ela não existir, a faixa abrangente
-        // compatível segue como fallback, sem alterar a escolha do usuário.
-        val fixedCadenceScore = if (profile.hasExactFpsRange()) FIXED_FPS_RANGE_SCORE else 0L
-        val sessionScore = when {
-            profile.targetFps >= CaptureModeStore.FPS_120 && profile.highSpeed -> 4_000_000_000L
-            profile.targetFps >= CaptureModeStore.FPS_120 -> 3_000_000_000L
-            profile.highSpeed -> 1_500_000_000L
-            else -> 2_000_000_000L
-        }
-        val stabilizationScore = when {
-            explicitOisRequested() && profile.oisSupported -> REQUESTED_OIS_CAMERA_SCORE
-            recordingSettings.stabilization == CaptureSettings.STABILIZATION_EIS && profile.eisSupported -> REQUESTED_EIS_CAMERA_SCORE
-            recordingSettings.stabilization == CaptureSettings.STABILIZATION_PREVIEW && !profile.highSpeed && profile.previewStabilizationSupported -> REQUESTED_EIS_CAMERA_SCORE
-            else -> 0L
-        }
-        return fixedCadenceScore + sessionScore + sizePreferenceScore(profile.videoSize) + cameraScore(profile) +
-                stabilizationScore +
-                if (profile.hdrHlg10) HDR_SCORE_BONUS else 0L
-    }
-
-    private fun sizePreferenceScore(size: Size): Long {
-        val index = recordingSettings.preferredSizes().indexOf(size)
-        if (index < 0) return Long.MIN_VALUE / 4
-        return (recordingSettings.preferredSizes().size - index).toLong() * 2_000_000_000L +
-                size.width.toLong() * size.height.toLong()
-    }
-
-    private fun cameraScore(
-        profile: CameraProfile
-    ): Long {
-        val capabilities =
-            profile.characteristics.get(
-                CameraCharacteristics
-                    .REQUEST_AVAILABLE_CAPABILITIES
-            ) ?: intArrayOf()
-
-        val isLogical =
-            capabilities.contains(
-                CameraCharacteristics
-                    .REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA
-            )
-
-        val hardwareLevel =
-            profile.characteristics.get(
-                CameraCharacteristics
-                    .INFO_SUPPORTED_HARDWARE_LEVEL
-            ) ?: CameraCharacteristics
-                .INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY
-
-        val levelScore =
-            when (hardwareLevel) {
-                CameraCharacteristics
-                    .INFO_SUPPORTED_HARDWARE_LEVEL_3 ->
-                    400_000_000L
-
-                CameraCharacteristics
-                    .INFO_SUPPORTED_HARDWARE_LEVEL_FULL ->
-                    300_000_000L
-
-                CameraCharacteristics
-                    .INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED ->
-                    200_000_000L
-
-                else ->
-                    0L
-            }
-
-        val routeScore = if (profile.targetFps >= CaptureModeStore.FPS_60) {
-            // Para cadência alta, uma câmera física dedicada evita a camada de roteamento/
-            // fusão de uma logical multi-camera quando o fabricante expõe ambas como IDs
-            // abríveis. Em 30 FPS mantemos a preferência lógica para recursos de lente.
-            if (isLogical) 0L else 1_000_000_000L
-        } else {
-            if (isLogical) 1_000_000_000L else 0L
-        }
-        return routeScore + levelScore
-    }
-
-    private fun highSpeedSizeScore(
-        size: Size
-    ): Long {
-        val area =
-            size.width.toLong() *
-                    size.height.toLong()
-
-        return when (size) {
-            EIGHT_K_SIZE ->
-                16_000_000_000L + area
-
-            UHD_SIZE ->
-                12_000_000_000L + area
-
-            FHD_SIZE ->
-                8_000_000_000L + area
-
-            HD_SIZE ->
-                4_000_000_000L + area
-
-            else ->
-                area
-        }
-    }
-
-    private fun fpsRangeScore(
-        range: Range<Int>,
-        targetFps: Int
-    ): Int {
-        val exact =
-            range.lower == targetFps &&
-                    range.upper == targetFps
-
-        val endsAtTarget =
-            range.upper == targetFps
-
-        return when {
-            exact ->
-                100_000
-
-            endsAtTarget ->
-                50_000 +
-                        range.lower * 100
-
-            else ->
-                10_000 +
-                        range.lower * 100 -
-                        kotlin.math.abs(
-                            range.upper -
-                                    targetFps
-                        )
-        }
-    }
-
-    private fun selectBestHardwareEncoder(profile: CameraProfile): EncoderProfile? {
+    private fun selectDirectRecorderEncoder(profile: CameraProfile): EncoderProfile? {
         val mime = recordingSettings.codecMimes(profile.hdrHlg10).singleOrNull() ?: return null
-        return findHardwareEncoder(
+        val exact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            DirectMediaRecorderBackend.findExactSelection(
+                cameraId = profile.cameraId,
+                width = profile.videoSize.width,
+                height = profile.videoSize.height,
+                fps = profile.targetFps,
+                mime = mime,
+                hdrHlg10 = profile.hdrHlg10,
+                requestedBitrate = configuredVideoBitrate()
+            )
+        } else null
+        if (profile.hdrHlg10 && exact == null) return null
+        return EncoderProfile(
+            codecName = if (exact != null) "MediaRecorder direto (perfil OEM compatível)" else "MediaRecorder direto",
             mime = mime,
-            desiredBitrate = configuredVideoBitrate(),
-            size = profile.videoSize,
-            fps = profile.targetFps,
-            requireMain10 = profile.hdrHlg10
+            bitrate = configuredVideoBitrate(),
+            hdrHlg10 = profile.hdrHlg10
         )
     }
 
@@ -1809,79 +953,6 @@ class CaptureService : Service() {
         (recordingSettings.bitrateMbps * 1_000_000L)
             .coerceIn(4_000_000L, MAX_VIDEO_BITRATE.toLong())
             .toInt()
-
-    private fun findHardwareEncoder(
-        mime: String,
-        desiredBitrate: Int,
-        size: Size,
-        fps: Int,
-        requireMain10: Boolean
-    ): EncoderProfile? {
-        val targetPerformancePoint = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            MediaCodecInfo.VideoCapabilities.PerformancePoint(size.width, size.height, fps)
-        } else {
-            null
-        }
-        var best: Pair<Long, EncoderProfile>? = null
-
-        for (codecInfo in MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos) {
-            if (!codecInfo.isEncoder || codecInfo.isSoftwareOnly) continue
-            if (!codecInfo.supportedTypes.any { it.equals(mime, ignoreCase = true) }) continue
-            val capabilities = runCatching { codecInfo.getCapabilitiesForType(mime) }.getOrNull() ?: continue
-            if (!capabilities.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)) continue
-            val profileLevel = preferredEncoderProfileLevel(mime, capabilities, requireMain10)
-            if (requireMain10 && profileLevel == null) continue
-            val videoCapabilities = capabilities.videoCapabilities ?: continue
-            if (!runCatching { videoCapabilities.isSizeSupported(size.width, size.height) }.getOrDefault(false)) continue
-
-            val bitrateRange = videoCapabilities.bitrateRange
-            val bitrate = desiredBitrate.coerceIn(videoCapabilities.bitrateRange.lower, videoCapabilities.bitrateRange.upper)
-            val candidate = EncoderProfile(codecInfo.name, mime, bitrate, requireMain10, profileLevel?.first, profileLevel?.second)
-            val exactRateSupported = runCatching {
-                videoCapabilities.areSizeAndRateSupported(size.width, size.height, fps.toDouble())
-            }.getOrDefault(false)
-            val performanceGuaranteed = targetPerformancePoint != null && runCatching {
-                videoCapabilities.supportedPerformancePoints?.any { it.covers(targetPerformancePoint) } == true
-            }.getOrDefault(false)
-            val bitrateUnclamped = desiredBitrate in bitrateRange
-
-            // A ordem do MediaCodecList não é uma garantia de desempenho. Para 4K60/HFR,
-            // priorize o codec que o próprio fabricante garante por PerformancePoint;
-            // depois considere suporte exato, taxa medida, vendor/hardware e bitrate.
-            val score =
-                (if (performanceGuaranteed) 1_000_000_000L else 0L) +
-                (if (exactRateSupported) 500_000_000L else 0L) +
-                (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && codecInfo.isVendor) 100_000_000L else 0L) +
-                (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && codecInfo.isHardwareAccelerated) 50_000_000L else 0L) +
-                (if (bitrateUnclamped) 10_000_000L else 0L) +
-                bitrate.toLong().coerceAtMost(9_000_000L)
-
-            if (best == null || score > best!!.first) best = score to candidate
-        }
-        return best?.second
-    }
-
-    private fun preferredEncoderProfileLevel(
-        mime: String,
-        capabilities: MediaCodecInfo.CodecCapabilities,
-        requireMain10: Boolean
-    ): Pair<Int, Int>? {
-        val preferredProfiles = when {
-            requireMain10 -> intArrayOf(MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
-            mime == MediaFormat.MIMETYPE_VIDEO_HEVC -> intArrayOf(MediaCodecInfo.CodecProfileLevel.HEVCProfileMain)
-            mime == MediaFormat.MIMETYPE_VIDEO_AVC -> intArrayOf(
-                MediaCodecInfo.CodecProfileLevel.AVCProfileHigh,
-                MediaCodecInfo.CodecProfileLevel.AVCProfileMain,
-                MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline
-            )
-            else -> intArrayOf()
-        }
-        preferredProfiles.forEach { profile ->
-            val level = capabilities.profileLevels.filter { it.profile == profile }.maxOfOrNull { it.level }
-            if (level != null) return profile to level
-        }
-        return null
-    }
 
     private fun cleanupOldRawFilesAsync() {
         Thread(
@@ -1899,17 +970,13 @@ class CaptureService : Service() {
     }
 
     private fun validateStorageForRecording(
+        cameraProfile: CameraProfile,
         encoderProfile: EncoderProfile
     ): Boolean {
-        val audioBitrateBps = if (hasAudioPermission()) {
-            recordingSettings.audioBitrateKbps.toLong() * 1_000L
-        } else {
-            0L
-        }
         val check = RecordingStorageGuard.check(
             context = this,
             videoBitrateBps = encoderProfile.bitrate.toLong(),
-            audioBitrateBps = audioBitrateBps
+            audioBitrateBps = if (hasAudioPermission()) recordingSettings.audioBitrateKbps.toLong() * 1_000L else 0L
         )
         if (check.allowed) return true
         failAndStopFromWorker(check.message)
@@ -1922,62 +989,53 @@ class CaptureService : Service() {
     ) {
         val profileLabel = "${cameraProfile.videoSize.width}x${cameraProfile.videoSize.height}_${cameraProfile.targetFps}fps"
         val finalFile = VaultRepository.createRecordingFile(this, profileLabel)
-        // O cofre e o cache interno usam o mesmo armazenamento privado. Evitar
-        // externalCacheDir retira a camada FUSE do caminho crítico do muxer e reduz
-        // picos de latência de escrita durante 4K60/120 FPS.
-        val rawFile = File.createTempFile(
-            RAW_FILE_PREFIX + cameraProfile.targetFps + "_",
-            ".mp4",
-            cacheDir
-        )
-        val recorder = HardwareRecorder(
-            outputFile = rawFile,
-            videoConfig = HardwareRecorder.VideoConfig(
-                codecName = encoderProfile.codecName,
-                mime = encoderProfile.mime,
-                width = cameraProfile.videoSize.width,
-                height = cameraProfile.videoSize.height,
-                fps = cameraProfile.targetFps,
-                bitrate = encoderProfile.bitrate,
-                orientationHint = calculateOrientationHint(cameraProfile.sensorOrientation),
-                hdrHlg10 = encoderProfile.hdrHlg10,
-                profile = encoderProfile.profile,
-                level = encoderProfile.level,
-                iFrameIntervalSeconds = recordingSettings.iFrameIntervalSeconds
-            ),
-            audioConfig = HardwareRecorder.AudioConfig(
-                enabled = hasAudioPermission(),
-                sampleRate = recordingSettings.audioSampleRate,
-                bitrate = recordingSettings.audioBitrateKbps * 1_000,
-                channels = recordingSettings.audioChannels,
-                gainDb = recordingSettings.audioGainDb,
-                agcEnabled = recordingSettings.audioAgc,
-                noiseSuppressorEnabled = recordingSettings.audioNoiseSuppressor,
-                lowCutEnabled = recordingSettings.audioLowCut,
-                microphoneDirection = when (cameraProfile.characteristics.get(CameraCharacteristics.LENS_FACING)) {
-                    CameraCharacteristics.LENS_FACING_FRONT -> MicrophoneDirection.MIC_DIRECTION_TOWARDS_USER
-                    CameraCharacteristics.LENS_FACING_BACK -> MicrophoneDirection.MIC_DIRECTION_AWAY_FROM_USER
-                    else -> MicrophoneDirection.MIC_DIRECTION_UNSPECIFIED
-                }
-            ),
+        val integratedAudio = hasAudioPermission() && runCatching {
+            startForegroundNow("Preparando gravação direta…", includeMicrophone = true)
+            true
+        }.getOrElse {
+            Log.w(LOG_TAG, "Áudio indisponível nesta tentativa; gravando vídeo puro", it)
+            false
+        }
+
+        val backend = DirectMediaRecorderBackend(
+            context = this,
+            outputFile = finalFile,
+            cameraId = cameraProfile.cameraId,
+            width = cameraProfile.videoSize.width,
+            height = cameraProfile.videoSize.height,
+            targetFps = cameraProfile.targetFps,
+            videoMime = encoderProfile.mime,
+            videoBitrate = encoderProfile.bitrate,
+            hdrHlg10 = cameraProfile.hdrHlg10,
+            orientationHint = calculateOrientationHint(cameraProfile.sensorOrientation),
+            integratedAudio = integratedAudio,
+            audioSampleRate = recordingSettings.audioSampleRate,
+            audioBitrate = recordingSettings.audioBitrateKbps * 1_000,
+            audioChannels = when (recordingSettings.audioChannels) {
+                CaptureSettings.CHANNELS_MONO -> 1
+                CaptureSettings.CHANNELS_STEREO -> 2
+                else -> 2
+            },
             onError = { throwable ->
-                if (!stopping.get() && serviceActive.get()) {
-                    failAndStop("encoder profissional: ${errorText(throwable)}")
-                }
+                if (!stopping.get() && serviceActive.get()) failAndStop("MediaRecorder direto: ${errorText(throwable)}")
             }
         )
 
         try {
-            val surface = recorder.prepare()
+            val surface = backend.prepare()
             synchronized(resourceLock) {
                 finalOutputFile = finalFile
-                rawOutputFile = rawFile
-                professionalRecorder = recorder
+                rawOutputFile = finalFile
+                professionalRecorder = backend
                 recorderSurface = surface
+                activeRecorderBackendName = backend.backendName
+                activeRecorderMime = encoderProfile.mime
             }
+            val msg = "MediaRecorder direto pronto: ${backend.profileDescription}"
+            Log.i(LOG_TAG, msg)
+            AppLogRepository.info(this, "recording_backend", msg)
         } catch (t: Throwable) {
-            runCatching { recorder.release() }
-            runCatching { rawFile.delete() }
+            runCatching { backend.release() }
             runCatching { finalFile.delete() }
             throw t
         }
@@ -2015,8 +1073,7 @@ class CaptureService : Service() {
                         camera.close()
                         return
                     }
-                    cancelInitialCameraAvailabilityRetry()
-
+            
                     synchronized(resourceLock) {
                         cameraDevice = camera
                     }
@@ -2024,30 +1081,18 @@ class CaptureService : Service() {
                     if (headlessCaptureRequested) {
                         maybeCreateHeadlessSession(camera, profile, token)
                     } else {
-                        createRecordingSession(camera, profile, token)
+                        createRecordingSessionSafely(camera, profile, token)
                     }
                 }
 
                 override fun onDisconnected(camera: CameraDevice) {
                     camera.close()
-                    handleCameraInterruption(
-                        profile,
-                        token,
-                        "a câmera foi desconectada",
-                        temporarilyBusy = !recorderStarted
-                    )
+                    handleCameraInterruption(token, "a câmera foi desconectada")
                 }
 
                 override fun onError(camera: CameraDevice, error: Int) {
                     camera.close()
-                    handleCameraInterruption(
-                        profile,
-                        token,
-                        "erro da câmera: $error",
-                        temporarilyBusy =
-                            error == CameraDevice.StateCallback.ERROR_CAMERA_IN_USE ||
-                                error == CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE
-                    )
+                    handleCameraInterruption(token, "erro da câmera: $error")
                 }
 
                 override fun onClosed(camera: CameraDevice) {
@@ -2058,19 +1103,34 @@ class CaptureService : Service() {
                 }
             )
         } catch (throwable: CameraAccessException) {
-            if (
-                headlessCaptureRequested &&
-                !recorderStarted &&
-                isTemporaryCameraBusy(throwable)
-            ) {
-                scheduleInitialCameraAvailabilityRetry(
-                    profile,
-                    token,
-                    errorText(throwable)
-                )
-            } else {
-                throw throwable
-            }
+            throw throwable
+        }
+    }
+
+    /**
+     * Nenhuma exceção de configuração da HAL pode escapar de CameraDevice callbacks.
+     * Alguns Samsung anunciam uma chave/modo e ainda assim recusam a combinação no
+     * CaptureRequest real. Isso é uma falha da configuração selecionada, não motivo
+     * para derrubar o processo do app.
+     */
+    private fun createRecordingSessionSafely(
+        camera: CameraDevice,
+        profile: CameraProfile,
+        token: Int
+    ) {
+        runCatching {
+            createRecordingSession(camera, profile, token)
+        }.onFailure { throwable ->
+            Log.e(LOG_TAG, "Falha controlada criando sessão de gravação", throwable)
+            AppLogRepository.error(
+                this,
+                "recording_session",
+                "${sizeName(profile.videoSize)} ${profile.targetFps} FPS: ${errorText(throwable)}"
+            )
+            failSelectedConfigurationFromWorker(
+                token,
+                "falha ao configurar câmera/estabilização: ${errorText(throwable)}"
+            )
         }
     }
 
@@ -2282,7 +1342,7 @@ class CaptureService : Service() {
 
         runCatching {
             armRecorderForFirstFrame(token)
-            session.setRepeatingBurst(requests, null, null)
+            session.setRepeatingBurst(requests, null, mainHandler)
             commitRecorderStart(profile, token, highSpeed = true)
         }.onFailure {
             failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}")
@@ -2309,13 +1369,101 @@ class CaptureService : Service() {
         updateNotificationOnMain("Iniciando ${sizeName(profile.videoSize)} ${profile.targetFps} fps…")
 
         runCatching {
-            // Request definitivo: instalado uma vez e nunca substituído durante o vídeo.
             armRecorderForFirstFrame(token)
-            session.setRepeatingRequest(request, null, null)
-            commitRecorderStart(profile, token, highSpeed = false)
+            val manualSensor = supportsManualSensor(profile)
+            if (profile.targetFps == CaptureModeStore.FPS_60 && !profile.hdrHlg10 && manualSensor) {
+                val recent = Camera3AStateStore.recentExposure(profile.cameraId)
+                val immediatePlan = recent?.let { fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso) }
+                if (immediatePlan != null) {
+                    val fixedRequest = buildFixedCadenceRequest(profile, immediatePlan)
+                        ?: throw IllegalStateException("câmera não disponível para request de cadência fixa")
+                    session.setRepeatingRequest(fixedRequest, null, mainHandler)
+                    commitRecorderStart(profile, token, highSpeed = false)
+                } else {
+                    startWithFixedSensorCadence(session, request, profile, token)
+                }
+            } else {
+                session.setRepeatingRequest(request, null, mainHandler)
+                commitRecorderStart(profile, token, highSpeed = false)
+            }
         }.onFailure {
             failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}")
         }
+    }
+
+    private fun supportsManualSensor(profile: CameraProfile): Boolean {
+        val capabilities = profile.characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
+        return capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) &&
+            profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) != null &&
+            profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) != null
+    }
+
+    private fun startWithFixedSensorCadence(
+        session: CameraCaptureSession,
+        autoRequest: CaptureRequest,
+        profile: CameraProfile,
+        token: Int
+    ) {
+        val locked = AtomicBoolean(false)
+        val completed = AtomicInteger(0)
+        val callback = object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                captureSession: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                if (!isAttemptValid(token) || locked.get() || completed.incrementAndGet() < 3) return
+                if (!locked.compareAndSet(false, true)) return
+
+                val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                val sensitivityIso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                val plan = if (exposureNs != null && sensitivityIso != null) {
+                    fixedCadencePlan(profile, exposureNs, sensitivityIso)
+                } else null
+
+                val fixedRequest = plan?.let { buildFixedCadenceRequest(profile, it) }
+                runCatching {
+                    captureSession.setRepeatingRequest(fixedRequest ?: autoRequest, null, mainHandler)
+                }
+            }
+        }
+
+        session.setRepeatingRequest(autoRequest, callback, mainHandler)
+        commitRecorderStart(profile, token, highSpeed = false)
+    }
+
+    private fun buildFixedCadenceRequest(
+        profile: CameraProfile,
+        plan: SensorCadencePolicy.Plan
+    ): CaptureRequest? {
+        val camera = synchronized(resourceLock) { cameraDevice } ?: return null
+        val surface = synchronized(resourceLock) { recorderSurface } ?: return null
+        return createRecordRequestBuilder(camera).apply {
+            addTarget(surface)
+            configureCaptureRequest(this, profile, plan)
+            applyFinalWhiteBalance(this, profile)
+        }.build()
+    }
+
+    private fun fixedCadencePlan(
+        profile: CameraProfile,
+        exposureTimeNs: Long,
+        sensitivityIso: Int
+    ): SensorCadencePolicy.Plan? {
+        val exposureRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) ?: return null
+        val sensitivityRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: return null
+        val maxFrameDuration = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION) ?: 0L
+        return SensorCadencePolicy.resolve(
+            fps = profile.targetFps,
+            observedExposureNs = exposureTimeNs,
+            observedSensitivityIso = sensitivityIso,
+            exposureMinNs = exposureRange.lower,
+            exposureMaxNs = exposureRange.upper,
+            sensitivityMinIso = sensitivityRange.lower,
+            sensitivityMaxIso = sensitivityRange.upper,
+            maxFrameDurationNs = maxFrameDuration,
+            manualSensorSupported = supportsManualSensor(profile)
+        )
     }
 
     private fun armRecorderForFirstFrame(token: Int) {
@@ -2330,85 +1478,38 @@ class CaptureService : Service() {
 
     private fun commitRecorderStart(profile: CameraProfile, token: Int, highSpeed: Boolean) {
         if (!isAttemptValid(token)) return
+        val backend = synchronized(resourceLock) {
+            if (recorderStarted) return
+            check(recorderArmed) { "encoder não foi armado antes da câmera" }
+            professionalRecorder ?: throw IllegalStateException("encoder profissional indisponível")
+        }
 
-        // O encoder foi armado antes do primeiro repeating request, mas ainda
-        // descartava qualquer saída antiga. Confirme a época somente depois que a
-        // sessão aceitou o request definitivo e então peça o primeiro IDR do arquivo.
-        val resumed = synchronized(resourceLock) {
-            if (recorderStarted) {
-                true
-            } else {
-                check(recorderArmed) { "encoder não foi armado antes da câmera" }
-                professionalRecorder?.commitStart()
-                    ?: throw IllegalStateException("encoder profissional indisponível")
+        val startFailure = runCatching {
+            synchronized(resourceLock) {
+                if (!isAttemptValid(token)) return
+                if (professionalRecorder !== backend) return
+                backend.commitStart()
                 recorderStarted = true
-                recordingWasEverStarted = true
                 recordingStartedAtMs = System.currentTimeMillis()
                 recordingStartedAtElapsedMs = SystemClock.elapsedRealtime()
-                false
             }
-        }
+        }.exceptionOrNull()
 
-        cameraRecoveryScheduled.set(false)
-        cameraRecoveryAttempts = 0
-        if (!resumed) {
-            logRecordingStartup(profile)
-            logFpsFallbackIfNeeded(profile)
-            CaptureStateStore.updateEffectiveMode(this, resolutionValue(profile.videoSize), sizeName(profile.videoSize), profile.targetFps)
-            if (recordingSettings.vibrateStartStop) Haptics.start(this)
-            startMicrophoneWithoutBlockingVideo(token)
-        }
+        if (startFailure != null) throw startFailure
 
-        val suffix = if (highSpeed) "high-speed" else stabilizationName(profile)
-        val fpsStatus = when {
-            profile.targetFps < requestedTargetFps -> "⚠ ${profile.targetFps} FPS (pedido ${requestedTargetFps})"
-            !profile.hasExactFpsRange() ->
-                "⚠ ${profile.fpsRange.lower}–${profile.fpsRange.upper} FPS (pedido ${requestedTargetFps} fixo)"
-            else -> "${profile.targetFps} FPS"
-        }
+        logRecordingStartup(profile)
+        logFpsFallbackIfNeeded(profile)
+        CaptureStateStore.updateEffectiveMode(this, resolutionValue(profile.videoSize), sizeName(profile.videoSize), profile.targetFps)
+        if (recordingSettings.vibrateStartStop) Haptics.start(this)
+
+        val suffix = if (highSpeed) "high-speed • MediaRecorder direto" else "MediaRecorder direto • ${stabilizationName(profile)}"
+        val fpsStatus = "${profile.targetFps} FPS • AE ${profile.fpsRange.lower}–${profile.fpsRange.upper}"
         val message = "Gravando ${sizeName(profile.videoSize)} • $fpsStatus • " +
             "${if (profile.hdrHlg10) "HLG10" else "SDR BT.709"} • ${encoderName()} • $suffix"
         sendStateOnMain(message)
         updateNotificationOnMain(message)
-        startRecordingHealthWatchdog()
     }
 
-    /**
-     * Android 16 pode levar algumas tentativas para aceitar o tipo FGS de microfone.
-     * Essa espera roda fora da thread Camera2 e depois do vídeo já estar armado.
-     * Se o microfone continuar indisponível, preserva a captura como vídeo-only.
-     */
-    private fun startMicrophoneWithoutBlockingVideo(token: Int) {
-        if (!hasAudioPermission()) {
-            synchronized(resourceLock) { professionalRecorder?.continueWithoutAudio() }
-            return
-        }
-        encoderPreparationExecutor.execute {
-            if (!isAttemptValid(token) || stopping.get() || userRequestedStop) return@execute
-
-            val promoted = runCatching {
-                promoteForegroundForMicrophoneWithRetry("Gravando ${requestedProfileLabel()}…")
-                true
-            }.getOrElse { throwable ->
-                Log.w(LOG_TAG, "Microfone indisponível; mantendo a gravação de vídeo", throwable)
-                AppLogRepository.warn(this, "recording", "Microfone indisponível; vídeo continua sem áudio: ${errorText(throwable)}")
-                false
-            }
-
-            if (!isAttemptValid(token) || stopping.get() || userRequestedStop) return@execute
-
-            val audioStarted = if (promoted) {
-                synchronized(resourceLock) { professionalRecorder?.startAudioCapture() == true }
-            } else {
-                false
-            }
-
-            if (!audioStarted) {
-                synchronized(resourceLock) { professionalRecorder?.continueWithoutAudio() }
-                updateNotificationOnMain("Gravando vídeo • áudio indisponível")
-            }
-        }
-    }
 
     private fun createRecordRequestBuilder(
         camera: CameraDevice
@@ -2416,12 +1517,20 @@ class CaptureService : Service() {
 
     private fun configureCaptureRequest(
         builder: CaptureRequest.Builder,
-        profile: CameraProfile
+        profile: CameraProfile,
+        manualCadence: SensorCadencePolicy.Plan? = null
     ) {
         setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-        setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
-        setSafely(builder, CaptureRequest.CONTROL_AE_LOCK, false)
+        if (manualCadence == null) {
+            setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+            setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
+            setSafely(builder, CaptureRequest.CONTROL_AE_LOCK, false)
+        } else {
+            setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+            setSafely(builder, CaptureRequest.SENSOR_FRAME_DURATION, manualCadence.frameDurationNs)
+            setSafely(builder, CaptureRequest.SENSOR_EXPOSURE_TIME, manualCadence.exposureTimeNs)
+            setSafely(builder, CaptureRequest.SENSOR_SENSITIVITY, manualCadence.sensitivityIso)
+        }
         setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
         setSafely(builder, CaptureRequest.CONTROL_CAPTURE_INTENT, CameraMetadata.CONTROL_CAPTURE_INTENT_VIDEO_RECORD)
 
@@ -2485,9 +1594,11 @@ class CaptureService : Service() {
         }
         if (antibandingModes.contains(requestedAntibanding)) setSafely(builder, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, requestedAntibanding)
 
-        val exposureRange = profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
-        exposureRange?.let {
-            setSafely(builder, CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, recordingSettings.exposureCompensation.coerceIn(it.lower, it.upper))
+        if (manualCadence == null) {
+            val exposureRange = profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+            exposureRange?.let {
+                setSafely(builder, CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, recordingSettings.exposureCompensation.coerceIn(it.lower, it.upper))
+            }
         }
 
         CameraZoom.apply(builder, profile.characteristics, recordingSettings.zoomRatio)
@@ -2717,36 +1828,59 @@ class CaptureService : Service() {
         builder: CaptureRequest.Builder,
         profile: CameraProfile
     ) {
-        fun setVideoMode(mode: Int) {
-            runCatching { builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, mode) }
-        }
-        fun eis(mode: Int) {
-            setVideoMode(mode)
-            OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
-        }
-        fun ois() {
-            setVideoMode(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-            OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = true)
-        }
-        fun off() {
-            setVideoMode(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-            OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
+        // Regra fixa: o SteadyVault não substituirá a estabilização escolhida; tenta o modo
+        // exato no CaptureRequest e só reporta incompatibilidade se a HAL real recusar.
+        val requested = requestedStabilizationMode()
+
+        fun setVideoModeRequired(mode: Int) {
+            builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, mode)
+            check(builder.get(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE) == mode) {
+                "a HAL recusou ${stabilizationModeLabel(requested)}"
+            }
         }
 
-        when (resolveStabilization(profile)) {
-            EffectiveStabilization.OFF -> off()
-            EffectiveStabilization.PREVIEW -> eis(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION)
-            EffectiveStabilization.EIS -> eis(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON)
-            EffectiveStabilization.OIS -> ois()
+        fun setOisRequired(enabled: Boolean) {
+            check(OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled)) {
+                if (enabled) "a HAL recusou OIS" else "a HAL não permitiu desligar OIS"
+            }
+        }
+
+        when (requested) {
+            RecordingStabilizationPolicy.Mode.OFF -> {
+                setVideoModeRequired(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+                // Se a HAL não expõe OIS, não transforme a ausência da chave em erro:
+                // CONTROL_VIDEO_STABILIZATION_MODE_OFF continua sendo aplicado exatamente.
+                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
+            }
+            RecordingStabilizationPolicy.Mode.PREVIEW -> {
+                setVideoModeRequired(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION)
+                // Preview stabilization tem precedência sobre OIS em Camera2; desligar OIS
+                // explicitamente é desejável, mas a ausência dessa chave não bloqueia o modo.
+                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
+            }
+            RecordingStabilizationPolicy.Mode.EIS -> {
+                setVideoModeRequired(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
+            }
+            RecordingStabilizationPolicy.Mode.OIS -> {
+                setVideoModeRequired(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+                setOisRequired(enabled = true)
+            }
         }
     }
 
-    private fun resolveStabilization(profile: CameraProfile): EffectiveStabilization = when (recordingSettings.stabilization) {
-        CaptureSettings.STABILIZATION_OFF -> EffectiveStabilization.OFF
-        CaptureSettings.STABILIZATION_PREVIEW -> if (!profile.highSpeed && profile.previewStabilizationSupported) EffectiveStabilization.PREVIEW else EffectiveStabilization.OFF
-        CaptureSettings.STABILIZATION_EIS -> if (profile.eisSupported) EffectiveStabilization.EIS else EffectiveStabilization.OFF
-        CaptureSettings.STABILIZATION_OIS -> if (profile.oisSupported) EffectiveStabilization.OIS else EffectiveStabilization.OFF
-        else -> EffectiveStabilization.OFF
+    private fun requestedStabilizationMode(): RecordingStabilizationPolicy.Mode = when (recordingSettings.stabilization) {
+        CaptureSettings.STABILIZATION_PREVIEW -> RecordingStabilizationPolicy.Mode.PREVIEW
+        CaptureSettings.STABILIZATION_EIS -> RecordingStabilizationPolicy.Mode.EIS
+        CaptureSettings.STABILIZATION_OIS -> RecordingStabilizationPolicy.Mode.OIS
+        else -> RecordingStabilizationPolicy.Mode.OFF
+    }
+
+    private fun stabilizationModeLabel(mode: RecordingStabilizationPolicy.Mode): String = when (mode) {
+        RecordingStabilizationPolicy.Mode.PREVIEW -> "Preview stabilization"
+        RecordingStabilizationPolicy.Mode.EIS -> "EIS"
+        RecordingStabilizationPolicy.Mode.OIS -> "OIS"
+        RecordingStabilizationPolicy.Mode.OFF -> "estabilização desligada"
     }
 
     private fun <T> setSafely(
@@ -2766,9 +1900,6 @@ class CaptureService : Service() {
         userRequestedStop = true
         if (!stopping.compareAndSet(false, true)) return
         ++attemptToken
-        cancelInitialCameraAvailabilityRetry()
-        runtimeStorageMonitor.stop()
-        stopRecordingHealthWatchdog()
 
         if (!recorderStarted) {
             if (!stopHapticAcknowledged && recordingSettings.vibrateStartStop) Haptics.stop(this)
@@ -2782,112 +1913,48 @@ class CaptureService : Service() {
             return
         }
 
-        sendState("Finalizando ${requestedProfileLabel()}…")
-        updateNotification("Finalizando ${requestedProfileLabel()}…")
+        sendState("Parando gravação…")
+        updateNotification("Parando gravação…")
 
         cameraExecutor.execute {
             val session = synchronized(resourceLock) { captureSession }
-            val drainTail = recorderStarted && session != null
-            if (drainTail) runCatching { session?.stopRepeating() }
-            val delayMs = if (drainTail) {
-                RecordingStopPolicy.tailDrainMs(selectedCamera?.targetFps ?: requestedTargetFps)
-            } else {
-                0L
-            }
-            if (delayMs > 0L) {
-                mainHandler.postDelayed({ cameraExecutor.execute { stopRecorderAndFinalize() } }, delayMs)
-            } else {
-                stopRecorderAndFinalize()
-            }
+            if (recorderStarted && session != null) runCatching { session.stopRepeating() }
+            stopRecorderAndFinalize()
         }
     }
 
     private fun stopRecorderAndFinalize() {
         val claimed = claimRecording()
         val finalFile = claimed.output
-        val rawFile = claimed.raw
         val recorder = claimed.recorder
-        val validOutput = claimed.wasStarted &&
-            runCatching { recorder?.stop() == true }.getOrDefault(false)
-        val cadenceStats = recorder?.videoCadenceStats()
+        val validOutput = claimed.wasStarted && runCatching { recorder?.stop() == true }.getOrDefault(false)
 
         releaseCameraOnly()
         runCatching { recorder?.release() }
         sendBroadcast(Intent(ACTION_RECORDING_VISUAL_FINISHED).setPackage(packageName))
 
-        val rawContainsData =
-            rawFile?.isFile == true &&
-                rawFile.length() > 0L
-        if (!validOutput || finalFile == null || rawFile == null || !rawFile.isFile || rawFile.length() <= 0L) {
-            if (
-                finalFile != null &&
-                rawFile != null &&
-                (recordingStartedAtMs > 0L || rawContainsData)
-            ) {
-                finishWithRecoveredPartial(
-                    rawFile,
-                    finalFile,
-                    "o encoder não conseguiu finalizar o arquivo"
-                )
+        if (!validOutput || finalFile == null || !finalFile.isFile || finalFile.length() <= 0L) {
+            if (finalFile != null && finalFile.isFile && finalFile.length() > 0L) {
+                finishWithRecoveredPartial(finalFile, finalFile, "MediaRecorder não conseguiu finalizar o MP4 direto")
             } else {
-                // Um clique na notificação pode chegar entre o primeiro byte do muxer
-                // e a atualização do marcador de início. Nunca apaga um bruto que já
-                // recebeu dados; ele fica reservado para a recuperação automática.
-                if (!rawContainsData) runCatching { rawFile?.delete() }
                 runCatching { finalFile?.delete() }
-                sendStateOnMain(
-                    when {
-                        recoveredSegmentCount > 0 ->
-                            "Vídeo salvo no cofre • trecho de segurança preservado"
-                        rawContainsData ->
-                            "Trecho temporário preservado • recuperação automática pendente"
-                        else ->
-                            "Nenhum quadro foi produzido antes da parada"
-                    }
-                )
+                sendStateOnMain("Nenhum quadro foi produzido antes da parada")
                 finishServiceOnMain()
             }
             return
         }
 
-        val profile = selectedCamera
-        val fps = profile?.targetFps ?: requestedTargetFps
-        logMeasuredCadence(cadenceStats, fps, profile)
-
-        sendStateOnMain("Salvando original no cofre…")
-        updateNotificationOnMain("Salvando original no cofre…")
-        val published = runCatching {
-            RecordingFilePublisher.publish(rawFile, finalFile) { candidate ->
-                RecordingRecoveryRepository.hasUsableVideo(candidate) &&
-                    (profile?.hdrHlg10 != true || hasHlgVideoTrack(candidate))
-            }
-        }.isSuccess
-        if (!published) {
-            finishWithRecoveredPartial(
-                rawFile,
-                finalFile,
-                "não foi possível publicar o arquivo original validado"
-            )
-            return
-        }
-
+        com.steadyvault.camera.storage.vault.VaultMediaIndex.invalidate()
         if (!stopHapticAcknowledged && recordingSettings.vibrateStartStop) Haptics.stop(this)
 
+        val profile = selectedCamera
         val size = profile?.videoSize ?: recordingSettings.preferredSizes().first()
+        val fps = profile?.targetFps ?: requestedTargetFps
         val durationSeconds = if (recordingStartedAtElapsedMs > 0L) {
             ((SystemClock.elapsedRealtime() - recordingStartedAtElapsedMs) / 1000L).coerceAtLeast(0L)
         } else 0L
-        val qualityLabel = if (profile?.hdrHlg10 == true) "HDR HLG10 • ${encoderName()}" else "SDR BT.709 • ${encoderName()}"
-        // O MP4 direto da câmera é o resultado final. Nenhuma leitura, thumbnail,
-        // correção ou transcode é iniciado automaticamente depois de gravar.
-        // As ferramentas manuais permanecem disponíveis no Cofre.
-        val repairStatus = "Original salvo sem processamento automático"
-        val message = buildString {
-            append("Vídeo salvo no cofre\n")
-            append(sizeName(size)).append(" • ").append(cadenceDisplay(cadenceStats, fps)).append(" • ")
-            append(qualityLabel).append(" • ").append(formatDuration(durationSeconds))
-            append('\n').append(repairStatus)
-        }
+        val qualityLabel = if (profile?.hdrHlg10 == true) "HDR HLG10" else "SDR BT.709"
+        val message = "Vídeo salvo no cofre • ${sizeName(size)} • $fps FPS • $qualityLabel • ${formatDuration(durationSeconds)}"
         sendStateOnMain(message)
         updateNotificationOnMain(message)
         finishServiceOnMain()
@@ -2923,7 +1990,7 @@ class CaptureService : Service() {
         finalFile: File,
         reason: String
     ) {
-        runCatching { finalFile.delete() }
+        if (rawFile.absolutePath != finalFile.absolutePath) runCatching { finalFile.delete() }
         val preserved = RecordingRecoveryRepository.preserveInterrupted(this, rawFile)
         when {
             preserved != null && RecordingRecoveryRepository.hasUsableVideo(preserved) -> {
@@ -3014,158 +2081,22 @@ class CaptureService : Service() {
         val claimed = claimRecording()
         if (claimed.wasStarted) runCatching { claimed.recorder?.stop() }
         runCatching { claimed.recorder?.release() }
-        val safeOutput = claimed.output
-        val safeRawFile = claimed.raw
-        val preserved = if (
-            safeOutput != null &&
-            safeRawFile != null &&
-            safeRawFile.isFile &&
-            safeRawFile.length() > 0L
-        ) {
-            runCatching {
-                RecordingFilePublisher.publish(
-                    safeRawFile,
-                    safeOutput,
-                    RecordingRecoveryRepository::hasUsableVideo
-                )
-            }.isSuccess
+        val file = claimed.output ?: claimed.raw ?: return false
+        if (!file.isFile || file.length() <= 0L) return false
+
+        return if (RecordingRecoveryRepository.hasUsableVideo(file)) {
+            com.steadyvault.camera.storage.vault.VaultMediaIndex.invalidate()
+            true
         } else {
-            false
+            RecordingRecoveryRepository.preserveInterrupted(this, file) != null
         }
-
-        if (preserved) runCatching { safeRawFile?.delete() }
-        if (!preserved) runCatching { safeOutput?.delete() }
-        return preserved
-    }
-
-    /**
-     * Um erro irrecuperável do encoder encerra apenas o arquivo atual. O trecho
-     * válido é publicado no cofre e uma nova parte começa automaticamente com o
-     * mesmo perfil. Assim, falha de HAL/codec não vira um comando Parar oculto.
-     */
-    private fun recoverRecordingSegment(message: String) {
-        if (
-            !serviceActive.get() ||
-            userRequestedStop ||
-            !recorderStarted ||
-            !segmentRecoveryInProgress.compareAndSet(false, true)
-        ) {
-            return
-        }
-        stopRecordingHealthWatchdog()
-        cameraExecutor.execute {
-            recoverRecordingSegmentFromWorker(message)
-        }
-    }
-
-    private fun recoverRecordingSegmentFromWorker(message: String) {
-        if (!serviceActive.get() || userRequestedStop) {
-            segmentRecoveryInProgress.set(false)
-            return
-        }
-
-        val preserved = preserveInterruptedRecording()
-        if (preserved) recoveredSegmentCount++
-        CameraResourceCoordinator.releaseCapture(CameraResourceCoordinator.Owner.VIDEO, cameraLeaseToken)
-        cameraRecoveryScheduled.set(false)
-        cameraRecoveryAttempts = 0
-        recordingStartedAtMs = 0L
-        recordingStartedAtElapsedMs = 0L
-        val nextToken = ++attemptToken
-
-        val status = if (preserved) {
-            "Trecho salvo no cofre • continuando a gravação automaticamente…"
-        } else {
-            "Recuperando a gravação automaticamente…"
-        }
-        Log.w(LOG_TAG, "$status motivo=$message")
-        AppLogRepository.warn(this, "recording", "$status motivo=$message")
-        sendStateOnMain(status)
-        updateNotificationOnMain(status)
-        refreshRecordingServiceHeartbeat(force = true)
-
-        mainHandler.postDelayed(
-            {
-                segmentRecoveryInProgress.set(false)
-                if (
-                    serviceActive.get() &&
-                    !userRequestedStop &&
-                    !stopping.get()
-                ) {
-                    cameraExecutor.execute {
-                        prepareInitialConfigurationBeforeCameraHandoff(nextToken)
-                    }
-                }
-            },
-            SEGMENT_RESTART_DELAY_MS
-        )
-    }
-
-    private fun retryRecordingSession(message: String) {
-        if (
-            !serviceActive.get() ||
-            userRequestedStop ||
-            !recordingWasEverStarted ||
-            !segmentRecoveryInProgress.compareAndSet(false, true)
-        ) {
-            return
-        }
-        stopRecordingHealthWatchdog()
-        cameraExecutor.execute {
-            retryRecordingSessionFromWorker(message)
-        }
-    }
-
-    private fun retryRecordingSessionFromWorker(message: String) {
-        if (!serviceActive.get() || userRequestedStop) {
-            segmentRecoveryInProgress.set(false)
-            return
-        }
-
-        val nextToken = ++attemptToken
-        releaseRecordingResources(deleteOutput = true)
-        CameraResourceCoordinator.releaseCapture(CameraResourceCoordinator.Owner.VIDEO, cameraLeaseToken)
-        selectedCamera = null
-        selectedEncoder = null
-        cameraRecoveryScheduled.set(false)
-        cameraRecoveryAttempts = 0
-        sendStateOnMain("Continuando a gravação após uma interrupção temporária…")
-        updateNotificationOnMain("Retomando a gravação automaticamente…")
-        Log.w(LOG_TAG, "Reiniciando segmento automaticamente: $message")
-        refreshRecordingServiceHeartbeat(force = true)
-
-        mainHandler.postDelayed(
-            {
-                segmentRecoveryInProgress.set(false)
-                if (
-                    serviceActive.get() &&
-                    !userRequestedStop &&
-                    !stopping.get()
-                ) {
-                    cameraExecutor.execute {
-                        prepareInitialConfigurationBeforeCameraHandoff(nextToken)
-                    }
-                }
-            },
-            SEGMENT_RETRY_DELAY_MS
-        )
     }
 
     private fun failAndStop(message: String) {
         if (!serviceActive.get()) return
         AppLogRepository.error(this, "recording", message)
-        if (recorderStarted && !userRequestedStop) {
-            recoverRecordingSegment(message)
-            return
-        }
-        if (recordingWasEverStarted && !userRequestedStop) {
-            retryRecordingSession(message)
-            return
-        }
-
         userRequestedStop = true
         stopping.set(true)
-        stopRecordingHealthWatchdog()
 
         cameraExecutor.execute {
             val preserved = if (recorderStarted) {
@@ -3188,24 +2119,8 @@ class CaptureService : Service() {
     private fun failAndStopFromWorker(message: String) {
         if (!serviceActive.get()) return
         AppLogRepository.error(this, "recording", message)
-        if (recorderStarted && !userRequestedStop) {
-            if (segmentRecoveryInProgress.compareAndSet(false, true)) {
-                stopRecordingHealthWatchdog()
-                recoverRecordingSegmentFromWorker(message)
-            }
-            return
-        }
-        if (recordingWasEverStarted && !userRequestedStop) {
-            if (segmentRecoveryInProgress.compareAndSet(false, true)) {
-                stopRecordingHealthWatchdog()
-                retryRecordingSessionFromWorker(message)
-            }
-            return
-        }
-
         userRequestedStop = true
         stopping.set(true)
-        stopRecordingHealthWatchdog()
         val preserved = if (recorderStarted) {
             preserveInterruptedRecording()
         } else {
@@ -3231,14 +2146,7 @@ class CaptureService : Service() {
 
         attemptToken++
         stopping.set(false)
-        cameraRecoveryScheduled.set(false)
-        cancelInitialCameraAvailabilityRetry()
-        segmentRecoveryInProgress.set(false)
-        cameraRecoveryAttempts = 0
         recorderStarted = false
-        runtimeStorageMonitor.stop()
-        stopRecordingHealthWatchdog()
-        CaptureStateStore.clearRecordingServiceHeartbeat(this)
         CaptureStateStore.completeSessionIfBusy(this, captureSessionId)
         WidgetRenderer.forceRecordingControls(this)
         CameraResourceCoordinator.releaseCapture(CameraResourceCoordinator.Owner.VIDEO, cameraLeaseToken)
@@ -3269,17 +2177,6 @@ class CaptureService : Service() {
                 serviceActive.get() &&
                 !userRequestedStop
 
-    private fun refreshRecordingServiceHeartbeat(force: Boolean = false) {
-        val now = SystemClock.elapsedRealtime()
-        if (
-            force ||
-            now - lastServiceHeartbeatElapsedMs >= SERVICE_HEARTBEAT_INTERVAL_MS
-        ) {
-            lastServiceHeartbeatElapsedMs = now
-            CaptureStateStore.markRecordingServiceAlive(this)
-        }
-    }
-
     private fun startForegroundNow(text: String, includeMicrophone: Boolean = true) {
         val notification = buildNotification(text)
         val serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
@@ -3298,34 +2195,25 @@ class CaptureService : Service() {
      * Inicia imediatamente como FGS de câmera. O Android 16 pode manter o AppOp do
      * microfone indisponível por uma janela curta no primeiro start.
      */
+    private fun startForegroundCaptureFast(text: String) {
+        if (!hasAudioPermission()) {
+            startForegroundCameraOnly(text)
+            return
+        }
+        try {
+            startForegroundNow(text, includeMicrophone = true)
+        } catch (throwable: Throwable) {
+            if (!isForegroundPermissionRace(throwable)) throw throwable
+            startForegroundCameraOnly(text)
+        }
+    }
+
     private fun startForegroundCameraOnly(text: String) {
         startForegroundNow(text, includeMicrophone = false)
     }
 
-    /**
-     * Promove para câmera+microfone só quando o encoder já está pronto para gravar.
-     * Se o AppOp ainda estiver em transição, repete apenas a promoção e mantém câmera,
-     * sessão e encoder intactos.
-     */
-    private fun promoteForegroundForMicrophoneWithRetry(text: String) {
-        var lastFailure: Throwable? = null
-        repeat(FOREGROUND_PERMISSION_START_ATTEMPTS) { attempt ->
-            try {
-                startForegroundNow(text, includeMicrophone = true)
-                return
-            } catch (throwable: Throwable) {
-                lastFailure = throwable
-                if (!isForegroundPermissionRace(throwable)) throw throwable
-                if (attempt < FOREGROUND_PERMISSION_START_ATTEMPTS - 1) {
-                    SystemClock.sleep(FOREGROUND_PERMISSION_RETRY_DELAY_MS * (attempt + 1L))
-                }
-            }
-        }
-        throw lastFailure ?: IllegalStateException("falha desconhecida ao promover serviço para microfone")
-    }
 
     private fun abortBeforeCaptureStart() {
-        runtimeStorageMonitor.stop()
         CameraResourceCoordinator.releaseCapture(CameraResourceCoordinator.Owner.VIDEO, cameraLeaseToken)
         VaultStartupCoordinator.resumeAfterCapture(cameraLeaseToken)
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
@@ -3452,9 +2340,8 @@ class CaptureService : Service() {
             )
             .apply {
                 setReferenceCounted(false)
-                acquire(MAX_WAKE_LOCK_MS)
+                acquire()
             }
-        wakeLockAcquiredAtElapsedMs = SystemClock.elapsedRealtime()
     }
 
     private fun releaseWakeLock() {
@@ -3464,7 +2351,6 @@ class CaptureService : Service() {
                 ?.release()
         }
         wakeLock = null
-        wakeLockAcquiredAtElapsedMs = 0L
     }
 
     private fun fpsModeName(
@@ -3483,9 +2369,9 @@ class CaptureService : Service() {
         }
 
     private fun stabilizationName(profile: CameraProfile): String = when (recordingSettings.stabilization) {
-        CaptureSettings.STABILIZATION_PREVIEW -> if (resolveStabilization(profile) == EffectiveStabilization.PREVIEW) "preview stabilization" else "preview indisponível"
-        CaptureSettings.STABILIZATION_EIS -> if (resolveStabilization(profile) == EffectiveStabilization.EIS) "EIS" else "EIS indisponível"
-        CaptureSettings.STABILIZATION_OIS -> if (resolveStabilization(profile) == EffectiveStabilization.OIS) "OIS" else "OIS indisponível"
+        CaptureSettings.STABILIZATION_PREVIEW -> "preview stabilization"
+        CaptureSettings.STABILIZATION_EIS -> "EIS"
+        CaptureSettings.STABILIZATION_OIS -> "OIS"
         CaptureSettings.STABILIZATION_OFF -> "sem estabilização"
         else -> "estabilização inválida"
     }
@@ -3526,6 +2412,12 @@ class CaptureService : Service() {
 
     private fun encoderName(): String =
         when {
+            activeRecorderBackendName.startsWith("OEM MediaRecorder") && activeRecorderMime == MediaFormat.MIMETYPE_VIDEO_HEVC ->
+                "OEM HEVC (EncoderProfiles)"
+            activeRecorderBackendName.startsWith("OEM MediaRecorder") && activeRecorderMime == MediaFormat.MIMETYPE_VIDEO_AVC ->
+                "OEM H.264 (EncoderProfiles)"
+            activeRecorderBackendName.startsWith("OEM MediaRecorder") ->
+                "OEM EncoderProfiles"
             selectedEncoder?.hdrHlg10 == true -> "HEVC Main10 HLG"
             selectedEncoder?.mime == MediaFormat.MIMETYPE_VIDEO_HEVC -> "HEVC"
             selectedEncoder?.mime == MediaFormat.MIMETYPE_VIDEO_AVC -> "H.264"
@@ -3593,11 +2485,6 @@ class CaptureService : Service() {
         attemptToken++
         userRequestedStop = true
         stopping.set(true)
-        segmentRecoveryInProgress.set(false)
-        cancelInitialCameraAvailabilityRetry()
-        stopRecordingHealthWatchdog()
-        unregisterScreenTransitionReceiver()
-        CaptureStateStore.clearRecordingServiceHeartbeat(this)
         val preserved = if (interruptedBySystem || hasPendingRecording) {
             preserveInterruptedRecording()
         } else {
@@ -3621,65 +2508,39 @@ class CaptureService : Service() {
         if (::encoderPreparationExecutor.isInitialized && !encoderPreparationExecutor.isShutdown) {
             encoderPreparationExecutor.shutdownNow()
         }
-        if (::runtimeStorageMonitor.isInitialized) runtimeStorageMonitor.close()
         VaultStartupCoordinator.resumeAfterCapture(cameraLeaseToken)
         super.onDestroy()
-    }
-
-    private fun cadenceDisplay(
-        stats: HardwareRecorder.VideoCadenceStats?,
-        targetFps: Int
-    ): String {
-        if (stats == null || stats.frames < 2L || stats.effectiveFps <= 0.0) return "$targetFps FPS"
-        return if (stats.effectiveFps < targetFps * 0.99) {
-            "⚠ ${String.format(Locale.US, "%.2f", stats.effectiveFps)} FPS reais (pedido $targetFps)"
-        } else {
-            "${String.format(Locale.US, "%.2f", stats.effectiveFps)} FPS reais"
-        }
-    }
-
-    private fun logMeasuredCadence(
-        stats: HardwareRecorder.VideoCadenceStats?,
-        targetFps: Int,
-        profile: CameraProfile?
-    ) {
-        if (stats == null || stats.frames < 2L || stats.effectiveFps <= 0.0) return
-        val message =
-            "Cadência medida: ${String.format(Locale.US, "%.3f", stats.effectiveFps)} FPS, " +
-                "alvo=$targetFps, quadros=${stats.frames}, lacunasLongas=${stats.longGaps}, " +
-                "maiorLacuna=${stats.maxGapUs / 1000.0}ms, filaMuxPico=${stats.muxQueuePeak}, " +
-                "câmera=${profile?.cameraId ?: "?"}, resolução=${profile?.videoSize?.width ?: 0}x${profile?.videoSize?.height ?: 0}"
-        if (stats.effectiveFps < targetFps * 0.99 || stats.longGaps > 0L) {
-            AppLogRepository.warn(this, "recording_fps", message)
-            Log.w(LOG_TAG, message)
-        } else {
-            AppLogRepository.info(this, "recording_fps", message)
-            Log.i(LOG_TAG, message)
-        }
     }
 
     private fun logRecordingStartup(profile: CameraProfile) {
         val requestedAt = recordingRequestedAtElapsedNs
         if (requestedAt <= 0L) return
         val elapsedMs = ((SystemClock.elapsedRealtimeNanos() - requestedAt) / 1_000_000L).coerceAtLeast(0L)
-        Log.i(
-            LOG_TAG,
-            "Gravação ${sizeName(profile.videoSize)} ${profile.targetFps} FPS iniciada em ${elapsedMs} ms"
-        )
+        val map = profile.characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val minFrameDurationNs = map?.let {
+            encoderSurfaceMinFrameDurationNs(it, profile.videoSize, preferMediaRecorder = true)
+        } ?: 0L
+        val cadence = cadenceConfidence(profile)
+        val cadenceMessage = "Gravação ${sizeName(profile.videoSize)} ${profile.targetFps} FPS iniciada em ${elapsedMs} ms • " +
+            "cadênciaHAL=$cadence • minFrame=${if (minFrameDurationNs > 0L) minFrameDurationNs / 1_000_000.0 else -1.0}ms • câmera=${profile.cameraId}"
+        Log.i(LOG_TAG, cadenceMessage)
+        AppLogRepository.info(this, "recording_fps", cadenceMessage)
     }
 
     private fun logFpsFallbackIfNeeded(profile: CameraProfile) {
         if (fpsFallbackWarningLogged) return
-        val warning = when {
-            profile.targetFps < requestedTargetFps ->
-                "FPS reduzido para manter a gravação: solicitado=${requestedTargetFps}, efetivo=${profile.targetFps}, faixaAE=${profile.fpsRange.lower}-${profile.fpsRange.upper}, câmera=${profile.cameraId}, resolução=${profile.videoSize.width}x${profile.videoSize.height}"
-            !profile.hasExactFpsRange() ->
-                "FPS fixo não pôde ser garantido; gravação mantida: solicitado=${requestedTargetFps}-${requestedTargetFps}, efetivo=${profile.fpsRange.lower}-${profile.fpsRange.upper}, câmera=${profile.cameraId}, resolução=${profile.videoSize.width}x${profile.videoSize.height}"
-            else -> null
-        } ?: return
+        val backend = synchronized(resourceLock) { professionalRecorder }
+        val info = buildString {
+            append("FPS exato ativo: solicitado=").append(requestedTargetFps)
+            append(", efetivo=").append(profile.targetFps)
+            append(", faixaAE=").append(profile.fpsRange.lower).append('-').append(profile.fpsRange.upper)
+            append(", câmera=").append(profile.cameraId)
+            append(", resolução=").append(profile.videoSize.width).append('x').append(profile.videoSize.height)
+            append(", backend=MediaRecorder direto")
+        }
         fpsFallbackWarningLogged = true
-        Log.w(LOG_TAG, warning)
-        AppLogRepository.warn(this, "recording_fps", warning)
+        Log.i(LOG_TAG, info)
+        AppLogRepository.info(this, "recording_fps", info)
     }
 
     private fun requestedProfileLabel(): String =
@@ -3721,18 +2582,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAMERA_RECOVERY_DELAY_MS = 350L
-        private const val CAMERA_RECOVERY_MAX_DELAY_STEPS = 8
-        private const val CAMERA_RECOVERY_MAX_DELAY_MS = 2_800L
-        private const val INITIAL_CAMERA_BUSY_RETRY_MS = 90L
-        private const val RECORDING_HEALTH_CHECK_INTERVAL_MS = 200L
-        private const val SCREEN_TRANSITION_HEALTH_DELAY_MS = 250L
-        private const val VIDEO_FRAME_STALL_RECOVERY_MS = 450L
-        private const val FIRST_VIDEO_FRAME_GRACE_MS = 3_500L
-        private const val SEGMENT_RESTART_DELAY_MS = 500L
-        private const val SEGMENT_RETRY_DELAY_MS = 1_000L
-
-        private const val CAPTURE_PIPELINE_REVISION = "vbr-dedicated-camera-4k60-1.8.243"
+        private const val CAPTURE_PIPELINE_REVISION = "strict-config-direct-mediarecorder-1.8.255"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
@@ -3745,11 +2595,6 @@ class CaptureService : Service() {
 
         @Volatile
         private var cachedConfiguration: CachedConfiguration? = null
-
-        private const val PREFERRED_PREVIEW_CAMERA_SCORE = 20_000_000_000L
-        private const val REQUESTED_OIS_CAMERA_SCORE = 30_000_000_000L
-        private const val REQUESTED_EIS_CAMERA_SCORE = 8_000_000_000L
-        private const val FIXED_FPS_RANGE_SCORE = 12_000_000_000L
 
         private const val CHANNEL_ID =
             "steadyvault_recording_controls_v2"
@@ -3771,20 +2616,11 @@ class CaptureService : Service() {
 
         private const val MAX_VIDEO_BITRATE =
             240_000_000
-        private const val HDR_SCORE_BONUS =
-            50_000_000L
         private const val FRAME_DURATION_TOLERANCE_NS =
-            250_000L
+            50_000L
 
         private const val RAW_FILE_PREFIX = "steadyvault_raw_"
         private const val STALE_RAW_FILE_MIN_AGE_MS = 60_000L
-        private const val SERVICE_HEARTBEAT_INTERVAL_MS = 15_000L
-        private const val FOREGROUND_PERMISSION_START_ATTEMPTS = 6
-        private const val FOREGROUND_PERMISSION_RETRY_DELAY_MS = 100L
-        private const val WAKE_LOCK_RENEW_INTERVAL_MS = 5L * 60L * 60L * 1_000L
-
-        private const val MAX_WAKE_LOCK_MS =
-            6 * 60 * 60 * 1000L
 
     }
 }

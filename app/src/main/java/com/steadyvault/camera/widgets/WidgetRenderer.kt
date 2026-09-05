@@ -37,7 +37,7 @@ object WidgetRenderer {
     ) {
         EXPANDED(
             R.layout.widget_control_expanded_large,
-            62f,
+            58f,
             hasZoom = true,
             hasSequence = true,
             hasPhoto = true
@@ -51,7 +51,7 @@ object WidgetRenderer {
         ),
         LOCK_SCREEN(
             R.layout.widget_control_lock_screen,
-            38f,
+            40f,
             hasZoom = true,
             hasSequence = false,
             hasPhoto = true
@@ -390,44 +390,51 @@ object WidgetRenderer {
             WidgetType.LOCK_SCREEN -> R.layout.widget_control_lock_screen_preview
         }
         val views = RemoteViews(context.packageName, previewLayoutId)
-        // Preview geometry is intentionally independent from the real widget.
-        // In particular the 6x1 preview is a smaller proportional representation for One UI.
-        applyWidgetChrome(views, context, type)
-
+        val accentBackground = WidgetAppearance.lockAccentBackground(context)
+        val disabledBackground = WidgetAppearance.lockDisabledBackground(context)
         val neutral = VisualIdentityStore.neutralWidgetActions(context)
+
+        // Todas as prévias usam a mesma linguagem visual da prévia da tela de bloqueio:
+        // tiles de 40 dp, espaçamento curto, sem shell grande e respeitando o tema atual.
+        if (type == WidgetType.EXPANDED) {
+            views.setImageViewResource(R.id.widgetAppLogo, VisualIdentityStore.widgetLogo(context))
+            views.setContentDescription(R.id.widgetLogoArea, VisualIdentityStore.notificationTitle(context, ""))
+            views.setInt(R.id.widgetLogoArea, "setBackgroundResource", disabledBackground)
+        }
+
         if (type.hasZoom) {
             val zoomAvailable = supportsUsefulZoom(context)
             views.setViewVisibility(R.id.widgetZoom, if (zoomAvailable) View.VISIBLE else View.GONE)
             if (zoomAvailable) {
                 views.setBoolean(R.id.widgetZoom, "setEnabled", true)
                 views.setFloat(R.id.widgetZoom, "setAlpha", 1f)
-                views.setTextViewText(R.id.widgetZoom, BackgroundRecordingZoom.label(BackgroundRecordingZoom.selected(context)))
+                views.setTextViewText(R.id.widgetZoom, BackgroundRecordingZoom.label(CaptureSettings.snapshot(context).zoomRatio))
                 views.setTextColor(R.id.widgetZoom, context.getColor(android.R.color.white))
                 views.setTextViewCompoundDrawables(R.id.widgetZoom, 0, R.drawable.ic_zoom, 0, 0)
-                views.setInt(R.id.widgetZoom, "setBackgroundResource", if (type == WidgetType.LOCK_SCREEN) WidgetAppearance.lockAccentBackground(context) else WidgetAppearance.expandedAccentBackground(context))
+                views.setInt(R.id.widgetZoom, "setBackgroundResource", accentBackground)
             }
         }
         if (type.hasSequence) {
             views.setBoolean(R.id.widgetSequence, "setEnabled", true)
             views.setFloat(R.id.widgetSequence, "setAlpha", 1f)
             views.setImageViewResource(R.id.widgetSequence, if (neutral) R.drawable.ic_grid else R.drawable.ic_burst)
-            views.setInt(R.id.widgetSequence, "setBackgroundResource", WidgetAppearance.expandedAccentBackground(context))
+            views.setInt(R.id.widgetSequence, "setBackgroundResource", accentBackground)
         }
         if (type.hasPhoto) {
             views.setBoolean(R.id.widgetPhoto, "setEnabled", true)
             views.setFloat(R.id.widgetPhoto, "setAlpha", 1f)
             views.setImageViewResource(R.id.widgetPhoto, if (neutral) R.drawable.ic_add else R.drawable.ic_camera)
-            views.setInt(R.id.widgetPhoto, "setBackgroundResource", if (type == WidgetType.LOCK_SCREEN) WidgetAppearance.lockAccentBackground(context) else WidgetAppearance.expandedAccentBackground(context))
+            views.setInt(R.id.widgetPhoto, "setBackgroundResource", accentBackground)
         }
         views.setBoolean(R.id.widgetStart, "setEnabled", true)
         views.setFloat(R.id.widgetStart, "setAlpha", 1f)
         views.setImageViewResource(R.id.widgetStart, if (neutral) R.drawable.ic_play else R.drawable.ic_record)
-        views.setInt(R.id.widgetStart, "setBackgroundResource", if (type == WidgetType.LOCK_SCREEN) WidgetAppearance.lockAccentBackground(context) else WidgetAppearance.expandedAccentBackground(context))
+        views.setInt(R.id.widgetStart, "setBackgroundResource", accentBackground)
 
         views.setBoolean(R.id.widgetStop, "setEnabled", false)
         views.setFloat(R.id.widgetStop, "setAlpha", 1f)
         views.setImageViewResource(R.id.widgetStop, if (neutral) R.drawable.ic_stop else R.drawable.ic_widget_stop_off)
-        views.setInt(R.id.widgetStop, "setBackgroundResource", if (type == WidgetType.LOCK_SCREEN) WidgetAppearance.lockDisabledBackground(context) else WidgetAppearance.expandedDisabledBackground(context))
+        views.setInt(R.id.widgetStop, "setBackgroundResource", disabledBackground)
         return views
     }
 
@@ -460,7 +467,7 @@ object WidgetRenderer {
         }
         if (type == WidgetType.EXPANDED) {
             views.setViewLayoutWidth(R.id.widgetLogoArea, type.buttonSizeDp, TypedValue.COMPLEX_UNIT_DIP)
-            views.setViewLayoutHeight(R.id.widgetLogoArea, 62f, TypedValue.COMPLEX_UNIT_DIP)
+            views.setViewLayoutHeight(R.id.widgetLogoArea, type.buttonSizeDp, TypedValue.COMPLEX_UNIT_DIP)
             views.setViewLayoutWidth(R.id.widgetAppLogo, type.buttonSizeDp, TypedValue.COMPLEX_UNIT_DIP)
             views.setViewLayoutHeight(R.id.widgetAppLogo, type.buttonSizeDp, TypedValue.COMPLEX_UNIT_DIP)
         }
@@ -497,7 +504,7 @@ object WidgetRenderer {
         clickIntent: PendingIntent,
         type: WidgetType
     ) {
-        val label = BackgroundRecordingZoom.label(BackgroundRecordingZoom.selected(context))
+        val label = BackgroundRecordingZoom.label(CaptureSettings.snapshot(context).zoomRatio)
         views.setBoolean(R.id.widgetZoom, "setEnabled", enabled)
         views.setFloat(R.id.widgetZoom, "setAlpha", 1f)
         views.setTextViewText(R.id.widgetZoom, label)
@@ -562,9 +569,9 @@ object WidgetRenderer {
             "setBackgroundResource",
             when {
                 type == WidgetType.LOCK_SCREEN && recording && stopIcon ->
-                    R.drawable.bg_widget_lock_button_red
+                    WidgetAppearance.lockStopBackground(context)
                 type == WidgetType.LOCK_SCREEN && recording ->
-                    R.drawable.bg_widget_lock_button_recording
+                    WidgetAppearance.lockRecordingBackground(context)
                 type == WidgetType.LOCK_SCREEN && !stopIcon && enabled ->
                     WidgetAppearance.lockAccentBackground(context)
                 type == WidgetType.LOCK_SCREEN ->

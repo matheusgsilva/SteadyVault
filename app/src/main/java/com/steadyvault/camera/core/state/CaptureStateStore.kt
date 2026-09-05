@@ -1,7 +1,6 @@
 package com.steadyvault.camera.core.state
 
 import android.content.Context
-import android.os.SystemClock
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import com.steadyvault.camera.core.validation.UiBehaviorRules
@@ -19,7 +18,6 @@ object CaptureStateStore {
     private const val KEY_EFFECTIVE_RESOLUTION_VALUE = "effective_resolution_value"
     private const val KEY_EFFECTIVE_RESOLUTION = "effective_resolution"
     private const val KEY_EFFECTIVE_FPS = "effective_fps"
-    private const val KEY_SERVICE_HEARTBEAT = "service_heartbeat"
     private const val KEY_PHASE = "phase"
     private const val KEY_SESSION_ID = "session_id"
     private const val KEY_OWNER = "owner"
@@ -63,8 +61,7 @@ object CaptureStateStore {
             message = message,
             sessionId = prefs.getString(KEY_SESSION_ID, "").orEmpty(),
             owner = prefs.getString(KEY_OWNER, "").orEmpty(),
-            startedAtElapsedMs = prefs.getLong(KEY_STARTED_AT_ELAPSED, 0L),
-            heartbeatElapsedMs = prefs.getLong(KEY_SERVICE_HEARTBEAT, 0L)
+            startedAtElapsedMs = prefs.getLong(KEY_STARTED_AT_ELAPSED, 0L)
         )
     }
 
@@ -165,36 +162,20 @@ object CaptureStateStore {
         }
     }
 
-    fun markRecordingServiceAlive(context: Context) {
-        preferences(context).edit()
-            .putLong(KEY_SERVICE_HEARTBEAT, SystemClock.elapsedRealtime())
-            .apply()
-    }
-
-    fun clearRecordingServiceHeartbeat(context: Context) {
-        preferences(context).edit().remove(KEY_SERVICE_HEARTBEAT).apply()
-    }
-
     /**
-     * Corrige somente um estado ocupado deixado por morte abrupta do processo.
-     * Um serviço ativo renova o heartbeat periodicamente; sem renovação, o app
-     * libera os controles e procura temporários recuperáveis no cache.
+     * Chamado apenas no nascimento de um novo processo do app. Se o estado salvo
+     * ainda dizia que havia uma captura em andamento, o processo anterior morreu
+     * e o trecho precisa ser recuperado. Não existe polling/heartbeat durante vídeo.
      */
     fun reconcileInterruptedRecording(context: Context): Boolean {
         if (!isBusy(context)) return false
-        val heartbeat = preferences(context).getLong(KEY_SERVICE_HEARTBEAT, 0L)
-        val elapsed = SystemClock.elapsedRealtime()
-        val recent = heartbeat in 1L..elapsed && elapsed - heartbeat <= SERVICE_HEARTBEAT_TIMEOUT_MS
-        if (recent) return false
         update(
             context,
             "Interrupção do sistema • procurando trecho recuperável no cofre…",
             CapturePhase.RECOVERING,
             sessionId = OWNER_STARTUP_RECOVERY,
-            owner = OWNER_STARTUP_RECOVERY,
-            startedAtElapsedMs = elapsed
+            owner = OWNER_STARTUP_RECOVERY
         )
-        clearRecordingServiceHeartbeat(context)
         return true
     }
 
@@ -213,6 +194,5 @@ object CaptureStateStore {
     private fun preferences(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private const val SERVICE_HEARTBEAT_TIMEOUT_MS = 45_000L
     const val OWNER_STARTUP_RECOVERY = "startup_recovery"
 }

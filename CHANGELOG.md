@@ -1,3 +1,61 @@
+## 1.8.266 — correção do Looper no início da gravação
+
+- Corrige `No handler given, and current thread has no looper!` ao iniciar 4K60.
+- `setRepeatingRequest` e `setRepeatingBurst` recebem Handler explícito.
+- Nenhuma thread nova, watchdog, polling ou monitoramento de câmera foi adicionado.
+- Mantém câmera lógica, zoom ratio, cadência fixa do sensor e MediaRecorder direto da 1.8.265.
+
+## 1.8.265 — 4K60 deixa de ser bloqueado por metadados conservadores
+
+- 30/60 FPS não são mais rejeitados por `getOutputMinFrameDuration()`/cadence confidence antes da tentativa real.
+- O modo exato selecionado é montado diretamente na câmera lógica e enviado ao Camera2.
+- `createCaptureSession()`/HAL passa a ser a fonte de verdade: se 4K60 funciona no aparelho, o app tenta gravar.
+- Nenhum downgrade automático para 30 FPS.
+- 120/240 FPS continuam usando a lista high-speed pública, pois exigem sessão de alta velocidade válida.
+- MediaRecorder, uma única Surface e controle de cadência do sensor da 1.8.264 foram preservados.
+
+## 1.8.264 — câmera lógica e cadência de sensor controlada
+
+- câmera traseira lógica única para vídeo e zoom por ratio;
+- remoção da varredura de capabilities da tela de captura;
+- plano de gravação estrito: sem procurar outra câmera na hora do Start;
+- 60 FPS SDR: AE mede os 3 primeiros resultados sem atrasar o início e depois fixa frame duration/shutter/ISO quando MANUAL_SENSOR existe;
+- mantém Camera2 → uma Surface → MediaRecorder → MP4, sem pós-processamento.
+
+## 1.8.263 — captura pura sobre a base estável 1.8.258
+
+- Retorna o caminho de captura à base 1.8.258, preservando o request Camera2 e a sessão MediaRecorder que produziram o melhor resultado anterior.
+- Durante a gravação não existe watchdog, heartbeat, monitor periódico de armazenamento, callback de disponibilidade, retry de câmera, recovery loop ou verificação de tela.
+- A sessão continua encoder-only: Camera2 → uma única Surface do MediaRecorder → MP4 final.
+- WakeLock passa a ser adquirido uma vez no início e liberado no fim, sem renovação periódica.
+- Áudio usa somente o MediaRecorder; sem permissão/FGS de microfone disponível, a gravação segue como vídeo-only sem retries.
+- App e widget traseiros compartilham o mesmo seletor óptico 0,6x/1x/3x/5x sem forçar cameraId físico no serviço; câmera frontal continua explícita.
+- Tela preta headless da base 1.8.258 preservada, sem Surface de preview.
+- Mantida apenas uma validação inicial de espaço livre antes de criar o arquivo.
+
+## 1.8.249 — 60 FPS sem estabilização eletrônica
+
+- Preview Stabilization/EIS deixam de participar da gravação em 60/120/240 FPS para evitar quedas periódicas de quadros observadas no Galaxy S25 Ultra.
+- Em alta taxa, OIS é usado quando disponível; caso contrário, grava sem estabilização eletrônica.
+- Mantida a regra de FPS exato: 30=30, 60=60, 120=120, 240=240, sem faixa variável ou fallback para outro FPS.
+- Preview Stabilization continua disponível em 30 FPS.
+
+## 1.8.247 — 4K60 sem downgrade para 30 + início rápido + lockscreen compacto
+
+- 4K60 mantém 60 FPS mesmo quando a HAL publica AE [30,60]; [60,60] continua preferida.
+- Removido fallback de alta taxa para 30 FPS; 60 é o piso de qualquer pedido >=60.
+- 60 FPS começa imediatamente após Camera2 aceitar a sessão, sem espera de warm-up.
+- Backend OEM 4K60 passa a aceitar a rota Samsung [30,60] mantendo EncoderProfiles em 60.
+- Widget da tela de bloqueio compactado para caber os quatro controles sem recorte.
+
+## 1.8.245
+- Gravação 60+ FPS ganha pré-validação curta da cadência real na saída do encoder antes do primeiro quadro ser salvo.
+- Rotas abaixo de 99,7% do FPS pedido ou com lacuna longa no warm-up são recusadas antes de abrir o MP4; o app reduz para o próximo FPS suportado e continua automaticamente.
+- Tolerância do tempo mínimo publicado pela HAL foi reduzida de 0,25 ms para 0,05 ms, evitando classificar uma rota perto de 59,68 FPS como 60 FPS confirmado.
+- O fallback de FPS é registrado em Diagnósticos e também aparece no estado/notificação da gravação.
+- Widgets 6x1, 4x1 e tela de bloqueio usam o mesmo padrão real de botão de 58 dp e os mesmos estados ativo/desativado; o preview da tela de bloqueio foi alinhado ao 4x1.
+- Base: 1.8.244; cofres, player, importação e demais recursos preservados.
+
 # 1.8.240
 
 - A importação nos três cofres agora pergunta, a cada novo lote, se deve **Ignorar repetidos** ou **Manter repetidos**.
@@ -1373,3 +1431,94 @@ As alterações anteriores à versão 1.8.46 não foram reconstruídas por falta
 - A estabilização volta a respeitar exatamente a escolha do usuário, sem troca automática para OIS.
 - Em 60 FPS, câmeras físicas dedicadas passam a ter prioridade sobre logical multi-camera quando o fabricante as expõe diretamente.
 - Mantidos o buffer assíncrono do muxer, a proteção contra stall longo e o isolamento de tarefas de cofre durante a gravação.
+
+## 1.8.244
+- Corrigida a seleção 60 FPS para priorizar uma rota Camera2 cuja HAL confirme tempo mínimo de frame compatível com 60 FPS.
+- Cache/matriz não podem mais reaproveitar silenciosamente uma rota 60/60 publicamente lenta quando existe uma rota confirmada.
+- Preferência por câmera física/lógica virou apenas desempate depois da capacidade real de cadência.
+- Mantido VBR e todo o pipeline de encoder/muxer da 1.8.243.
+- Corrigidos previews 4x1, tela de bloqueio e 6x1 no seletor de widgets da One UI.
+
+## 1.8.245
+- 60+ FPS passa por validação de cadência real do HardwareRecorder antes de abrir oficialmente o MP4.
+- Rotas com lacunas longas ou FPS real abaixo da margem profissional caem para o próximo FPS sustentável sem cancelar a gravação.
+- Fallback de FPS é registrado em Diagnósticos e mostrado no estado/notificação.
+- Widgets 6×1, 4×1 e tela de bloqueio foram padronizados em tamanho, família visual e estados.
+
+## 1.8.246
+- 4K60 regular ganhou backend OEM dedicado com `MediaRecorder + EncoderProfiles`.
+- O perfil OEM é aceito somente quando o fabricante declara exatamente 3840×2160 a 60 FPS para a câmera selecionada.
+- Camera2 continua dona da sessão e 4K60 exige faixa AE fixa `[60,60]`; `[30,60]` não é aceita como 60 FPS profissional.
+- `MediaRecorder.prepare()` e a Surface OEM ficam prontos antes da sessão; `MediaRecorder.start()` só ocorre depois que a sessão Camera2 aceitou o repeating request definitivo `[60,60]`.
+- Falha do backend OEM antes do início reinicia a mesma tentativa 4K60 no `HardwareRecorder` atual sem cancelar a solicitação do usuário.
+- Falha do backend OEM durante a gravação tenta preservar o trecho válido e reinicia automaticamente no `HardwareRecorder`, registrando aviso em Diagnósticos e na notificação.
+- 120/240 FPS permanecem exclusivamente no caminho Camera2 constrained high-speed + `HardwareRecorder`; o backend OEM não é elegível para high-speed.
+- Widgets e recursos visuais da 1.8.245 foram preservados sem alterações.
+
+## 1.8.248
+- FPS selecionado virou contrato exato em toda a captura: 30 usa `[30,30]`, 60 usa `[60,60]`, 120 usa `[120,120]` e 240 usa `[240,240]`.
+- Removido todo fallback automático entre taxas de quadros; backend, câmera e encoder podem mudar, mas o FPS solicitado não muda.
+- Sessões regulares forçam `Range(targetFps, targetFps)` diretamente no Camera2, inclusive quando a HAL não anuncia a faixa fixa; se o firmware recusar, a tentativa falha sem usar faixa variável.
+- Sessões constrained high-speed aceitam somente a faixa fixa exata publicada para 120/240; não existe substituição 120→240 nem faixa 30–120/60–240.
+- O backend OEM 4K60 exige Camera2 `[60,60]` e rejeita `[30,60]`.
+- A validação de warm-up high-speed não reduz mais o FPS quando encontra cadência ruim; registra o problema e mantém o contrato exato.
+- Corrigido o widget da tela de bloqueio: o renderer ainda sobrescrevia os 46 dp do XML para 58 dp em runtime. Layout real e renderer agora usam 40 dp, com quatro controles em 4×1 e largura mínima de 168 dp.
+- Preview do widget e widget instalado passam a usar geometria compatível, eliminando o caso em que somente o preview cabia corretamente.
+## 1.8.250 — FPS exato com estabilização preservada
+
+- Preview stabilization, EIS, OIS e OFF passam a ser respeitados exatamente como selecionados; FPS alto não troca mais o modo de estabilização.
+- Se a HAL não suportar a estabilização escolhida na configuração atual, o app informa a incompatibilidade em vez de substituí-la silenciosamente.
+- HardwareRecorder valida uma janela curta de cadência antes de abrir o arquivo regular, sem alterar o FPS selecionado.
+- Ao finalizar, o MP4 é validado pelo FPS real/PTS. Lacunas ou desvio de cadência acionam reconstrução CFR por GPU com ADAPTIVE_BLEND no mesmo FPS selecionado.
+- A saída reparada é validada novamente antes de ser publicada no cofre.
+- 30/60/120/240 nunca fazem fallback para outro FPS.
+
+
+## 1.8.251 — crash-safe ao iniciar gravação
+
+- Corrigido crash ao tocar em Gravar quando a HAL Samsung recusava uma chave de estabilização/configuração dentro de `CameraDevice.onOpened()`.
+- Toda criação de sessão agora é protegida; falha da HAL vira diagnóstico e estado controlado, nunca exceção não tratada do processo.
+- Removido o warm-up bloqueante do caminho regular 30/60 FPS; a gravação começa imediatamente e a validação CFR permanece no fechamento.
+- FPS exato e estabilização selecionada continuam independentes e imutáveis.
+
+## 1.8.252
+
+- Corrigido falso negativo de OIS em câmeras lógicas Samsung: a capacidade declarada deixa de bloquear a tentativa real no CaptureRequest.
+- Estabilização escolhida permanece exata; não há substituição automática entre OIS, EIS, Preview stabilization e Off.
+- 4K60 mantém [60,60] e não altera FPS para contornar estabilização.
+- Removido texto antigo que indicava retirada automática de estabilização eletrônica em alta taxa.
+
+
+## 1.8.253
+- Removida qualquer interpretação de correção CFR como pós-estabilização: estabilização termina no Camera2.
+- Vídeos já CFR no FPS escolhido são publicados diretamente, sem transcode/interpolação.
+- Reparo automático temporal ficou conservador: sem mistura quando não há lacunas e no máximo 1 frame misturado por lacuna curta real.
+- Diagnóstico informa explicitamente quando não houve pós-processamento.
+
+
+## 1.8.254 — MediaRecorder direto, zero pós-processamento
+
+- Remove completamente `HardwareRecorder` do projeto e o fallback de gravação via `MediaCodec + MediaMuxer` manual.
+- Toda captura passa a usar `Camera2 -> Surface do MediaRecorder -> MP4 final no cofre`.
+- O MediaRecorder grava diretamente no arquivo definitivo do cofre; não existe temporário para publicação após o `stop()`.
+- Remove do fluxo de captura `AutomaticCfrRepairPolicy`, reparo CFR, retiming, interpolação, blend e transcodificação automática.
+- O botão Parar chama `MediaRecorder.stop()` imediatamente após interromper o repeating request, sem tail drain artificial.
+- `EncoderProfiles` exato é priorizado; SDR pode usar configuração direta do MediaRecorder quando o OEM não publicar um perfil exato. HLG10 continua exigindo perfil OEM compatível.
+- 30/60/120/240 usam um único backend MediaRecorder; nenhuma falha troca silenciosamente para outro gravador.
+
+## 1.8.255 — configuração como fonte única da verdade
+
+- A gravação direta continua sem qualquer pós-processamento: Camera2 -> MediaRecorder -> MP4 final.
+- Resolução, FPS, codec e bitrate usados pelo MediaRecorder passam a vir da configuração atual do usuário, sem substituição pelo bitrate de EncoderProfiles.
+- EncoderProfiles pode ser consultado apenas para compatibilidade técnica de perfil/nível e HLG10; quando usado para HLG10, resolução/FPS/bitrate configurados são reaplicados explicitamente antes do prepare().
+- O início da gravação não reativa mais um perfil histórico de câmera por cima da configuração atualmente salva.
+- Removidas migrações de settings que podiam trocar Edge OFF por FAST ou zerar preferências de áudio silenciosamente ao carregar a configuração.
+- A validação de armazenamento usa o bitrate de vídeo e áudio escolhidos na configuração, não valores OEM.
+- Se a câmera/HAL recusar a combinação solicitada, a sessão falha informando incompatibilidade; não reduz FPS, não muda estabilização e não altera bitrate automaticamente.
+
+## 1.8.258
+- Pipeline de captura revertido exatamente ao núcleo estável da 1.8.255 usado nos testes 67492/67493.
+- Removidas da captura as alterações de cadência/diagnóstico introduzidas depois do melhor resultado.
+- Ordem de parada, request Camera2 e processamento 60 FPS voltam ao comportamento da versão de melhor fluidez.
+- Mantidas somente as correções visuais de widgets: previews alinhados ao estilo do lock screen e cantos conforme o tema.
+- MediaRecorder direto, sem pós-processamento do vídeo.

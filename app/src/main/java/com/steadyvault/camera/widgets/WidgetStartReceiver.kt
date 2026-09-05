@@ -7,7 +7,6 @@ import android.widget.Toast
 import com.steadyvault.camera.capture.service.RecordingServiceRouter
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureModeStore
-import com.steadyvault.camera.core.settings.CameraProfileStore
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.core.state.OptimizationStateStore
@@ -32,10 +31,7 @@ class WidgetStartReceiver : BroadcastReceiver() {
             EXTRA_TARGET_FPS,
             CaptureModeStore.getTargetFps(context)
         )
-        val current = CaptureSettings.snapshot(context)
-        val settings = current.selectedCameraId?.let {
-            CameraProfileStore.activate(context, it, CameraProfileStore.FunctionMode.VIDEO, current)
-        } ?: current.also { CameraProfileStore.setActiveMode(context, CameraProfileStore.FunctionMode.VIDEO) }
+        val settings = CaptureSettings.snapshot(context)
         val effectiveSettings = settings.copy(fps = fps)
         if (OptimizationStateStore.snapshot(context).running) {
             VideoOptimizationService.cancel(context)

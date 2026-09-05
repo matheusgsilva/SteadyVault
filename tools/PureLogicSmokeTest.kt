@@ -1,5 +1,4 @@
 import com.steadyvault.camera.capture.timing.*
-import com.steadyvault.camera.capture.recorder.StartupVideoGate
 import com.steadyvault.camera.core.camera.OisSupportPolicy
 import com.steadyvault.camera.core.capability.HardwareSupportPolicy
 import com.steadyvault.camera.core.validation.UiBehaviorRules
@@ -14,72 +13,97 @@ import com.steadyvault.camera.storage.vault.VaultAreaId
 private fun expect(value: Boolean, message: String) { if (!value) error(message) }
 
 fun main() {
-    val startupGate = StartupVideoGate(
-        maxFramesBeforeFallback = 3,
-        maxWaitBeforeFallbackUs = 250_000L,
-        maxBufferedBytes = 16L * 1024L * 1024L
-    )
-    expect(
-        startupGate.onSample(
-            isKeyFrame = true,
-            clearlyBeforeCommit = true,
-            sourcePtsUs = 900_000L,
-            bufferedBytes = 2_366L,
-            hasBufferedKeyFrame = true
-        ).action == StartupVideoGate.Action.HOLD,
-        "IDR anterior ao commit deve permanecer fora do MP4"
-    )
-    expect(
-        startupGate.onSample(
-            isKeyFrame = true,
-            clearlyBeforeCommit = false,
-            sourcePtsUs = 916_667L,
-            bufferedBytes = 2_366L,
-            hasBufferedKeyFrame = true
-        ).action == StartupVideoGate.Action.START_WITH_CURRENT_KEY_FRAME,
-        "primeiro IDR pós-commit deve abrir o MP4 sem descarte fixo"
-    )
-
     expect(VaultAreaId.ALL == listOf("primary", "secondary", "tertiary"), "IDs canônicos dos cofres")
     expect(VaultAreaId.isValid("primary") && VaultAreaId.isValid("secondary") && VaultAreaId.isValid("tertiary"), "validação dos IDs dos cofres")
     expect(!VaultAreaId.isValid("main") && !VaultAreaId.isValid("decoy") && !VaultAreaId.isValid("real"), "IDs legados dos cofres rejeitados")
-    mapOf(
-        30 to longArrayOf(0L, 33_332L, 66_670L, 100_001L),
-        60 to longArrayOf(0L, 16_540L, 33_470L, 49_930L),
-        120 to longArrayOf(0L, 8_100L, 16_900L, 24_700L),
-        240 to longArrayOf(0L, 4_166L, 8_334L, 12_501L)
-    ).forEach { (fps, rawPts) ->
-        val normalizer = VideoTimestampNormalizer(fps)
-        expect(
-            rawPts.map(normalizer::normalize) == rawPts.toList(),
-            "PTS real deve permanecer intacto em $fps FPS"
-        )
-    }
-
-    val subNominal60 = VideoTimestampNormalizer(60)
-    val rawAtAbout57Fps = longArrayOf(0L, 17_544L, 35_088L, 52_632L, 70_175L, 87_719L)
     expect(
-        rawAtAbout57Fps.map(subNominal60::normalize) == rawAtAbout57Fps.toList(),
-        "fonte subnominal em modo 60 FPS não deve sofrer snap periódico"
+        CaptureCadencePolicy.confidence(16_666_666L, 60, 250_000L) == CaptureCadencePolicy.Confidence.CONFIRMED,
+        "4K60 confirmado pela duração mínima deve ter prioridade"
+    )
+    expect(
+        CaptureCadencePolicy.confidence(33_333_333L, 60, 250_000L) == CaptureCadencePolicy.Confidence.TOO_SLOW,
+        "rota pública de 30 FPS não pode ganhar de uma rota 60 FPS confirmada"
+    )
+    expect(
+        CaptureCadencePolicy.priorityScore(CaptureCadencePolicy.Confidence.CONFIRMED, 60) >
+            CaptureCadencePolicy.priorityScore(CaptureCadencePolicy.Confidence.UNKNOWN, 60),
+        "cadência confirmada deve vencer heurísticas de câmera"
+    )
+    expect(
+        !CaptureCadencePolicy.measuredCadenceAcceptable(59.68, 60, 0),
+        "59,68 FPS reais não podem ser aceitos como 60 FPS profissional"
+    )
+    expect(
+        CaptureCadencePolicy.measuredCadenceAcceptable(59.90, 60, 0),
+        "59,90 FPS sem lacunas deve ficar dentro da margem de relógio"
+    )
+    expect(
+        !CaptureCadencePolicy.measuredCadenceAcceptable(60.00, 60, 1),
+        "uma lacuna longa no warm-up deve rejeitar a rota mesmo com média 60"
     )
 
-    val brokenClock = VideoTimestampNormalizer(120)
-    val repaired = longArrayOf(10_000L, 20_000L, 20_000L, 19_500L, 35_000L)
-        .map(brokenClock::normalize)
+    val fixed60 = SensorCadencePolicy.resolve(
+        fps = 60,
+        observedExposureNs = 16_000_000L,
+        observedSensitivityIso = 100,
+        exposureMinNs = 100_000L,
+        exposureMaxNs = 30_000_000L,
+        sensitivityMinIso = 50,
+        sensitivityMaxIso = 3200,
+        maxFrameDurationNs = 100_000_000L,
+        manualSensorSupported = true
+    )
+    expect(fixed60 != null && fixed60.frameDurationNs in 16_666_666L..16_666_667L, "60 FPS deve fixar duração de quadro")
+    expect(fixed60 != null && fixed60.exposureTimeNs <= 8_333_334L, "60 FPS deve limitar shutter a aproximadamente 1/120")
+    expect(fixed60 != null && fixed60.sensitivityIso >= 190, "ISO deve compensar o shutter mais curto")
     expect(
-        repaired == listOf(10_000L, 20_000L, 20_001L, 20_002L, 35_000L),
-        "PTS duplicado ou regressivo deve avançar somente um microssegundo"
+        SensorCadencePolicy.resolve(60, 16_000_000L, 100, 100_000L, 30_000_000L, 50, 3200, 100_000_000L, false) == null,
+        "sem MANUAL_SENSOR a captura deve permanecer no AE da HAL"
     )
 
-    brokenClock.reset()
-    expect(brokenClock.normalize(5_000L) == 5_000L, "reset deve iniciar uma linha temporal independente")
+    val lowLight60 = SensorCadencePolicy.resolve(
+        60, 16_000_000L, 2500, 100_000L, 30_000_000L, 50, 3200, 100_000_000L, true
+    )
+    expect(lowLight60 != null && lowLight60.exposureTimeNs > 8_333_334L, "baixa luz pode alongar shutter sem ultrapassar o período de 60 FPS")
+    expect(lowLight60 != null && lowLight60.sensitivityIso <= 3200, "baixa luz não pode ultrapassar ISO máximo")
 
+    expect(
+        RecordingStabilizationPolicy.resolve(
+            RecordingStabilizationPolicy.Mode.PREVIEW, 60, false, true, true, true
+        ) == RecordingStabilizationPolicy.Mode.PREVIEW,
+        "preview stabilization em 60 FPS deve permanecer Preview quando suportada"
+    )
+    expect(
+        RecordingStabilizationPolicy.resolve(
+            RecordingStabilizationPolicy.Mode.EIS, 120, true, false, true, true
+        ) == RecordingStabilizationPolicy.Mode.EIS,
+        "EIS em 120 FPS deve permanecer EIS quando suportada"
+    )
+    expect(
+        RecordingStabilizationPolicy.resolve(
+            RecordingStabilizationPolicy.Mode.PREVIEW, 60, false, true, true, false
+        ) == RecordingStabilizationPolicy.Mode.PREVIEW,
+        "sem OIS, Preview em 60 FPS continua Preview quando a HAL suporta"
+    )
+    expect(
+        RecordingStabilizationPolicy.resolve(
+            RecordingStabilizationPolicy.Mode.PREVIEW, 30, false, true, true, true
+        ) == RecordingStabilizationPolicy.Mode.PREVIEW,
+        "30 FPS pode manter Preview Stabilization"
+    )
+    expect(
+        RecordingStabilizationPolicy.resolve(
+            RecordingStabilizationPolicy.Mode.OIS, 60, false, false, false, false
+        ) == RecordingStabilizationPolicy.Mode.OIS,
+        "OIS escolhido não pode ser substituído só porque os metadados da câmera lógica são incompletos"
+    )
+    expect(
+        RecordingStabilizationPolicy.resolve(
+            RecordingStabilizationPolicy.Mode.EIS, 60, false, false, false, true
+        ) == RecordingStabilizationPolicy.Mode.EIS,
+        "EIS escolhido não pode virar Off por pré-validação de metadados"
+    )
 
-
-    expect(RecordingStopPolicy.tailDrainMs(30) == 100L, "cauda de parada em 30 FPS")
-    expect(RecordingStopPolicy.tailDrainMs(60) == 50L, "cauda de parada em 60 FPS")
-    expect(RecordingStopPolicy.tailDrainMs(120) == 25L, "cauda de parada em 120 FPS")
-    expect(RecordingStopPolicy.tailDrainMs(240) == 20L, "cauda mínima em 240 FPS")
     val exact4k60 = StrictCaptureModePolicy.Dimensions(3840, 2160)
     val order = StrictCaptureModePolicy.requestOrder(exact4k60, 120)
     expect(order == listOf(StrictCaptureModePolicy.Request(exact4k60, 120)), "modo manual não cria resolução alternativa")
@@ -88,11 +112,15 @@ fun main() {
     expect(StrictCaptureModePolicy.matches(exact4k60, 60, exact4k60, 60), "modo exato deve ser aceito")
     expect(!StrictCaptureModePolicy.matches(exact4k60, 60, StrictCaptureModePolicy.Dimensions(1920, 1080), 60), "4K explícito não pode virar 1080p")
     expect(!StrictCaptureModePolicy.matches(exact4k60, 60, exact4k60, 30), "60 FPS explícito não pode virar 30 FPS")
-    expect(StrictCaptureModePolicy.requiresExactFpsRange(60), "60 FPS deve exigir faixa AE fixa")
-    expect(StrictCaptureModePolicy.acceptsFpsRange(60, 60, 60), "60 FPS deve aceitar somente [60,60]")
-    expect(!StrictCaptureModePolicy.acceptsFpsRange(60, 30, 60), "60 FPS não pode aceitar [30,60]")
-    expect(StrictCaptureModePolicy.acceptsFpsRange(30, 15, 30), "30 FPS preserva fallback abrangente")
-    expect(StrictCaptureModePolicy.matches(exact4k60, 30, exact4k60, 30), "fallback de 30 FPS preserva a resolução")
+    expect(StrictCaptureModePolicy.acceptsFpsRange(30, 30, 30), "30 FPS exige [30,30]")
+    expect(StrictCaptureModePolicy.acceptsFpsRange(60, 60, 60), "60 FPS exige [60,60]")
+    expect(StrictCaptureModePolicy.acceptsFpsRange(120, 120, 120), "120 FPS exige [120,120]")
+    expect(StrictCaptureModePolicy.acceptsFpsRange(240, 240, 240), "240 FPS exige [240,240]")
+    expect(!StrictCaptureModePolicy.acceptsFpsRange(60, 30, 60), "60 FPS nunca pode aceitar [30,60]")
+    expect(!StrictCaptureModePolicy.acceptsFpsRange(30, 15, 30), "30 FPS nunca pode aceitar [15,30]")
+    expect(!StrictCaptureModePolicy.acceptsFpsRange(120, 30, 120), "120 FPS nunca pode aceitar [30,120]")
+    expect(!StrictCaptureModePolicy.acceptsFpsRange(240, 60, 240), "240 FPS nunca pode aceitar [60,240]")
+    expect(StrictCaptureModePolicy.matches(exact4k60, 30, exact4k60, 30), "30 FPS explícito preserva a resolução e o FPS")
 
     val logicalOis = OisSupportPolicy.resolve(
         logicalModes = intArrayOf(0, 1),

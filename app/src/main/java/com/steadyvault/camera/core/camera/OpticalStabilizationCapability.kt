@@ -7,10 +7,10 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 
 /**
- * Resolve OIS usando metadados da câmera lógica e das lentes físicas, mas aplica
- * somente chaves do request lógico. Em aparelhos multi-câmera, a característica
- * lógica pode ser incompleta mesmo quando uma lente física anuncia OIS; esse dado
- * físico permanece diagnóstico e nunca é forçado em um request lógico.
+ * Resolve OIS pelos metadados disponíveis, mas a aplicação final faz uma tentativa
+ * real no CaptureRequest. Alguns firmwares Samsung omitem a chave OIS dos metadados
+ * da câmera lógica mesmo quando o builder aceita o controle. A sessão real, e não
+ * somente a tabela de capacidades, é a autoridade final.
  */
 object OpticalStabilizationCapability {
     data class Capability(
@@ -84,14 +84,16 @@ object OpticalStabilizationCapability {
         capability: Capability,
         enabled: Boolean
     ): Boolean {
-        if (enabled && !capability.supported) return false
-        if (!capability.logicalRequestAvailable) return !enabled
-
         val mode = if (enabled) {
             CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON
         } else {
             CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF
         }
+
+        // Não bloqueie pela tabela de características: em alguns Samsung a câmera
+        // lógica não anuncia a chave embora o CaptureRequest real aceite ON/OFF.
+        // Se o builder/serviço HAL recusar, a exceção é capturada e a configuração
+        // escolhida pelo usuário é reportada como incompatível sem fechar o app.
         return runCatching {
             builder.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE, mode)
             builder.get(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE) == mode

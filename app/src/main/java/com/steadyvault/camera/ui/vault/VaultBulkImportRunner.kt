@@ -5,7 +5,6 @@ import android.net.Uri
 import android.os.SystemClock
 import android.os.Process
 import com.steadyvault.camera.core.diagnostics.AppLogRepository
-import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.storage.vault.SecondaryVaultRepository
 import com.steadyvault.camera.storage.vault.PrivateVaultMediaIndex
 import com.steadyvault.camera.storage.vault.TertiaryVaultRepository
@@ -47,8 +46,6 @@ internal object VaultBulkImportRunner {
     private const val FINALIZE_STALL_TIMEOUT_MS = 25_000L
     private const val CAPTURE_PRIORITY_POLL_MS = 500L
     private const val MAX_FAILURE_SAMPLES = 20
-    private const val CAPTURE_HEARTBEAT_FRESH_MS = 90_000L
-    private const val CAPTURE_START_GRACE_MS = 15_000L
     private const val WAIT_STATUS_REFRESH_MS = 1_000L
     private val queueLifecycleLock = Any()
 
@@ -451,18 +448,8 @@ internal object VaultBulkImportRunner {
         return !isCancellationRequested(context, area) && !isSystemPauseRequested(context, area)
     }
 
-    private fun shouldYieldToActiveCapture(context: Context): Boolean {
-        if (!VaultStartupCoordinator.isCapturePriorityActive(context)) return false
-        val state = CaptureStateStore.sessionState(context)
-        // suspendForCapture() é acionado antes de abrir a câmera. Nessa pequena janela o
-        // estado ainda pode aparecer IDLE; mesmo assim a importação deve liberar disco/CPU
-        // imediatamente para o pipeline de 60 FPS.
-        if (!state.phase.busy) return true
-        val now = SystemClock.elapsedRealtime()
-        val recentHeartbeat = state.heartbeatElapsedMs in 1L..now && now - state.heartbeatElapsedMs <= CAPTURE_HEARTBEAT_FRESH_MS
-        val recentlyStarted = state.startedAtElapsedMs in 1L..now && now - state.startedAtElapsedMs <= CAPTURE_START_GRACE_MS
-        return recentHeartbeat || recentlyStarted
-    }
+    private fun shouldYieldToActiveCapture(context: Context): Boolean =
+        VaultStartupCoordinator.isCapturePriorityActive(context)
 
     private fun importOne(context: Context, area: String, uri: Uri, source: VaultImportUtils.SourceInfo, shouldCancel: () -> Boolean, onProgress: (Long, Long) -> Unit): VaultRepository.ImportedMedia = when (area) {
         VaultAreaId.SECONDARY -> SecondaryVaultRepository.importFromUriVerified(context, uri, source.displayName, source.mime, onProgress, shouldCancel)

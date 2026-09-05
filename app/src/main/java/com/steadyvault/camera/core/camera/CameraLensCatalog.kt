@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.MediaRecorder
 import android.os.Build
 import android.util.Size
 import com.steadyvault.camera.core.settings.CaptureSettings
@@ -107,6 +108,37 @@ object CameraLensCatalog {
             ?: available.firstOrNull()?.id
     }
 
+
+    fun resolveRecordingCameraId(context: Context, requestedId: String?, resolution: String): String? {
+        val available = options(context)
+        val requested = available.firstOrNull { it.id == requestedId }
+        if (requested?.isFront == true) return requested.id
+
+        val requestedSize = when (resolution) {
+            CaptureSettings.RESOLUTION_8K -> Size(7680, 4320)
+            CaptureSettings.RESOLUTION_4K -> Size(3840, 2160)
+            CaptureSettings.RESOLUTION_1080P -> Size(1920, 1080)
+            CaptureSettings.RESOLUTION_720P -> Size(1280, 720)
+            else -> Size(1920, 1080)
+        }
+        val manager = context.getSystemService(CameraManager::class.java)
+        val logicalBack = available
+            .asSequence()
+            .filter { it.isBack && it.logical }
+            .sortedWith(
+                compareByDescending<Option> { option ->
+                    val characteristics = runCatching { manager.getCameraCharacteristics(option.id) }.getOrNull()
+                    val sizes = runCatching {
+                        characteristics?.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                            ?.getOutputSizes(MediaRecorder::class.java)
+                            ?.toList().orEmpty()
+                    }.getOrDefault(emptyList())
+                    if (requestedSize in sizes) 1 else 0
+                }.thenBy { abs((it.equivalentFocalMm ?: 24f) - 24f) }
+            )
+            .firstOrNull()
+        return logicalBack?.id ?: resolveCameraId(context, requestedId, resolution)
+    }
     fun labelFor(context: Context, cameraId: String?): String {
         if (cameraId.isNullOrBlank()) return "Automática"
         return options(context).firstOrNull { it.id == cameraId }?.label ?: "Câmera"
@@ -132,23 +164,19 @@ object CameraLensCatalog {
     fun optionForShortcut(available: List<Option>, shortcut: Float): Option? {
         val back = available.filter { it.isBack }
         if (back.isEmpty()) return null
-        val exact = when {
-            shortcut < 0.8f -> back.filterNot { it.logical }
-                .filter { (it.equivalentFocalMm ?: 24f) < 19f }
-                .minByOrNull { it.equivalentFocalMm ?: Float.MAX_VALUE }
-            shortcut < 2f -> back.firstOrNull { it.logical }
-                ?: back.filterNot { it.logical }
-                    .minByOrNull { abs((it.equivalentFocalMm ?: 24f) - 24f) }
-            shortcut < 4f -> back.filterNot { it.logical }
-                .filter { focal -> (focal.equivalentFocalMm ?: 24f) >= 38f && (focal.equivalentFocalMm ?: 24f) < 90f }
-                .minByOrNull { abs((it.equivalentFocalMm ?: 70f) - 70f) }
-            else -> back.filterNot { it.logical }
-                .filter { (it.equivalentFocalMm ?: 24f) >= 90f }
-                .maxByOrNull { it.equivalentFocalMm ?: 0f }
-        }
-        if (exact != null) return exact
-        return back.firstOrNull { option ->
+        back.firstOrNull { option ->
             option.logical && shortcut >= option.minZoom - 0.02f && shortcut <= option.maxZoom + 0.02f
+        }?.let { return it }
+
+        return when {
+            shortcut < 0.8f -> back.filterNot { it.logical }.filter { (it.equivalentFocalMm ?: 24f) < 19f }
+                .minByOrNull { it.equivalentFocalMm ?: Float.MAX_VALUE }
+            shortcut < 2f -> back.filterNot { it.logical }.minByOrNull { abs((it.equivalentFocalMm ?: 24f) - 24f) }
+            shortcut < 4f -> back.filterNot { it.logical }
+                .filter { (it.equivalentFocalMm ?: 24f) >= 38f && (it.equivalentFocalMm ?: 24f) < 90f }
+                .minByOrNull { abs((it.equivalentFocalMm ?: 70f) - 70f) }
+            else -> back.filterNot { it.logical }.filter { (it.equivalentFocalMm ?: 24f) >= 90f }
+                .maxByOrNull { it.equivalentFocalMm ?: 0f }
         }
     }
 

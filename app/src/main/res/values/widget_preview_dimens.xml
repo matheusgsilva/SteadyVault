@@ -1,32 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Margem transparente para o arredondamento/máscara do seletor da One UI. -->
-    <dimen name="widget_preview_safe_inset">5dp</dimen>
+    <dimen name="widget_preview_safe_inset">2dp</dimen>
     <dimen name="widget_preview_button_radius">12dp</dimen>
-
-
-    <!-- Preview 4x1 representativo, centralizado e com folga para a One UI. -->
-    <dimen name="widget_preview_compact_padding_h">6dp</dimen>
-    <dimen name="widget_preview_compact_padding_v">4dp</dimen>
-    <dimen name="widget_preview_compact_button">34dp</dimen>
-    <dimen name="widget_preview_compact_icon_padding">10dp</dimen>
-    <dimen name="widget_preview_compact_spacing">2dp</dimen>
-
-    <!-- Preview 4x1 representativo para tela de bloqueio. -->
-    <dimen name="widget_preview_lock_safe_inset">3dp</dimen>
-    <dimen name="widget_preview_lock_padding_h">5dp</dimen>
-    <dimen name="widget_preview_lock_padding_v">2dp</dimen>
-    <dimen name="widget_preview_lock_button">34dp</dimen>
-    <dimen name="widget_preview_lock_icon_padding">9dp</dimen>
-    <dimen name="widget_preview_lock_spacing">2dp</dimen>
-
-    <!-- Preview 6x1 representativo, mantendo a hierarquia visual do widget real. -->
-    <dimen name="widget_preview_expanded_safe_inset">6dp</dimen>
-    <dimen name="widget_preview_expanded_padding_h">8dp</dimen>
-    <dimen name="widget_preview_expanded_padding_v">3dp</dimen>
-    <dimen name="widget_preview_expanded_logo_width">34dp</dimen>
-    <dimen name="widget_preview_expanded_logo_icon">34dp</dimen>
-    <dimen name="widget_preview_expanded_divider_height">29dp</dimen>
-    <dimen name="widget_preview_expanded_button">34dp</dimen>
-    <dimen name="widget_preview_expanded_icon_padding">10dp</dimen>
+    <dimen name="widget_preview_lock_safe_inset">2dp</dimen>
+    <dimen name="widget_preview_lock_padding_h">2dp</dimen>
+    <dimen name="widget_preview_lock_padding_v">1dp</dimen>
+    <dimen name="widget_preview_lock_button">40dp</dimen>
+    <dimen name="widget_preview_lock_icon_padding">11dp</dimen>
+    <dimen name="widget_preview_lock_spacing">1dp</dimen>
 </resources>

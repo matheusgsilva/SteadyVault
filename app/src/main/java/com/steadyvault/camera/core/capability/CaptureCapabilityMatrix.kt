@@ -31,8 +31,8 @@ import org.json.JSONObject
  * Retrato único das capacidades reais que dirigem a interface e a captura.
  *
  * A análise combina câmera lógica, lentes físicas, faixas de FPS e encoders de
- * hardware. O resultado é persistido por build do aparelho para que a interface
- * já abra configurada e seja atualizado novamente em segundo plano.
+ * hardware. O resultado é persistido por build do aparelho. A análise completa
+ * só roda quando o usuário pede para reanalisar o hardware nos Ajustes.
  */
 object CaptureCapabilityMatrix {
     data class Mode(
@@ -185,6 +185,10 @@ object CaptureCapabilityMatrix {
                 diagnostics += "Câmera $cameraId: ${throwable.message ?: "falha ao consultar"}"
                 continue
             }
+            val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+            val advertisedCapabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
+            val logicalCamera = advertisedCapabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)
+            if (facing == CameraCharacteristics.LENS_FACING_BACK && !logicalCamera) continue
 
             val physicalCharacteristics = runCatching { characteristics.physicalCameraIds.toList() }
                 .getOrDefault(emptyList())
@@ -227,14 +231,10 @@ object CaptureCapabilityMatrix {
                 }
             }
 
-            val normalRanges: Array<Range<Int>> = characteristics.get(
-                CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
-            ) ?: emptyArray()
-
             for ((resolution, size) in knownSizes()) {
                 if (size !in regularSizes) continue
                 for (fps in CaptureSettings.supportedFpsValues) {
-                    if (normalRanges.none { StrictCaptureModePolicy.acceptsFpsRange(fps, it.lower, it.upper) }) continue
+                    // A sessão é testada com a faixa fixa exata; faixa variável nunca confirma um modo.
                     val encoders = encoderCache.getOrPut(Triple(size, fps, false)) {
                         findHardwareEncoders(size, fps, allowRateMetadataFallback = false)
                     }
@@ -247,8 +247,7 @@ object CaptureCapabilityMatrix {
                         manager = manager,
                         cameraId = cameraId,
                         size = size,
-                        fps = fps,
-                        advertisedRanges = normalRanges.toList()
+                        fps = fps
                     )
                     if (runtimeSessionSupport == false) {
                         diagnostics += "Câmera $cameraId: ${size.width}×${size.height} $fps FPS rejeitado pela consulta de sessão em runtime"
@@ -610,19 +609,10 @@ object CaptureCapabilityMatrix {
         manager: CameraManager,
         cameraId: String,
         size: Size,
-        fps: Int,
-        advertisedRanges: List<Range<Int>>
+        fps: Int
     ): Boolean? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) return null
-        val exactRange = advertisedRanges.firstOrNull { it.lower == fps && it.upper == fps }
-        val range = exactRange ?: if (StrictCaptureModePolicy.requiresExactFpsRange(fps)) {
-            return false
-        } else {
-            advertisedRanges
-                .filter { StrictCaptureModePolicy.acceptsFpsRange(fps, it.lower, it.upper) }
-                .minWithOrNull(compareBy<Range<Int>> { it.upper - it.lower }.thenByDescending { it.lower })
-                ?: return false
-        }
+        val range = Range(fps, fps)
         return runCatching {
             if (!manager.isCameraDeviceSetupSupported(cameraId)) return@runCatching null
             val setup = manager.getCameraDeviceSetup(cameraId)

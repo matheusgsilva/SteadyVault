@@ -48,7 +48,7 @@ object WidgetPreviewPublisher {
             append("|identity=").append(VisualIdentityStore.mode(appContext))
             append("|neutral=").append(VisualIdentityStore.neutralWidgetActions(appContext))
             append("|label=").append(VisualIdentityStore.customLabel(appContext))
-            append("|v7-original-widget-layout-themed-previews")
+            append("|v8-lock-style-themed-previews")
         }
 
         specs.forEach { spec ->

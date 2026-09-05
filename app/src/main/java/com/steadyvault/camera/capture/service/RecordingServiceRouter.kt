@@ -4,7 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.SystemClock
 import com.steadyvault.camera.core.settings.CaptureSettings
-import com.steadyvault.camera.core.settings.CameraProfileStore
+import com.steadyvault.camera.core.camera.CameraLensCatalog
 
 object RecordingServiceRouter {
     fun startIntent(
@@ -14,13 +14,8 @@ object RecordingServiceRouter {
         preferredCameraId: String? = null,
         headless: Boolean = false
     ): Intent {
-        val current = CaptureSettings.snapshot(context)
-        val cameraId = preferredCameraId?.takeIf { it.isNotBlank() } ?: current.selectedCameraId
-        if (cameraId != null) {
-            CameraProfileStore.activate(context, cameraId, CameraProfileStore.FunctionMode.VIDEO, current.copy(selectedCameraId = cameraId))
-        } else {
-            CameraProfileStore.setActiveMode(context, CameraProfileStore.FunctionMode.VIDEO)
-        }
+        // O roteador apenas transporta a intenção. Em headless, a câmera salva nas
+        // Configurações é enviada explicitamente; não existe seleção óptica paralela.
         return Intent(context, CaptureService::class.java)
             .setAction(CaptureService.ACTION_START)
             .putExtra(CaptureService.EXTRA_TARGET_FPS, targetFps)
@@ -41,12 +36,18 @@ object RecordingServiceRouter {
      * como preview e o CaptureService recebe explicitamente o contrato encoder-only.
      */
     fun startHeadless(context: Context, targetFps: Int, preferredCameraId: String? = null) {
+        val settings = CaptureSettings.snapshot(context)
+        val exactCameraId = CameraLensCatalog.resolveRecordingCameraId(
+            context,
+            preferredCameraId ?: settings.selectedCameraId,
+            settings.resolution
+        )
         context.startForegroundService(
             startIntent(
                 context = context,
                 targetFps = targetFps,
                 fromPreview = false,
-                preferredCameraId = preferredCameraId,
+                preferredCameraId = exactCameraId,
                 headless = true
             )
         )

@@ -1,8 +1,16 @@
+## Captura profissional 1.8.266 — câmera lógica + cadência fixa
+
+- Caminho ativo de vídeo: `Camera2 → 1 Surface do MediaRecorder → MP4 final`.
+- Não há preview anexado à sessão de gravação, MediaCodec/MediaMuxer manual, pós-processamento, interpolação, repetição de frames ou ajuste de timeline.
+- O `CaptureService` não roda watchdog, heartbeat, monitor periódico de armazenamento, callback de disponibilidade de câmera, recovery loop ou checagem de tela enquanto o vídeo está sendo gravado.
+- O WakeLock é apenas mantido durante a captura; ele não executa trabalho periódico.
+- App e widget usam o mesmo seletor óptico para captura traseira sem forçar uma câmera física que possa piorar 4K60.
+
 ## Captura direta com configuração manual (1.8.220)
 
 - Resolução, FPS, codec e bitrate ficam sob controle do usuário; não existe calibração nem perfil de “máximo sustentável” que aplique ajustes automaticamente.
 - A matriz Camera2/MediaCodec continua sendo usada somente para mostrar combinações que o hardware publica como utilizáveis e para impedir parâmetros fora do intervalo declarado pelo encoder.
-- Toda gravação usa uma única saída Camera2: `Camera2 → Surface do MediaCodec → MediaCodec → MediaMuxer`. Preview, tela preta e widget não criam uma segunda Surface durante a gravação.
+- Toda gravação usa uma única saída direta: `Camera2 → Surface do MediaRecorder → MP4 final no cofre`. Não existe `HardwareRecorder`, `MediaCodec/MediaMuxer` manual, arquivo temporário de publicação nem pós-processamento automático ao parar.
 - O bitrate selecionado é enviado diretamente ao encoder; o app não cria teto por FPS nem muda a taxa durante a captura.
 - O PTS publicado pelo encoder é preservado; o gravador não reordena, interpola, repete nem encaixa frames em uma grade CFR durante a captura.
 - O encoder de vídeo permanece em prioridade de tempo real, operating rate igual ao FPS, B-frames desligados, baixa latência e descarte de Surface desabilitado quando suportado.
@@ -27,17 +35,17 @@
 
 SteadyVault é um aplicativo Android de câmera e cofre de mídia voltado a gravação discreta em segundo plano, captura de alta qualidade e armazenamento privado no dispositivo. O projeto foi ajustado principalmente para o Galaxy S25 Ultra, preservando compatibilidade com outros aparelhos Android que exponham os modos necessários pelo Camera2.
 
-- Versão documentada: 1.8.237
+- Versão documentada: 1.8.266
 - Pacote Android: com.steadyvault.camera
 - Android mínimo: 10 / API 29
 - Compile SDK 37 e Target SDK 36
 
 ## Principais recursos
 
-- Gravação em segundo plano por foreground service, inclusive com a tela apagada, com monitor de quadros, heartbeat do serviço e recuperação automática da câmera ao bloquear/desbloquear.
+- Gravação em segundo plano por foreground service, inclusive com a tela apagada, sem monitor de quadros, heartbeat ou recuperação automática da câmera durante o vídeo.
 - Parada normal aceita somente por comando explícito: botão Parar ou dois toques rápidos na tela preta. Ocultar o preview, remover o widget ou alternar a tela não encerra o vídeo.
 - Rede de segurança para preservar trechos após falha de câmera/encoder: temporários antigos são validados e copiados para `filesDir/vaults/recovery`, fora do cache; a origem só é removida depois da cópia íntegra.
-- Pipeline Camera2 → MediaCodec → MediaMuxer com codificação por hardware.
+- Pipeline Camera2 → Surface do MediaRecorder → MP4 final com codificação de hardware do sistema.
 - HEVC/H.265 e AVC/H.264, com HLG10 opcional quando câmera e encoder oferecem suporte.
 - Resoluções de 720p, 1080p, 4K e 8K, com 30, 60, 120 e 240 FPS limitados às combinações realmente expostas por Camera2 e pelo encoder de hardware.
 - Interface configurada por uma matriz persistente de capacidades por câmera: controles de gravação só aparecem quando câmera + encoder confirmam suporte, evitando usar a própria gravação como tentativa de compatibilidade.
@@ -47,8 +55,8 @@ SteadyVault é um aplicativo Android de câmera e cofre de mídia voltado a grav
 - Tela de diagnóstico com logs de erros, falhas não tratadas, saídas anteriores do processo e inspeção/limpeza segura de cache.
 - Cinco temas, quatro fontes e níveis configuráveis de cantos/contornos aplicados também a componentes dinâmicos e widgets.
 - Identidade discreta opcional para notificações e widgets, com ícones genéricos, nome personalizado e ações neutras sem remover controles obrigatórios.
-- Início urgente sem preview: valida rapidamente a cadência e limita o assentamento da câmera para não perder o momento.
-- Vídeo usa diretamente os deltas de PTS produzidos pelo MediaCodec, apenas alinhando a origem temporal ao início oficial da gravação; áudio continua ancorado em `AudioTimestamp.TIMEBASE_BOOTTIME` para reduzir deriva A/V.
+- Início headless sem preview: prepara o MediaRecorder e abre a câmera sem adicionar Surface visual à sessão.
+- Vídeo e áudio são muxados diretamente pelo MediaRecorder; o app não reescreve PTS nem corrige a timeline após a captura.
 - Finalização audiovisual limitada ao último frame efetivo, sem cauda excedente do microfone.
 - Áudio AAC com 48 kHz, mono/estéreo conforme suporte, ganho, filtro de graves, AGC e redução de ruído configuráveis.
 - Estabilização automática, avançada, OIS, EIS ou desligada; OIS explícito só aparece quando a câmera lógica confirma suporte utilizável, sem trocar silenciosamente de câmera ou promover capacidade apenas “não verificada”.
@@ -62,7 +70,7 @@ SteadyVault é um aplicativo Android de câmera e cofre de mídia voltado a grav
 - Análise, reparo de timeline e transcodificação por hardware opcionais, com presets para Apple, Android, web, social, criação e arquivo.
 - Navegador/downloader profissional com abertura de links http/https, identificação do player, mídia direta, análise por extrator, sessão/cookies, miniatura, qualidade/resolução, destino por cofre, perfis de desempenho, Wi‑Fi opcional, aria2, metadados, verificação de espaço e cancelamento.
 - Importação por arquivos ou pasta em fila persistente, executada em foreground service, cancelável pelo app ou pela notificação e retomável após interrupção do processo/sistema.
-- Saúde da gravação e desempenho da foto são analisados fora do caminho crítico; importação, thumbnails e metadados cedem imediatamente se uma nova captura começar.
+- Não existe análise de saúde da gravação durante o vídeo; tarefas de cofre continuam separadas e cedem prioridade quando uma captura está ativa.
 - Importação transacional por cofre com arquivo `.svimport.partial`, `fsync`, validação e publicação final somente depois da cópia íntegra.
 - Cofre principal, Cofre secundário e Cofre terciário permanecem independentes; não há unificação de armazenamento ou galeria.
 
@@ -112,7 +120,7 @@ O verificador local reprova imports sem uso, métodos privados mortos ou vazios,
 
 ## Estrutura principal
 
-- app/src/main/java/com/steadyvault/camera/capture: gravador direto, serviços Camera2 e telemetria de cadência somente observacional.
+- app/src/main/java/com/steadyvault/camera/capture: gravador direto e serviço Camera2, sem telemetria periódica durante a captura.
 - app/src/main/java/com/steadyvault/camera/core: capacidades, configurações, estado, armazenamento e validações.
 - app/src/main/java/com/steadyvault/camera/photo: captura e políticas de qualidade de foto.
 - app/src/main/java/com/steadyvault/camera/processing: análise, reparo, filtros e transcodificação.
@@ -172,3 +180,11 @@ O projeto ainda não contém um arquivo LICENSE. A ausência de licença não co
 
 - CHANGELOG.md: histórico das versões documentadas.
 - NOTICE.md: componentes de terceiros e obrigações de aviso.
+
+## Gravação 1.8.255 — Configuração estrita
+
+A gravação usa diretamente os valores atualmente selecionados nas Configurações. O app não aumenta/reduz bitrate, não troca FPS, não troca resolução e não substitui estabilização para tentar salvar uma combinação incompatível. EncoderProfiles é apenas uma fonte de compatibilidade técnica quando necessária, especialmente em HLG10.
+
+### Correção 1.8.266 — Handler explícito no Camera2
+
+O CaptureService usa ExecutorService para a câmera, portanto a thread não possui Looper. As submissões `setRepeatingRequest`/`setRepeatingBurst` agora recebem `mainHandler` explicitamente. Isso corrige `No handler given, and current thread has no looper!` sem criar HandlerThread, polling ou monitoramento adicional.

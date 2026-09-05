@@ -1,103 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/widgetRoot"
-    android:layout_width="207dp"
-    android:layout_height="42dp"
-    android:background="@drawable/bg_widget_expanded_oneui"
-    android:gravity="center_vertical"
-    android:orientation="horizontal"
-    android:paddingStart="5dp"
-    android:paddingTop="4dp"
-    android:paddingEnd="5dp"
-    android:paddingBottom="4dp">
-
-    <LinearLayout
-        android:id="@+id/widgetLogoArea"
-        android:layout_width="32dp"
-        android:layout_height="32dp"
-        android:background="@drawable/bg_widget_expanded_logo"
-        android:contentDescription="@string/app_name"
-        android:gravity="center"
-        android:orientation="vertical">
-
-        <ImageView
-            android:id="@+id/widgetAppLogo"
-            android:layout_width="32dp"
-            android:layout_height="32dp"
-            android:contentDescription="@null"
-            android:scaleType="centerInside"
-            android:src="@drawable/widget_logo" />
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@android:color/transparent" android:clipChildren="false"
+    android:clipToPadding="false" android:padding="@dimen/widget_preview_lock_safe_inset">
+    <LinearLayout android:id="@+id/widgetRoot" android:layout_width="wrap_content"
+        android:layout_height="wrap_content" android:layout_gravity="center"
+        android:background="@android:color/transparent" android:gravity="center"
+        android:orientation="horizontal" android:paddingStart="@dimen/widget_preview_lock_padding_h"
+        android:paddingTop="@dimen/widget_preview_lock_padding_v" android:paddingEnd="@dimen/widget_preview_lock_padding_h"
+        android:paddingBottom="@dimen/widget_preview_lock_padding_v">
+        <FrameLayout android:id="@+id/widgetLogoArea" android:layout_width="@dimen/widget_preview_lock_button"
+            android:layout_height="@dimen/widget_preview_lock_button" android:background="@drawable/bg_widget_preview_button_disabled"
+            android:contentDescription="@string/app_name" android:padding="6dp">
+            <ImageView android:id="@+id/widgetAppLogo" android:layout_width="match_parent" android:layout_height="match_parent"
+                android:contentDescription="@null" android:scaleType="centerInside" android:src="@drawable/widget_logo" />
+        </FrameLayout>
+        <TextView android:id="@+id/widgetZoom" android:layout_width="@dimen/widget_preview_lock_button"
+            android:layout_height="@dimen/widget_preview_lock_button" android:layout_marginStart="@dimen/widget_preview_lock_spacing"
+            android:background="@drawable/bg_widget_preview_button_teal" android:contentDescription="@string/zoom_content_description"
+            android:drawablePadding="0dp" android:drawableTop="@drawable/ic_zoom_preview" android:gravity="center"
+            android:includeFontPadding="false" android:maxLines="1" android:padding="1dp"
+            android:text="@string/widget_zoom_preview" android:textColor="@android:color/white" android:textSize="8sp" android:textStyle="bold" />
+        <ImageButton android:id="@+id/widgetSequence" android:layout_width="@dimen/widget_preview_lock_button"
+            android:layout_height="@dimen/widget_preview_lock_button" android:layout_marginStart="@dimen/widget_preview_lock_spacing"
+            android:background="@drawable/bg_widget_preview_button_cyan" android:contentDescription="@string/sequence_content_description"
+            android:padding="@dimen/widget_preview_lock_icon_padding" android:scaleType="centerInside" android:src="@drawable/ic_burst" />
+        <ImageButton android:id="@+id/widgetPhoto" android:layout_width="@dimen/widget_preview_lock_button"
+            android:layout_height="@dimen/widget_preview_lock_button" android:layout_marginStart="@dimen/widget_preview_lock_spacing"
+            android:background="@drawable/bg_widget_preview_button_green" android:contentDescription="@string/photo_content_description"
+            android:padding="@dimen/widget_preview_lock_icon_padding" android:scaleType="centerInside" android:src="@drawable/ic_camera" />
+        <ImageButton android:id="@+id/widgetStart" android:layout_width="@dimen/widget_preview_lock_button"
+            android:layout_height="@dimen/widget_preview_lock_button" android:layout_marginStart="@dimen/widget_preview_lock_spacing"
+            android:background="@drawable/bg_widget_preview_button_teal" android:contentDescription="@string/record_content_description"
+            android:padding="@dimen/widget_preview_lock_icon_padding" android:scaleType="centerInside" android:src="@drawable/ic_record" />
+        <ImageButton android:id="@+id/widgetStop" android:layout_width="@dimen/widget_preview_lock_button"
+            android:layout_height="@dimen/widget_preview_lock_button" android:layout_marginStart="@dimen/widget_preview_lock_spacing"
+            android:background="@drawable/bg_widget_preview_button_disabled" android:contentDescription="@string/stop_content_description"
+            android:enabled="false" android:padding="@dimen/widget_preview_lock_icon_padding" android:scaleType="centerInside"
+            android:src="@drawable/ic_widget_stop_off" />
     </LinearLayout>
-
-    <ImageView
-        android:id="@+id/widgetDivider"
-        android:layout_width="1dp"
-        android:layout_height="28dp"
-        android:background="@drawable/bg_widget_expanded_divider"
-        android:contentDescription="@null" />
-
-    <TextView
-        android:id="@+id/widgetZoom"
-        android:layout_width="32dp"
-        android:layout_height="32dp"
-        android:background="@drawable/bg_widget_expanded_button_teal"
-        android:contentDescription="@string/zoom_content_description"
-        android:drawablePadding="0dp"
-        android:drawableTop="@drawable/ic_zoom"
-        android:gravity="center"
-        android:includeFontPadding="false"
-        android:maxLines="1"
-        android:paddingStart="2dp"
-        android:paddingTop="2dp"
-        android:paddingEnd="2dp"
-        android:paddingBottom="2dp"
-        android:text="@string/widget_zoom_preview"
-        android:textColor="@android:color/white"
-        android:textSize="8sp"
-        android:textStyle="bold" />
-
-    <ImageView
-        android:id="@+id/widgetSequence"
-        android:layout_width="32dp"
-        android:layout_height="32dp"
-        android:layout_marginStart="1dp"
-        android:background="@drawable/bg_widget_expanded_button_cyan"
-        android:contentDescription="@string/sequence_content_description"
-        android:padding="9dp"
-        android:scaleType="centerInside"
-        android:src="@drawable/ic_burst" />
-
-    <ImageView
-        android:id="@+id/widgetPhoto"
-        android:layout_width="32dp"
-        android:layout_height="32dp"
-        android:layout_marginStart="1dp"
-        android:background="@drawable/bg_widget_expanded_button_green"
-        android:contentDescription="@string/photo_content_description"
-        android:padding="9dp"
-        android:scaleType="centerInside"
-        android:src="@drawable/ic_camera" />
-
-    <ImageView
-        android:id="@+id/widgetStart"
-        android:layout_width="32dp"
-        android:layout_height="32dp"
-        android:layout_marginStart="1dp"
-        android:background="@drawable/bg_widget_expanded_button_teal"
-        android:contentDescription="@string/record_content_description"
-        android:padding="9dp"
-        android:scaleType="centerInside"
-        android:src="@drawable/ic_record" />
-
-    <ImageView
-        android:id="@+id/widgetStop"
-        android:layout_width="32dp"
-        android:layout_height="32dp"
-        android:layout_marginStart="1dp"
-        android:background="@drawable/bg_widget_expanded_button_disabled"
-        android:contentDescription="@string/stop_content_description"
-        android:enabled="false"
-        android:padding="9dp"
-        android:scaleType="centerInside"
-        android:src="@drawable/ic_widget_stop_off" />
-</LinearLayout>
+</FrameLayout>

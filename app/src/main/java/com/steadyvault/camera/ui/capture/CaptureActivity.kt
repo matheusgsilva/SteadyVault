@@ -453,13 +453,22 @@ class CaptureActivity : ComponentActivity() {
         previewManageProfilesButton = findViewById(R.id.previewManageProfilesButton)
         captureHeader = findViewById(R.id.captureHeader)
         captureStatusCard = findViewById(R.id.captureStatusCard)
-        cameraOptions = CameraLensCatalog.options(this)
+        val allCameraOptions = CameraLensCatalog.options(this)
+        cameraOptions = allCameraOptions.filter { it.isFront || it.logical }
         CaptureSettings.snapshot(this).let { current ->
-            val selectedId = current.selectedCameraId
-                ?.takeIf { id -> cameraOptions.any { it.id == id } }
-                ?: CameraLensCatalog.resolveCameraId(this, null, current.resolution)
-                ?: cameraOptions.firstOrNull()?.id
-            val normalized = current.copy(previewMode = CaptureSettings.PREVIEW_OFF, selectedCameraId = selectedId)
+            val storedOption = allCameraOptions.firstOrNull { it.id == current.selectedCameraId }
+            val selectedId = when {
+                storedOption?.isFront == true -> storedOption.id
+                else -> CameraLensCatalog.resolveRecordingCameraId(this, current.selectedCameraId, current.resolution)
+            } ?: cameraOptions.firstOrNull()?.id
+            val migratedZoom = if (storedOption?.isBack == true && !storedOption.logical) {
+                CameraLensCatalog.shortcutRatio(storedOption)
+            } else current.zoomRatio
+            val normalized = current.copy(
+                previewMode = CaptureSettings.PREVIEW_OFF,
+                selectedCameraId = selectedId,
+                zoomRatio = migratedZoom
+            )
             CameraProfileStore.setActiveMode(this, CameraProfileStore.FunctionMode.VIDEO)
             cameraOptions.forEach { CameraProfileStore.ensureProfiles(this, it.id, normalized.copy(selectedCameraId = it.id)) }
             if (selectedId != null) {
@@ -1242,11 +1251,8 @@ class CaptureActivity : ComponentActivity() {
         features: CaptureCapabilityMatrix.CameraFeatures?,
         value: String
     ): Support {
-        fun direct(candidate: String): Support = if (
-            !previewPhotoMode &&
-            settings.fps >= CaptureModeStore.FPS_120 &&
-            candidate == CaptureSettings.STABILIZATION_PREVIEW
-        ) Support.UNSUPPORTED else features?.stabilizationSupport(candidate) ?: Support.UNVERIFIED
+        fun direct(candidate: String): Support =
+            features?.stabilizationSupport(candidate) ?: Support.UNVERIFIED
         return if (value == CaptureSettings.STABILIZATION_OFF) Support.SUPPORTED else direct(value)
     }
 
@@ -2660,6 +2666,9 @@ class CaptureActivity : ComponentActivity() {
     private fun selectPreviewLensShortcut(shortcut: Float) {
         if (CaptureStateStore.isBusy(this) || photoBusy || PhotoCaptureStateStore.isBusy(this)) return
         val current = CaptureSettings.snapshot(this)
+        if (cameraOptions.firstOrNull { it.id == current.selectedCameraId }?.isFront != true) {
+            BackgroundRecordingZoom.set(this, shortcut)
+        }
         val currentOption = cameraOptions.firstOrNull { it.id == current.selectedCameraId }
         if (currentOption?.isFront == true) {
             if (kotlin.math.abs(shortcut - 1f) < 0.05f) applyPreviewZoom(1f)
@@ -3182,66 +3191,25 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun refreshCapabilityMatrix(force: Boolean = false) {
-        if (!force) {
-            CaptureCapabilityMatrix.cached(this)?.let { cached ->
-                capabilityMatrix = cached
-                capabilityScanCompleted = true
-                return
-            }
-        }
-        val captureBusy = CaptureStateStore.isBusy(this) ||
-            photoBusy ||
-            PhotoCaptureStateStore.isBusy(this)
-        if (captureBusy) {
-            capabilityRescanPending = capabilityRescanPending || force || capabilityMatrix == null
-            return
-        }
-        if (capabilityScanInProgress) {
-            capabilityRescanPending = capabilityRescanPending || force
-            return
-        }
-        val forceScan = force || capabilityMatrix == null
+        capabilityMatrix = CaptureCapabilityMatrix.cached(this) ?: capabilityMatrix
+        capabilityScanInProgress = false
         capabilityRescanPending = false
-        capabilityScanInProgress = true
-        lastCapabilityScanStartedAtMs = SystemClock.elapsedRealtime()
-        if (capabilityMatrix == null) capabilityScanCompleted = false
+        capabilityScanCompleted = true
+        cameraOptions = CameraLensCatalog.options(this).filter { it.isFront || it.logical }
+        synchronizeSelectedCameraWithCatalog()
+        capabilityMatrix?.let { matrix ->
+            val rearCameraIds = cameraOptions.filter { it.isBack }.mapTo(mutableSetOf()) { it.id }
+            val rearMatrix = matrix.copy(
+                modes = matrix.modes.filter { it.cameraId in rearCameraIds },
+                cameras = matrix.cameras.filter { it.cameraId in rearCameraIds }
+            )
+            if (rearMatrix.modes.isNotEmpty()) CaptureModeCatalog.remember(this, rearMatrix)
+        }
+        synchronizeSelectedModeWithCapabilities()
+        alignStoredModeMessage()
         renderRecordingMode(busy = CaptureStateStore.isBusy(this))
-        Thread({
-            runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
-            val result = runCatching {
-                CaptureCapabilityMatrix.scan(this, force = forceScan)
-            }.getOrNull()
-            mainHandler.post {
-                if (isFinishing || isDestroyed) return@post
-                capabilityScanInProgress = false
-                capabilityMatrix = result ?: capabilityMatrix
-                cameraOptions = CameraLensCatalog.options(this)
-                synchronizeSelectedCameraWithCatalog()
-                capabilityMatrix?.let { matrix ->
-                    val rearCameraIds = cameraOptions.filter { it.isBack }.mapTo(mutableSetOf()) { it.id }
-                    val rearMatrix = matrix.copy(
-                        modes = matrix.modes.filter { it.cameraId in rearCameraIds },
-                        cameras = matrix.cameras.filter { it.cameraId in rearCameraIds }
-                    )
-                    if (rearMatrix.modes.isNotEmpty()) CaptureModeCatalog.remember(this, rearMatrix)
-                }
-                capabilityScanCompleted = true
-                synchronizeSelectedModeWithCapabilities()
-                        alignStoredModeMessage()
-                renderRecordingMode(busy = CaptureStateStore.isBusy(this))
-                renderPreviewQuickControls()
-                renderPreviewSettingsSheetContent()
-                ExpandedControlWidget.updateAll(this)
-                if (
-                    capabilityRescanPending &&
-                    !CaptureStateStore.isBusy(this) &&
-                    !photoBusy &&
-                    !PhotoCaptureStateStore.isBusy(this)
-                ) {
-                    refreshCapabilityMatrix()
-                }
-            }
-        }, "SteadyVault-Capability-Matrix").start()
+        renderPreviewQuickControls()
+        renderPreviewSettingsSheetContent()
     }
 
     private fun synchronizeSelectedModeWithCapabilities() {
@@ -3259,10 +3227,18 @@ class CaptureActivity : ComponentActivity() {
     private fun synchronizeSelectedCameraWithCatalog() {
         if (cameraOptions.isEmpty()) return
         val current = CaptureSettings.snapshot(this)
-        if (current.selectedCameraId != null && cameraOptions.any { it.id == current.selectedCameraId }) return
-        val selectedId = CameraLensCatalog.resolveCameraId(this, null, current.resolution)
-            ?: cameraOptions.first().id
-        CaptureSettings.save(this, current.copy(selectedCameraId = selectedId, zoomRatio = 1f))
+        val currentOption = cameraOptions.firstOrNull { it.id == current.selectedCameraId }
+        val selectedId = when {
+            currentOption?.isFront == true -> currentOption.id
+            else -> CameraLensCatalog.resolveRecordingCameraId(this, current.selectedCameraId, current.resolution)
+        } ?: cameraOptions.first().id
+        val migratedZoom = if (currentOption?.isBack == true && !currentOption.logical) {
+            CameraLensCatalog.shortcutRatio(currentOption)
+        } else {
+            current.zoomRatio
+        }
+        if (current.selectedCameraId == selectedId && kotlin.math.abs(current.zoomRatio - migratedZoom) < 0.01f) return
+        CaptureSettings.save(this, current.copy(selectedCameraId = selectedId, zoomRatio = migratedZoom))
         CameraProfileStore.rememberCamera(this, selectedId, CameraLensCatalog.isFront(this, selectedId))
     }
 
@@ -3550,12 +3526,8 @@ class CaptureActivity : ComponentActivity() {
                     headless = false
                 )
             } else {
-                // Botão do app/atalho com tela preta: captura dedicada, sem Surface de preview.
-                RecordingServiceRouter.startHeadless(
-                    context = this,
-                    targetFps = selectedFps,
-                    preferredCameraId = preferredCameraId
-                )
+                val exactCameraId = idlePreview.currentCameraId() ?: settings.selectedCameraId
+                RecordingServiceRouter.startHeadless(this, selectedFps, exactCameraId)
             }
             true
         }.getOrElse {
@@ -4033,9 +4005,8 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun showBackgroundRecordingZoomChooser() {
-        val supported = BackgroundRecordingZoom.supported(this)
-        val values = supported
-        val current = BackgroundRecordingZoom.selected(this)
+        val values = BackgroundRecordingZoom.choices
+        val current = CaptureSettings.snapshot(this).zoomRatio
         OneUiDialog.choices(
             activity = this,
             title = "Zoom da captura rápida",
@@ -4055,7 +4026,8 @@ class CaptureActivity : ComponentActivity() {
             selectedIndex = values.indexOf(current).coerceAtLeast(0),
             confirmLabel = "Aplicar"
         ) { index ->
-            BackgroundRecordingZoom.set(this, values[index])
+            val settings = CaptureSettings.snapshot(this)
+            CaptureSettings.save(this, settings.copy(zoomRatio = values[index]))
             renderBackgroundRecordingZoom()
             ExpandedControlWidget.updateAll(this)
         }
@@ -4063,9 +4035,8 @@ class CaptureActivity : ComponentActivity() {
 
     private fun renderBackgroundRecordingZoom() {
         if (!::backgroundRecordingZoomButton.isInitialized) return
-        val supported = BackgroundRecordingZoom.supported(this)
-        backgroundRecordingZoomButton.visibility = if (supported.size > 1) View.VISIBLE else View.GONE
-        val label = BackgroundRecordingZoom.label(BackgroundRecordingZoom.selected(this))
+        backgroundRecordingZoomButton.visibility = View.VISIBLE
+        val label = BackgroundRecordingZoom.label(CaptureSettings.snapshot(this).zoomRatio)
         backgroundRecordingZoomButton.text = label
         backgroundRecordingZoomButton.contentDescription = "Alterar zoom da foto e do vídeo rápidos. Atual: $label"
     }

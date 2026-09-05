@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.BackgroundRecordingZoom
+import com.steadyvault.camera.core.settings.CaptureSettings
+import kotlin.math.abs
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.core.state.PhotoCaptureStateStore
 
@@ -16,7 +18,11 @@ class WidgetZoomReceiver : BroadcastReceiver() {
             WidgetRenderer.updateRecordingControls(context)
             return
         }
-        BackgroundRecordingZoom.cycle(context)
+        val settings = CaptureSettings.snapshot(context)
+        val choices = BackgroundRecordingZoom.choices
+        val currentIndex = choices.indices.minByOrNull { abs(choices[it] - settings.zoomRatio) } ?: 1
+        val next = choices[(currentIndex + 1) % choices.size]
+        CaptureSettings.save(context, settings.copy(zoomRatio = next))
         Haptics.tap(context)
         WidgetRenderer.updateZoomControl(context)
     }

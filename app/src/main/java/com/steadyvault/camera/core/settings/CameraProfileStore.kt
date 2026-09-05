@@ -60,8 +60,8 @@ object CameraProfileStore {
                     resolution = resolution,
                     bitrateMbps = snapshot.bitrateMbps,
                     zoomRatio = 1f,
-                    hdrHlg10 = if (fps >= 120) false else snapshot.hdrHlg10,
-                    colorProfile = if (fps >= 120) CaptureSettings.COLOR_NATURAL else snapshot.colorProfile
+                    hdrHlg10 = snapshot.hdrHlg10,
+                    colorProfile = snapshot.colorProfile
                 ),
                 cameraId,
                 FunctionMode.VIDEO
@@ -177,9 +177,7 @@ object CameraProfileStore {
             CaptureSettings.FOCUS_CONTINUOUS_PICTURE
         } else {
             CaptureSettings.FOCUS_CONTINUOUS_VIDEO
-        },
-        hdrHlg10 = if (mode == FunctionMode.VIDEO && snapshot.fps >= 120) false else snapshot.hdrHlg10,
-        colorProfile = if (mode == FunctionMode.VIDEO && snapshot.fps >= 120) CaptureSettings.COLOR_NATURAL else snapshot.colorProfile
+        }
     )
 
     private fun writeProfile(

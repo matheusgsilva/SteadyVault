@@ -1041,6 +1041,14 @@ class IdleCameraPreviewController(
                 if (measuredGains != null && measuredTransform != null && measuredCameraId != null) {
                     Camera3AStateStore.updateWhiteBalance(measuredCameraId, measuredGains, measuredTransform)
                 }
+                if (measuredCameraId != null) {
+                    val exposureTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                    val sensitivityIso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                    val frameDurationNs = result.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L
+                    if (exposureTimeNs != null && sensitivityIso != null) {
+                        Camera3AStateStore.updateExposure(measuredCameraId, exposureTimeNs, sensitivityIso, frameDurationNs)
+                    }
+                }
                 if (highSpeed || corrected.get() || frames.incrementAndGet() < COLOR_MEASURE_FRAMES) return
                 val gains = result.get(CaptureResult.COLOR_CORRECTION_GAINS) ?: return
                 val transform = result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM) ?: return
@@ -1253,12 +1261,8 @@ class IdleCameraPreviewController(
     }
 
     private fun regularFpsRange(characteristics: CameraCharacteristics, targetFps: Int): Range<Int>? {
-        val ranges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: return null
-        ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }?.let { return it }
-        if (StrictCaptureModePolicy.requiresExactFpsRange(targetFps)) return null
-        return ranges.filter { StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper) }
-            .maxWithOrNull(compareBy<Range<Int>> { it.lower }.thenBy { -it.upper })
-            ?: ranges.maxByOrNull { it.upper }
+        characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: return null
+        return Range(targetFps, targetFps)
     }
 
     private fun highSpeedRange(characteristics: CameraCharacteristics, targetFps: Int): Range<Int>? {
@@ -1269,16 +1273,9 @@ class IdleCameraPreviewController(
         if (size !in sizes) return null
         val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size).toList() }.getOrDefault(emptyList())
 
-        // Nunca usa uma faixa variável (30-120/60-120) no preview HFR, pois ela produz
-        // alternância de frame duration e sensação de travamento. Primeiro tenta a faixa
-        // fixa solicitada; quando o HAL não publica 120-120 mas publica 240-240, usa a
-        // sessão fixa superior apenas para o preview. A gravação continua no FPS escolhido.
-        val fixedRanges = ranges.filter { it.lower == it.upper }
-        fixedRanges.firstOrNull { it.lower == targetFps }?.let { return it }
-        if (targetFps == CaptureModeStore.FPS_120) {
-            fixedRanges.firstOrNull { it.lower == CaptureModeStore.FPS_240 }?.let { return it }
-        }
-        return fixedRanges.filter { it.lower > targetFps }.minByOrNull { it.lower }
+        // Preview HFR segue o mesmo contrato do arquivo: usa somente a faixa fixa
+        // solicitada e nunca substitui 120 por 240 ou por uma faixa variável.
+        return ranges.firstOrNull { StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper) }
     }
 
 

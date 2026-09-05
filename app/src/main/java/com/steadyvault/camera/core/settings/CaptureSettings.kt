@@ -124,15 +124,7 @@ object CaptureSettings {
 
         val defaultBitrate = defaultBitrateMbps(resolution, fps, codec)
         val storedBitrate = prefs.getInt("bitrate_mbps", defaultBitrate).coerceIn(4, 240)
-        val storedEdgeMode = prefs.getString("edge_mode", PROCESSING_FAST) ?: PROCESSING_FAST
-        val edgeMode = if (!prefs.getBoolean("edge_mode_clarity_migrated_v163", false) && storedEdgeMode == PROCESSING_OFF) {
-            prefs.edit().putString("edge_mode", PROCESSING_FAST).putBoolean("edge_mode_clarity_migrated_v163", true).apply()
-            PROCESSING_FAST
-        } else storedEdgeMode
-
-        if (!prefs.getBoolean("minimal_audio_pipeline_migrated_v217", false)) {
-            prefs.edit().putInt("audio_gain_db", 0).putBoolean("audio_low_cut", false).putBoolean("minimal_audio_pipeline_migrated_v217", true).apply()
-        }
+        val edgeMode = prefs.getString("edge_mode", PROCESSING_FAST) ?: PROCESSING_FAST
 
         return Snapshot(
             resolution = resolution,

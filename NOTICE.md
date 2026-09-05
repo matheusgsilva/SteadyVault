@@ -71,3 +71,6 @@ Antes de distribuir uma versão pública:
 ## Marcas
 
 Android, AndroidX e Google são marcas de seus respectivos titulares. Samsung e Galaxy são marcas da Samsung Electronics. VLC, VideoLAN e libVLC pertencem aos seus respectivos titulares. O uso dos nomes neste arquivo serve apenas para identificação técnica e não implica endosso.
+
+
+1.8.264: vídeo traseiro usa câmera lógica/zoom ratio e cadência fixa de sensor em 60 FPS quando MANUAL_SENSOR é suportado.
