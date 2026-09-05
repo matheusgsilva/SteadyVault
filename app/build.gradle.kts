@@ -15,7 +15,7 @@ android {
         ndk {
             abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
-        versionCode = 1000132
+        versionCode = 1000133
         versionName = "1.8.131"
     }
 
