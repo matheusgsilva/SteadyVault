@@ -1372,13 +1372,21 @@ class CaptureService : Service() {
             armRecorderForFirstFrame(token)
             val manualSensor = supportsManualSensor(profile)
             if (!profile.hdrHlg10 && manualSensor) {
-                val recent = Camera3AStateStore.recentExposure(profile.cameraId)
+                // Preview aberto já fornece exposição recente e não adiciona atraso.
+                // Captura headless (widget/tela preta) ignora valor antigo e mede a cena atual.
+                val recent = if (headlessCaptureRequested) {
+                    null
+                } else {
+                    Camera3AStateStore.recentExposure(profile.cameraId)
+                }
                 val immediatePlan = recent?.let { fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso) }
                 if (immediatePlan != null) {
                     val fixedRequest = buildFixedCadenceRequest(profile, immediatePlan)
                         ?: throw IllegalStateException("câmera não disponível para request de cadência fixa")
                     session.setRepeatingRequest(fixedRequest, null, mainHandler)
                     commitRecorderStart(profile, token, highSpeed = false)
+                } else if (headlessCaptureRequested) {
+                    startHeadlessFastExposureWarmup(session, request, profile, token)
                 } else {
                     startWithFixedSensorCadence(session, request, profile, token)
                 }
@@ -1396,6 +1404,67 @@ class CaptureService : Service() {
         return capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) &&
             profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) != null &&
             profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) != null
+    }
+
+    /**
+     * Captura headless precisa priorizar o instante do usuário. O AE recebe uma janela
+     * curtíssima antes do MediaRecorder começar: até 3 resultados e nunca mais de 50 ms.
+     * Se houver exposição/ISO válidos, a cadência é congelada antes do primeiro sample.
+     * Se não houver, inicia imediatamente com o request CLEAN automático, sem esperar mais.
+     */
+    private fun startHeadlessFastExposureWarmup(
+        session: CameraCaptureSession,
+        autoRequest: CaptureRequest,
+        profile: CameraProfile,
+        token: Int
+    ) {
+        val resolved = AtomicBoolean(false)
+        val completed = AtomicInteger(0)
+        var candidateRequest: CaptureRequest? = null
+        val minFramesForLock = if (profile.targetFps <= 30) 1 else 2
+
+        fun finish(requestToUse: CaptureRequest?) {
+            if (!isAttemptValid(token) || !resolved.compareAndSet(false, true)) return
+            runCatching {
+                session.setRepeatingRequest(requestToUse ?: autoRequest, null, mainHandler)
+                commitRecorderStart(profile, token, highSpeed = false)
+            }.onFailure {
+                failSelectedConfigurationFromWorker(
+                    token,
+                    "não foi possível concluir o aquecimento rápido da exposição: ${errorText(it)}"
+                )
+            }
+        }
+
+        val callback = object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                captureSession: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                if (!isAttemptValid(token) || resolved.get()) return
+
+                val frameCount = completed.incrementAndGet()
+                val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                val sensitivityIso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                val plan = if (exposureNs != null && sensitivityIso != null) {
+                    fixedCadencePlan(profile, exposureNs, sensitivityIso)
+                } else null
+                val fixedRequest = plan?.let { buildFixedCadenceRequest(profile, it) }
+                if (fixedRequest != null) candidateRequest = fixedRequest
+
+                when {
+                    candidateRequest != null && frameCount >= minFramesForLock -> finish(candidateRequest)
+                    frameCount >= HEADLESS_AE_WARMUP_MAX_FRAMES -> finish(candidateRequest)
+                }
+            }
+        }
+
+        session.setRepeatingRequest(autoRequest, callback, mainHandler)
+        mainHandler.postDelayed(
+            { finish(candidateRequest) },
+            HEADLESS_AE_WARMUP_MAX_MS
+        )
     }
 
     private fun startWithFixedSensorCadence(
@@ -2618,6 +2687,9 @@ class CaptureService : Service() {
             240_000_000
         private const val FRAME_DURATION_TOLERANCE_NS =
             50_000L
+
+        private const val HEADLESS_AE_WARMUP_MAX_MS = 50L
+        private const val HEADLESS_AE_WARMUP_MAX_FRAMES = 3
 
         private const val RAW_FILE_PREFIX = "steadyvault_raw_"
         private const val STALE_RAW_FILE_MIN_AGE_MS = 60_000L
