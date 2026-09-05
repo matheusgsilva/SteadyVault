@@ -24,7 +24,9 @@ jobs:
           java-version: '17'
 
       - name: Apply highspeed and color patch
-        run: python3 tools/apply_highspeed_color_fix.py
+        run: |
+          python3 tools/apply_highspeed_color_fix.py
+          python3 tools/fix_highspeed_color_compile.py
 
       - name: Compile Kotlin
         run: bash ./gradlew :app:compileDebugKotlin --no-daemon
