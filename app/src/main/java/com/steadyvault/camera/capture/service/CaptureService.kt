@@ -1371,7 +1371,7 @@ class CaptureService : Service() {
         runCatching {
             armRecorderForFirstFrame(token)
             val manualSensor = supportsManualSensor(profile)
-            if (profile.targetFps == CaptureModeStore.FPS_60 && !profile.hdrHlg10 && manualSensor) {
+            if (!profile.hdrHlg10 && manualSensor) {
                 val recent = Camera3AStateStore.recentExposure(profile.cameraId)
                 val immediatePlan = recent?.let { fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso) }
                 if (immediatePlan != null) {

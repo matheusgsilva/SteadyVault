@@ -3,6 +3,8 @@ package com.steadyvault.camera.capture.timing
 import kotlin.math.roundToLong
 
 object SensorCadencePolicy {
+    private val SUPPORTED_FPS = setOf(30, 60, 120, 240)
+
     data class Plan(
         val frameDurationNs: Long,
         val exposureTimeNs: Long,
@@ -20,7 +22,7 @@ object SensorCadencePolicy {
         maxFrameDurationNs: Long,
         manualSensorSupported: Boolean
     ): Plan? {
-        if (!manualSensorSupported || fps != 60 || observedExposureNs <= 0L || observedSensitivityIso <= 0) return null
+        if (!manualSensorSupported || fps !in SUPPORTED_FPS || observedExposureNs <= 0L || observedSensitivityIso <= 0) return null
         if (exposureMinNs <= 0L || exposureMaxNs < exposureMinNs || sensitivityMinIso <= 0 || sensitivityMaxIso < sensitivityMinIso) return null
 
         val frameDurationNs = (1_000_000_000.0 / fps.toDouble()).roundToLong()
