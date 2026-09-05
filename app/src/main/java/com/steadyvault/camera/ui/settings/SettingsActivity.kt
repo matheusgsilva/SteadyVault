@@ -83,6 +83,7 @@ class SettingsActivity : FragmentActivity() {
     private lateinit var modeCapabilitiesText: TextView
     private lateinit var resolution: Spinner
     private lateinit var fps: Spinner
+    private lateinit var autoFpsLowLight: Switch
     private lateinit var codec: Spinner
     private lateinit var bitrate: Spinner
     private lateinit var iframe: Spinner
@@ -297,6 +298,11 @@ class SettingsActivity : FragmentActivity() {
             fpsOptions(),
             snapshot.fps.toString()
         )
+        autoFpsLowLight = addSwitch(
+            "FPS automático em pouca luz",
+            "Equivalente ao Auto FPS do iPhone. Fica desligado por padrão. Em 30/60 FPS, se a câmera publicar uma faixa variável compatível, permite reduzir temporariamente o FPS para ganhar exposição em pouca luz. 120/240 permanecem fixos.",
+            snapshot.autoFpsLowLight
+        )
         modeCapabilitiesText = addCapabilitiesCard()
         codec = addSpinner(
             "Formato de compressão do vídeo (codec)",
@@ -308,7 +314,7 @@ class SettingsActivity : FragmentActivity() {
             bitrateOptions(snapshot.bitrateMbps),
             snapshot.bitrateMbps.toString()
         )
-        addInfo("O bitrate escolhido fica salvo mesmo ao mudar FPS, resolução, codec ou estabilização. Ele é enviado diretamente ao encoder e só é limitado se ultrapassar o intervalo que o próprio codec de hardware publica como suportado; o app não reduz o valor por perfil automático.")
+        addInfo("O bitrate funciona como a taxa média-alvo do AVFoundation: o valor escolhido fica salvo e é enviado diretamente ao encoder. No MediaRecorder o fabricante controla internamente CBR/VBR; o SteadyVault não troca o bitrate escolhido silenciosamente.")
         addSmallButton("Recalcular bitrate recomendado") {
             setSelection(
                 bitrate,
@@ -330,7 +336,7 @@ class SettingsActivity : FragmentActivity() {
             ),
             snapshot.iFrameIntervalSeconds.toString()
         )
-        addInfo("Pipeline direto Camera2 → Surface → MediaRecorder. O bitrate escolhido é enviado como taxa-alvo; CBR/VBR e demais decisões de rate control ficam a cargo do encoder de hardware/OEM, sem MediaCodec manual.")
+        addInfo("Pipeline direto Camera2 → Surface → MediaRecorder, equivalente ao caminho de captura simples do AVFoundation: uma única saída de vídeo, sem interpolação ou callbacks por quadro. HEVC/H.264 e bitrate-alvo são configurados quando suportados pelo hardware.")
         hdr = addSwitch(
             "HDR HLG10",
             "Usa HEVC Main10, BT.2020 HLG e faixa limitada. Combinações incompatíveis são informadas em vez de serem trocadas silenciosamente.",
@@ -401,7 +407,7 @@ class SettingsActivity : FragmentActivity() {
             exposureOptions(snapshot.exposureCompensation),
             snapshot.exposureCompensation.toString()
         )
-        addInfo("A faixa fixa é sempre priorizada e o perfil VIDEO_RECORD é aplicado automaticamente quando a câmera o publica.")
+        addInfo("Com FPS automático desligado, 30/60 usam faixa fixa e 120/240 exigem suporte real do formato. Com FPS automático ligado, somente 30/60 podem usar uma faixa variável publicada pela câmera; o app nunca inventa quadros.")
         thermal = addSwitch(
             "Proteção contra temperatura crítica",
             "Antes de iniciar, verifica a condição térmica do aparelho para evitar começar uma captura quando o sistema já está em estado crítico.",
@@ -1372,6 +1378,7 @@ class SettingsActivity : FragmentActivity() {
     ): CaptureSettings.Snapshot = base.copy(
         resolution = resolutionValue,
         fps = fpsValue,
+        autoFpsLowLight = autoFpsLowLight.isChecked,
         codec = selected(codec),
         bitrateMbps = selected(bitrate).toIntOrNull()?.coerceIn(4, 240) ?: base.bitrateMbps,
         iFrameIntervalSeconds = selected(iframe).toInt(),
@@ -2144,6 +2151,7 @@ class SettingsActivity : FragmentActivity() {
         val features = selectedCameraFeatures()
         val activeFps = if (::fps.isInitialized) selected(fps).toIntOrNull() ?: CaptureSettings.snapshot(this).fps else CaptureSettings.snapshot(this).fps
         val specs = listOf(
+            FeatureOptionSpec(CaptureSettings.STABILIZATION_AUTO, "Automática (estilo iPhone)", "Escolhe Preview stabilization, EIS, OIS ou Off conforme o formato e as capacidades. Acima de 60 FPS prioriza cadência."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_PREVIEW, "Preview stabilization", "Estabilização avançada da câmera."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_EIS, "EIS eletrônica", "Recorta a imagem e usa processamento eletrônico."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_OIS, "OIS óptica", "Usa o movimento físico da lente."),
@@ -2151,7 +2159,9 @@ class SettingsActivity : FragmentActivity() {
         )
         fun directSupport(value: String): Support =
             features?.stabilizationSupport(value) ?: Support.UNVERIFIED
-        return featureOptions(specs, currentValue) { value -> if (value == CaptureSettings.STABILIZATION_OFF) Support.SUPPORTED else directSupport(value) }
+        return featureOptions(specs, currentValue) { value ->
+            if (value == CaptureSettings.STABILIZATION_OFF || value == CaptureSettings.STABILIZATION_AUTO) Support.SUPPORTED else directSupport(value)
+        }
     }
 
     private fun focusOptions(currentValue: String): List<ChoiceSpinnerAdapter.Option> {

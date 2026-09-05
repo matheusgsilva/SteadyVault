@@ -638,7 +638,7 @@ class CaptureService : Service() {
         cachedConfiguration
             ?.takeIf { it.signature == signature }
             ?.takeIf { matchesRequestedMode(it.camera, targetFps) }
-            ?.takeIf { it.camera.hasExactFpsRange() }
+            ?.takeIf { it.camera.matchesRequestedFpsContract() }
             ?.takeIf { preferredCameraCompatible(it.camera) }
             ?.takeIf { profileSatisfiesExplicitStabilization(it.camera) }
             ?.let { return it.camera to it.encoder }
@@ -730,6 +730,7 @@ class CaptureService : Service() {
         targetFps,
         recordingSettings.codec,
         recordingSettings.bitrateMbps,
+        recordingSettings.autoFpsLowLight,
         allowHdr,
         recordingSettings.stabilization,
         recordingSettings.focusMode,
@@ -768,7 +769,7 @@ class CaptureService : Service() {
                 characteristics = characteristics,
                 videoSize = size,
                 targetFps = targetFps,
-                fpsRange = Range(targetFps, targetFps),
+                fpsRange = resolveStandardFpsRange(characteristics, targetFps),
                 highSpeed = false,
                 dynamicRangeProfile = dynamicRange
             )
@@ -836,14 +837,33 @@ class CaptureService : Service() {
             if (targetFps >= CaptureModeStore.FPS_120) {
                 return resolveRegularHighFpsRange(characteristics, size, targetFps)
             }
-            // 30/60 mantêm exatamente o comportamento CLEAN já validado.
-            return Range(targetFps, targetFps)
+            return resolveStandardFpsRange(characteristics, targetFps)
         }
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return null
         val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }
             .getOrDefault(emptyList())
         return selectTargetFpsRange(ranges, targetFps)
+    }
+
+    /**
+     * Equivalente Android do Auto FPS do iPhone: permanece desligado por padrão.
+     * Quando habilitado, 30/60 usam apenas uma faixa variável que a própria HAL
+     * publica e cujo teto é exatamente o FPS escolhido. Nunca se aplica a 120/240.
+     */
+    private fun resolveStandardFpsRange(
+        characteristics: CameraCharacteristics,
+        targetFps: Int
+    ): Range<Int> {
+        val exact = Range(targetFps, targetFps)
+        if (!recordingSettings.autoFpsLowLight || targetFps !in setOf(CaptureModeStore.FPS_30, CaptureModeStore.FPS_60)) {
+            return exact
+        }
+        val ranges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.filter { it.upper == targetFps && it.lower < targetFps }
+            .orEmpty()
+        // Prefere a menor variação possível (ex.: 30-60 em vez de 15-60).
+        return ranges.maxByOrNull { it.lower } ?: exact
     }
 
     private fun resolveRegularHighFpsRange(
@@ -904,6 +924,12 @@ class CaptureService : Service() {
 
     private fun CameraProfile.hasExactFpsRange(): Boolean =
         fpsRange.lower == targetFps && fpsRange.upper == targetFps
+
+    private fun CameraProfile.matchesRequestedFpsContract(): Boolean = when {
+        highSpeed || targetFps >= CaptureModeStore.FPS_120 -> hasExactFpsRange()
+        !recordingSettings.autoFpsLowLight -> hasExactFpsRange()
+        else -> fpsRange.upper == targetFps && fpsRange.lower <= targetFps
+    }
 
     private fun Size.toPolicyDimensions() = StrictCaptureModePolicy.Dimensions(width, height)
 
@@ -1518,26 +1544,28 @@ class CaptureService : Service() {
         runCatching {
             armRecorderForFirstFrame(token)
             val manualSensor = supportsManualSensor(profile)
-            if (!profile.hdrHlg10 && manualSensor) {
-                // Preview aberto já fornece exposição recente e não adiciona atraso.
-                // Captura headless (widget/tela preta) ignora valor antigo e mede a cena atual.
-                val recent = if (headlessCaptureRequested) {
-                    null
-                } else {
-                    Camera3AStateStore.recentExposure(profile.cameraId)
+            if (
+                !recordingSettings.autoFpsLowLight &&
+                profile.targetFps == CaptureModeStore.FPS_60 &&
+                !profile.hdrHlg10 &&
+                manualSensor
+            ) {
+                // Caminho AE60 CLEAN medido como o mais estável no S25 Ultra.
+                // 30 FPS nunca entra aqui. Não existe warm-up especial do widget.
+                val recent = Camera3AStateStore.recentExposure(profile.cameraId)
+                val immediatePlan = recent?.let {
+                    fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso)
                 }
-                val immediatePlan = recent?.let { fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso) }
                 if (immediatePlan != null) {
                     val fixedRequest = buildFixedCadenceRequest(profile, immediatePlan)
                         ?: throw IllegalStateException("câmera não disponível para request de cadência fixa")
                     session.setRepeatingRequest(fixedRequest, null, mainHandler)
                     commitRecorderStart(profile, token, highSpeed = false)
-                } else if (headlessCaptureRequested) {
-                    startHeadlessFastExposureWarmup(session, request, profile, token)
                 } else {
                     startWithFixedSensorCadence(session, request, profile, token)
                 }
             } else {
+                // 30 FPS e Auto FPS seguem AE contínuo, como o comportamento do AVFoundation.
                 session.setRepeatingRequest(request, null, mainHandler)
                 commitRecorderStart(profile, token, highSpeed = false)
             }
@@ -1559,61 +1587,6 @@ class CaptureService : Service() {
      * Se houver exposição/ISO válidos, a cadência é congelada antes do primeiro sample.
      * Se não houver, inicia imediatamente com o request CLEAN automático, sem esperar mais.
      */
-    private fun startHeadlessFastExposureWarmup(
-        session: CameraCaptureSession,
-        autoRequest: CaptureRequest,
-        profile: CameraProfile,
-        token: Int
-    ) {
-        val resolved = AtomicBoolean(false)
-        val completed = AtomicInteger(0)
-        var candidateRequest: CaptureRequest? = null
-        val minFramesForLock = if (profile.targetFps <= 30) 1 else 2
-
-        fun finish(requestToUse: CaptureRequest?) {
-            if (!isAttemptValid(token) || !resolved.compareAndSet(false, true)) return
-            runCatching {
-                session.setRepeatingRequest(requestToUse ?: autoRequest, null, mainHandler)
-                commitRecorderStart(profile, token, highSpeed = false)
-            }.onFailure {
-                failSelectedConfigurationFromWorker(
-                    token,
-                    "não foi possível concluir o aquecimento rápido da exposição: ${errorText(it)}"
-                )
-            }
-        }
-
-        val callback = object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(
-                captureSession: CameraCaptureSession,
-                request: CaptureRequest,
-                result: TotalCaptureResult
-            ) {
-                if (!isAttemptValid(token) || resolved.get()) return
-
-                val frameCount = completed.incrementAndGet()
-                val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
-                val sensitivityIso = result.get(CaptureResult.SENSOR_SENSITIVITY)
-                val plan = if (exposureNs != null && sensitivityIso != null) {
-                    fixedCadencePlan(profile, exposureNs, sensitivityIso)
-                } else null
-                val fixedRequest = plan?.let { buildFixedCadenceRequest(profile, it) }
-                if (fixedRequest != null) candidateRequest = fixedRequest
-
-                when {
-                    candidateRequest != null && frameCount >= minFramesForLock -> finish(candidateRequest)
-                    frameCount >= HEADLESS_AE_WARMUP_MAX_FRAMES -> finish(candidateRequest)
-                }
-            }
-        }
-
-        session.setRepeatingRequest(autoRequest, callback, mainHandler)
-        mainHandler.postDelayed(
-            { finish(candidateRequest) },
-            HEADLESS_AE_WARMUP_MAX_MS
-        )
-    }
-
     private fun startWithFixedSensorCadence(
         session: CameraCaptureSession,
         autoRequest: CaptureRequest,
@@ -2029,13 +2002,6 @@ class CaptureService : Service() {
             CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES
         ) ?: intArrayOf()
 
-        if (profile.targetFps >= CaptureModeStore.FPS_60) {
-            if (modes.contains(CameraMetadata.TONEMAP_MODE_FAST)) {
-                setSafely(builder, CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_FAST)
-            }
-            return
-        }
-
         val wantsCurve = recordingSettings.colorProfile == CaptureSettings.COLOR_SOFT ||
             recordingSettings.colorProfile == CaptureSettings.COLOR_FLAT
         if (wantsCurve && modes.contains(CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)) {
@@ -2065,6 +2031,13 @@ class CaptureService : Service() {
             return
         }
 
+        if (profile.targetFps >= CaptureModeStore.FPS_60) {
+            if (modes.contains(CameraMetadata.TONEMAP_MODE_FAST)) {
+                setSafely(builder, CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_FAST)
+            }
+            return
+        }
+
         when {
             profile.targetFps <= CaptureModeStore.FPS_30 &&
                 modes.contains(CameraMetadata.TONEMAP_MODE_HIGH_QUALITY) ->
@@ -2082,7 +2055,7 @@ class CaptureService : Service() {
     ) {
         // Regra fixa: o SteadyVault não substituirá a estabilização escolhida; tenta o modo
         // exato no CaptureRequest e só reporta incompatibilidade se a HAL real recusar.
-        val requested = requestedStabilizationMode()
+        val requested = requestedStabilizationMode(profile)
 
         fun setVideoModeRequired(mode: Int) {
             builder.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, mode)
@@ -2121,11 +2094,24 @@ class CaptureService : Service() {
         }
     }
 
-    private fun requestedStabilizationMode(): RecordingStabilizationPolicy.Mode = when (recordingSettings.stabilization) {
-        CaptureSettings.STABILIZATION_PREVIEW -> RecordingStabilizationPolicy.Mode.PREVIEW
-        CaptureSettings.STABILIZATION_EIS -> RecordingStabilizationPolicy.Mode.EIS
-        CaptureSettings.STABILIZATION_OIS -> RecordingStabilizationPolicy.Mode.OIS
-        else -> RecordingStabilizationPolicy.Mode.OFF
+    private fun requestedStabilizationMode(profile: CameraProfile): RecordingStabilizationPolicy.Mode {
+        if (recordingSettings.stabilization == CaptureSettings.STABILIZATION_AUTO) {
+            if (profile.highSpeed || profile.targetFps > CaptureModeStore.FPS_60) {
+                return RecordingStabilizationPolicy.Mode.OFF
+            }
+            return when {
+                profile.previewStabilizationSupported -> RecordingStabilizationPolicy.Mode.PREVIEW
+                profile.eisSupported -> RecordingStabilizationPolicy.Mode.EIS
+                profile.oisSupported -> RecordingStabilizationPolicy.Mode.OIS
+                else -> RecordingStabilizationPolicy.Mode.OFF
+            }
+        }
+        return when (recordingSettings.stabilization) {
+            CaptureSettings.STABILIZATION_PREVIEW -> RecordingStabilizationPolicy.Mode.PREVIEW
+            CaptureSettings.STABILIZATION_EIS -> RecordingStabilizationPolicy.Mode.EIS
+            CaptureSettings.STABILIZATION_OIS -> RecordingStabilizationPolicy.Mode.OIS
+            else -> RecordingStabilizationPolicy.Mode.OFF
+        }
     }
 
     private fun stabilizationModeLabel(mode: RecordingStabilizationPolicy.Mode): String = when (mode) {
@@ -2622,6 +2608,9 @@ class CaptureService : Service() {
 
     private fun stabilizationName(profile: CameraProfile): String {
         if (profile.highSpeed) return "sem estabilização (high-speed)"
+        if (recordingSettings.stabilization == CaptureSettings.STABILIZATION_AUTO) {
+            return "auto → ${stabilizationModeLabel(requestedStabilizationMode(profile))}"
+        }
         return when (recordingSettings.stabilization) {
             CaptureSettings.STABILIZATION_PREVIEW -> "preview stabilization"
             CaptureSettings.STABILIZATION_EIS -> "EIS"
@@ -2837,7 +2826,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "highspeed-cadence-regular-first-1.8.257"
+        private const val CAPTURE_PIPELINE_REVISION = "ios-like-ae-clean-1.8.257"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
@@ -2874,9 +2863,7 @@ class CaptureService : Service() {
         private const val FRAME_DURATION_TOLERANCE_NS =
             50_000L
 
-        private const val HEADLESS_AE_WARMUP_MAX_MS = 50L
         private const val HIGH_FPS_FRAME_TOLERANCE_NS = 500_000L
-        private const val HEADLESS_AE_WARMUP_MAX_FRAMES = 3
 
         private const val RAW_FILE_PREFIX = "steadyvault_raw_"
         private const val STALE_RAW_FILE_MIN_AGE_MS = 60_000L

@@ -13,6 +13,7 @@ object CaptureSettings {
     const val CODEC_HEVC = "HEVC"
     const val CODEC_AVC = "AVC"
 
+    const val STABILIZATION_AUTO = "AUTO"
     const val STABILIZATION_PREVIEW = "PREVIEW"
     const val STABILIZATION_EIS = "EIS"
     const val STABILIZATION_OIS = "OIS"
@@ -62,6 +63,7 @@ object CaptureSettings {
     data class Snapshot(
         val resolution: String,
         val fps: Int,
+        val autoFpsLowLight: Boolean,
         val codec: String,
         val bitrateMbps: Int,
         val iFrameIntervalSeconds: Int,
@@ -129,6 +131,7 @@ object CaptureSettings {
         return Snapshot(
             resolution = resolution,
             fps = fps,
+            autoFpsLowLight = prefs.getBoolean("auto_fps_low_light", false),
             codec = codec,
             bitrateMbps = storedBitrate,
             iFrameIntervalSeconds = prefs.getInt("iframe_interval", 2).coerceIn(1, 10),
@@ -169,6 +172,7 @@ object CaptureSettings {
             .putString("resolution", normalized.resolution)
             .putString(resolutionKey(normalized.fps), normalized.resolution)
             .putInt("fps", normalized.fps)
+            .putBoolean("auto_fps_low_light", normalized.autoFpsLowLight)
             .putString("codec", normalized.codec)
             .putInt("bitrate_mbps", normalized.bitrateMbps)
             .putInt("iframe_interval", normalized.iFrameIntervalSeconds)
@@ -282,6 +286,6 @@ object CaptureSettings {
     private fun resolutionKey(fps: Int) = "resolution_$fps"
     private val SUPPORTED_RESOLUTIONS = linkedSetOf(RESOLUTION_8K, RESOLUTION_4K, RESOLUTION_1080P, RESOLUTION_720P)
     private val SUPPORTED_CODECS = linkedSetOf(CODEC_HEVC, CODEC_AVC)
-    private val SUPPORTED_STABILIZATIONS = linkedSetOf(STABILIZATION_PREVIEW, STABILIZATION_EIS, STABILIZATION_OIS, STABILIZATION_OFF)
+    private val SUPPORTED_STABILIZATIONS = linkedSetOf(STABILIZATION_AUTO, STABILIZATION_PREVIEW, STABILIZATION_EIS, STABILIZATION_OIS, STABILIZATION_OFF)
     private val SUPPORTED_FPS = linkedSetOf(30, 60, 120, 240)
 }
