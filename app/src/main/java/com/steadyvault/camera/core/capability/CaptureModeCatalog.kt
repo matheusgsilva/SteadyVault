@@ -111,6 +111,9 @@ object CaptureModeCatalog {
         val safeRequested = requestedResolution.takeIf { it in CaptureSettings.supportedResolutionValues }
             ?: CaptureSettings.RESOLUTION_4K
         if (matrix?.bestMode(safeRequested, fps) != null) return safeRequested
+        if (fps >= CaptureModeStore.FPS_120) {
+            matrix?.maximumMode(fps)?.let { detected -> return detected.resolution }
+        }
         return resolveSelection(context, fps, safeRequested, matrix, scanInProgress).resolutionValue ?: safeRequested
     }
 

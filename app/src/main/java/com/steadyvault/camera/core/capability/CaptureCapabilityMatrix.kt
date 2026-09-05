@@ -23,6 +23,7 @@ import com.steadyvault.camera.capture.timing.StrictCaptureModePolicy
 import com.steadyvault.camera.core.camera.OisSupportPolicy
 import com.steadyvault.camera.core.camera.OpticalStabilizationCapability
 import com.steadyvault.camera.core.capability.HardwareSupportPolicy.Support
+import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
 import org.json.JSONArray
 import org.json.JSONObject
@@ -233,7 +234,7 @@ object CaptureCapabilityMatrix {
 
             for ((resolution, size) in knownSizes()) {
                 if (size !in regularSizes) continue
-                for (fps in CaptureSettings.supportedFpsValues) {
+                for (fps in CaptureSettings.supportedFpsValues.filter { it < CaptureModeStore.FPS_120 }) {
                     // A sessão é testada com a faixa fixa exata; faixa variável nunca confirma um modo.
                     val encoders = encoderCache.getOrPut(Triple(size, fps, false)) {
                         findHardwareEncoders(size, fps, allowRateMetadataFallback = false)
@@ -850,5 +851,5 @@ object CaptureCapabilityMatrix {
 
     private const val CACHE_PREFS = "steadyvault_hardware_capabilities"
     private const val CACHE_KEY = "matrix_json"
-    private const val CACHE_SCHEMA = 7
+    private const val CACHE_SCHEMA = 8
 }

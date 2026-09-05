@@ -5,6 +5,10 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraMetadata
+import android.hardware.camera2.CaptureRequest
 import android.media.MediaFormat
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
@@ -36,6 +40,7 @@ import com.steadyvault.camera.core.capability.HardwareSupportPolicy.Support
 import com.steadyvault.camera.core.capability.PowerPolicy
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.playback.PlaybackSettings
+import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.settings.CameraProfileStore
 import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
@@ -325,7 +330,7 @@ class SettingsActivity : FragmentActivity() {
             ),
             snapshot.iFrameIntervalSeconds.toString()
         )
-        addInfo("Pipeline único do encoder: prioridade em tempo real, VBR quando suportado, B-frames desativados, baixa latência, taxa operacional exata e descarte de frames bloqueado.")
+        addInfo("Pipeline direto Camera2 → Surface → MediaRecorder. O bitrate escolhido é enviado como taxa-alvo; CBR/VBR e demais decisões de rate control ficam a cargo do encoder de hardware/OEM, sem MediaCodec manual.")
         hdr = addSwitch(
             "HDR HLG10",
             "Usa HEVC Main10, BT.2020 HLG e faixa limitada. Combinações incompatíveis são informadas em vez de serem trocadas silenciosamente.",
@@ -2290,8 +2295,7 @@ class SettingsActivity : FragmentActivity() {
     }
 
     private fun colorProfileOptions(settings: CaptureSettings.Snapshot): List<ChoiceSpinnerAdapter.Option> {
-        val customSupported = !settings.hdrHlg10 &&
-            settings.fps < 60
+        val customSupport = customColorProfileSupport(settings)
         return featureOptions(
             specs = listOf(
                 FeatureOptionSpec(CaptureSettings.COLOR_NATURAL, "Natural", "BT.709 limitado e tons equilibrados."),
@@ -2300,7 +2304,29 @@ class SettingsActivity : FragmentActivity() {
             ),
             currentValue = settings.colorProfile
         ) { value ->
-            if (value == CaptureSettings.COLOR_NATURAL || customSupported) Support.SUPPORTED else Support.UNSUPPORTED
+            if (value == CaptureSettings.COLOR_NATURAL) Support.SUPPORTED else customSupport
+        }
+    }
+
+    private fun customColorProfileSupport(settings: CaptureSettings.Snapshot): Support {
+        if (settings.hdrHlg10 || settings.fps >= CaptureModeStore.FPS_120) return Support.UNSUPPORTED
+        val cameraId = (
+            settings.selectedCameraId
+                ?: CameraLensCatalog.resolveCameraId(this, null, settings.resolution)
+        ) ?: return Support.UNVERIFIED
+        val characteristics = runCatching {
+            getSystemService(CameraManager::class.java).getCameraCharacteristics(cameraId)
+        }.getOrNull() ?: return Support.UNVERIFIED
+        val modes = runCatching {
+            characteristics.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES)
+        }.getOrNull()
+        val requestKeys = runCatching { characteristics.availableCaptureRequestKeys.toSet() }
+            .getOrDefault(emptySet())
+        return when {
+            modes?.contains(CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE) == true &&
+                CaptureRequest.TONEMAP_CURVE in requestKeys -> Support.SUPPORTED
+            modes == null && CaptureRequest.TONEMAP_CURVE in requestKeys -> Support.UNVERIFIED
+            else -> Support.UNSUPPORTED
         }
     }
 

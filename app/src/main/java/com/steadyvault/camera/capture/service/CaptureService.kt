@@ -17,6 +17,8 @@ import com.steadyvault.camera.core.camera.CameraResourceCoordinator
 import com.steadyvault.camera.core.camera.OpticalStabilizationCapability
 import com.steadyvault.camera.core.camera.WhiteBalanceCorrection
 import com.steadyvault.camera.core.camera.CctWhiteBalanceController
+import com.steadyvault.camera.core.capability.CaptureCapabilityMatrix
+import com.steadyvault.camera.core.capability.CaptureModeCatalog
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.settings.CameraProfileStore
@@ -282,7 +284,25 @@ class CaptureService : Service() {
         activeRecorderBackendName = ""
         activeRecorderMime = null
         fpsFallbackWarningLogged = false
-        if (requestedTargetFps != recordingSettings.fps) recordingSettings = recordingSettings.copy(fps = requestedTargetFps)
+        val storedTargetResolution = CaptureSettings.resolutionForFps(this, requestedTargetFps)
+        val resolvedTargetResolution = CaptureModeCatalog.preferredResolution(
+            context = this,
+            fps = requestedTargetFps,
+            requestedResolution = storedTargetResolution,
+            matrix = CaptureCapabilityMatrix.cached(this)?.forCamera(profileCameraId)
+        )
+        if (resolvedTargetResolution != storedTargetResolution) {
+            CaptureSettings.saveResolutionForFps(this, requestedTargetFps, resolvedTargetResolution)
+        }
+        if (
+            requestedTargetFps != recordingSettings.fps ||
+            resolvedTargetResolution != recordingSettings.resolution
+        ) {
+            recordingSettings = recordingSettings.copy(
+                fps = requestedTargetFps,
+                resolution = resolvedTargetResolution
+            )
+        }
         userRequestedStop = false
         stopHapticAcknowledged = false
         stopping.set(false)
@@ -661,37 +681,27 @@ class CaptureService : Service() {
         // 120/240 FPS continuam dependentes da lista high-speed porque exigem uma
         // sessão de alta velocidade válida segundo a API pública do Camera2.
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
-        val regularSizes = linkedSetOf<Size>().apply {
-            runCatching { map.getOutputSizes(ImageFormat.PRIVATE)?.toList().orEmpty() }
-                .getOrDefault(emptyList()).let(::addAll)
-            runCatching { map.getOutputSizes(MediaCodec::class.java)?.toList().orEmpty() }
-                .getOrDefault(emptyList()).let(::addAll)
-            runCatching { map.getOutputSizes(MediaRecorder::class.java)?.toList().orEmpty() }
-                .getOrDefault(emptyList()).let(::addAll)
-        }
         val highSpeedSizes = runCatching { map.highSpeedVideoSizes?.toSet().orEmpty() }
             .getOrDefault(emptySet())
 
         for ((size, fps) in configurationRequestOrder(targetFps)) {
-            if (fps != targetFps) continue
-            for (highSpeed in listOf(true, false)) {
-                if (highSpeed && size !in highSpeedSizes) continue
-                if (!highSpeed && size !in regularSizes) continue
-                val fpsRange = resolveFpsRange(characteristics, size, fps, highSpeed) ?: continue
-                val profile = createCameraProfile(
-                    cameraId = cameraId,
-                    characteristics = characteristics,
-                    videoSize = size,
-                    targetFps = fps,
-                    fpsRange = fpsRange,
-                    highSpeed = highSpeed,
-                    dynamicRangeProfile = dynamicRange
-                )
-                if (!matchesRequestedMode(profile, targetFps)) continue
-                if (!profileSatisfiesExplicitStabilization(profile)) continue
-                val encoder = selectDirectRecorderEncoder(profile) ?: continue
-                if (profile.hasExactFpsRange()) return profile to encoder
-            }
+            if (fps != targetFps || size !in highSpeedSizes) continue
+            // 120/240 são contrato de constrained high-speed. Nunca caia para sessão
+            // regular, pois ela pode aceitar a Surface e ainda entregar apenas ~60 FPS.
+            val fpsRange = resolveFpsRange(characteristics, size, fps, highSpeed = true) ?: continue
+            val profile = createCameraProfile(
+                cameraId = cameraId,
+                characteristics = characteristics,
+                videoSize = size,
+                targetFps = fps,
+                fpsRange = fpsRange,
+                highSpeed = true,
+                dynamicRangeProfile = dynamicRange
+            )
+            if (!matchesRequestedMode(profile, targetFps)) continue
+            if (!profileSatisfiesExplicitStabilization(profile)) continue
+            val encoder = selectDirectRecorderEncoder(profile) ?: continue
+            if (profile.hasExactFpsRange()) return profile to encoder
         }
         return null
     }
