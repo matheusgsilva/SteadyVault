@@ -1,4 +1,4 @@
-name: SteadyVault 1.8.131 test package
+name: SteadyVault 1.8.131 FPS exposure diagnostic
 
 on:
   push:
@@ -9,23 +9,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Apply focused fixes
+      - name: Apply diagnostic patch
         run: python3 tools/apply_131_test_fixes.py
       - name: Audit
         run: |
           grep -q 'CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange' app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt
+          grep -q 'CaptureExposureFpsTrace' app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt
+          grep -q 'Rastreio FPS + exposição' app/src/main/java/com/steadyvault/camera/ui/settings/DiagnosticsActivity.kt
           grep -q 'support != Support.UNSUPPORTED' app/src/main/java/com/steadyvault/camera/core/capability/HardwareSupportPolicy.kt
           grep -q 'source != Source.UNAVAILABLE' app/src/main/java/com/steadyvault/camera/core/capability/CaptureModeCatalog.kt
           grep -q 'versionName = "1.8.131"' app/build.gradle.kts
-          grep -q 'versionCode = 1000132' app/build.gradle.kts
+          grep -q 'versionCode = 1000133' app/build.gradle.kts
           git diff --check
           echo STATIC_AUDIT_OK
       - name: Package source
         run: |
           rm -rf .git
-          zip -qr /tmp/SteadyVault_1.8.131_FPS_SETTINGS_FIX.zip .
+          zip -qr /tmp/SteadyVault_1.8.131_FPS_EXPOSURE_DIAG.zip .
       - uses: actions/upload-artifact@v4
         with:
-          name: SteadyVault_1.8.131_FPS_SETTINGS_FIX
-          path: /tmp/SteadyVault_1.8.131_FPS_SETTINGS_FIX.zip
+          name: SteadyVault_1.8.131_FPS_EXPOSURE_DIAG
+          path: /tmp/SteadyVault_1.8.131_FPS_EXPOSURE_DIAG.zip
           if-no-files-found: error
