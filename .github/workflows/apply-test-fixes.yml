@@ -1,0 +1,134 @@
+name: Apply SteadyVault 1.8.131 test fixes
+
+on:
+  push:
+    branches:
+      - test-1.8.131-fps-settings-fix
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fixes:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply focused fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one match, found {count}: {old!r}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'app/build.gradle.kts',
+              'versionCode = 466\n        versionName = "1.8.266"',
+              'versionCode = 1000132\n        versionName = "1.8.131-FIX"'
+          )
+
+          replace_once(
+              'app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt',
+              'setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)\n            setSafely(builder, CaptureRequest.SENSOR_FRAME_DURATION, manualCadence.frameDurationNs)',
+              'setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)\n            setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)\n            setSafely(builder, CaptureRequest.SENSOR_FRAME_DURATION, manualCadence.frameDurationNs)'
+          )
+
+          replace_once(
+              'app/src/main/java/com/steadyvault/camera/core/capability/HardwareSupportPolicy.kt',
+              'fun shouldExpose(support: Support): Boolean = support == Support.SUPPORTED\n\n    fun isSelectable(support: Support): Boolean = support == Support.SUPPORTED',
+              'fun shouldExpose(support: Support): Boolean = support != Support.UNSUPPORTED\n\n    fun isSelectable(support: Support): Boolean = support != Support.UNSUPPORTED'
+          )
+
+          catalog = Path('app/src/main/java/com/steadyvault/camera/core/capability/CaptureModeCatalog.kt')
+          text = catalog.read_text(encoding='utf-8')
+          old = 'val selectable: Boolean get() = source == Source.VALIDATED || source == Source.DETECTED || source == Source.CACHED'
+          if text.count(old) != 1:
+              raise SystemExit('CaptureModeCatalog selectable rule not found exactly once')
+          text = text.replace(old, 'val selectable: Boolean get() = source != Source.UNAVAILABLE', 1)
+
+          old = '''                matrix != null -> unavailable(fps)
+                scanInProgress -> Profile(fps, null, "Analisando", Source.ANALYZING)
+                else -> Profile(fps, null, "Não validado", Source.UNVERIFIED)'''
+          new = '''                matrix != null && fps >= CaptureModeStore.FPS_120 -> unavailable(fps)
+                matrix != null -> Profile(fps, null, "Não validado", Source.UNVERIFIED)
+                scanInProgress -> Profile(fps, null, "Analisando", Source.ANALYZING)
+                else -> Profile(fps, null, "Não validado", Source.UNVERIFIED)'''
+          if text.count(old) != 1:
+              raise SystemExit('CaptureModeCatalog regular-mode matrix rule not found exactly once')
+          text = text.replace(old, new, 1)
+
+          old = '''        if (matrix != null) return unavailable(fps)
+        val fpsCapability = resolve(context, matrix, scanInProgress).profile(fps)'''
+          new = '''        if (matrix != null && fps >= CaptureModeStore.FPS_120) return unavailable(fps)
+        if (matrix != null) {
+            return Profile(
+                fps,
+                safeResolution,
+                CaptureSettings.resolutionLabel(safeResolution),
+                Source.UNVERIFIED,
+                highSpeed = false
+            )
+        }
+        val fpsCapability = resolve(context, matrix, scanInProgress).profile(fps)'''
+          if text.count(old) != 1:
+              raise SystemExit('CaptureModeCatalog selection matrix rule not found exactly once')
+          text = text.replace(old, new, 1)
+          catalog.write_text(text, encoding='utf-8')
+
+          verify = Path('tools/verify_project.py')
+          if verify.is_file():
+              text = verify.read_text(encoding='utf-8')
+              text = text.replace('versionName = "1.8.266"', 'versionName = "1.8.131-FIX"')
+              text = text.replace('versionCode = 466', 'versionCode = 1000132')
+              verify.write_text(text, encoding='utf-8')
+
+          capture = Path('app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt').read_text(encoding='utf-8')
+          assert 'CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange' in capture
+          policy = Path('app/src/main/java/com/steadyvault/camera/core/capability/HardwareSupportPolicy.kt').read_text(encoding='utf-8')
+          assert 'support != Support.UNSUPPORTED' in policy
+          catalog_text = catalog.read_text(encoding='utf-8')
+          assert 'val selectable: Boolean get() = source != Source.UNAVAILABLE' in catalog_text
+          print('FOCUSED_FIX_AUDIT_OK')
+          PY
+
+      - name: Check diff
+        run: |
+          git diff --check
+          git diff -- app/build.gradle.kts \
+            app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt \
+            app/src/main/java/com/steadyvault/camera/core/capability/HardwareSupportPolicy.kt \
+            app/src/main/java/com/steadyvault/camera/core/capability/CaptureModeCatalog.kt \
+            tools/verify_project.py
+
+      - name: Commit clean test branch
+        shell: bash
+        run: |
+          git config user.name "SteadyVault Test Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/apply-test-fixes.yml
+          git add app/build.gradle.kts \
+            app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt \
+            app/src/main/java/com/steadyvault/camera/core/capability/HardwareSupportPolicy.kt \
+            app/src/main/java/com/steadyvault/camera/core/capability/CaptureModeCatalog.kt \
+            tools/verify_project.py
+          git commit -m "corrige 60 FPS manual e libera opções não confirmadas"
+          git push origin HEAD:test-1.8.131-fps-settings-fix
+
+      - name: Package source
+        run: git archive --format=zip --output=/tmp/SteadyVault_1.8.131_FIX.zip HEAD
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SteadyVault_1.8.131_FIX
+          path: /tmp/SteadyVault_1.8.131_FIX.zip
+          if-no-files-found: error
