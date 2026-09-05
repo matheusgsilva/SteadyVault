@@ -1,0 +1,18 @@
+name: Audit remove highspeed
+
+on:
+  push:
+    branches: [test-1.8.131-highspeed-color-fix]
+    paths:
+      - '.github/workflows/audit-remove-highspeed.yml'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: test-1.8.131-highspeed-color-fix
+      - name: Find 120 240 and high speed code
+        run: |
+          grep -RInE 'FPS_120|FPS_240|120 FPS|240 FPS|120fps|240fps|highSpeed|high-speed|HighSpeed|HIGH_SPEED|getHighSpeed|highSpeedVideo' app/src/main app/build.gradle.kts || true
