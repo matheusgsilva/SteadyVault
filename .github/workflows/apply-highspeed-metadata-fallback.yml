@@ -36,3 +36,5 @@ jobs:
           git add app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt
           git commit -m 'resolve resolução high-speed direto pelos metadados da câmera'
           git push origin HEAD:test-1.8.131-highspeed-color-fix
+
+# final compile validation
