@@ -139,6 +139,15 @@ class VideoOptimizer {
         val dimensions = targetDimensions(analysis, config)
         val codec = chooseCodec(analysis, config.codec, dimensions.first, dimensions.second, targetFps)
         val bitrate = targetBitrate(config, dimensions.first, dimensions.second, targetFps, codec)
+
+        // O container pode declarar uma pequena cauda depois do último PTS de vídeo.
+        // Para reparo CFR a fonte de verdade visual é o span entre primeiro e último PTS.
+        // Isso preenche lacunas reais, mas não cria um quadro quase duplicado no encerramento.
+        val nominalFrameUs = (1_000_000L / targetFps.coerceAtLeast(1)).coerceAtLeast(1L)
+        val visualTimelineUs = analysis.presentationSpanUs.coerceAtLeast(nominalFrameUs)
+        val trimStartUs = config.trimStartUs(visualTimelineUs)
+        val trimEndUs = config.trimEndUs(visualTimelineUs)
+
         progress(3, "Preparando decoder, filtros GPU e encoder por hardware")
         val transcode = HardwareVideoTranscoder().transcode(
             input = input,
@@ -153,7 +162,7 @@ class VideoOptimizer {
                 rateMode = config.rateMode,
                 orientationHint = analysis.rotation,
                 frameRepair = config.frameRepair,
-                sourceDurationUs = analysis.durationUs,
+                sourceDurationUs = visualTimelineUs,
                 sourceFrameCount = analysis.frameCount,
                 keepAudio = config.keepAudio,
                 filters = config.filters,
@@ -162,8 +171,8 @@ class VideoOptimizer {
                 // aiAssisted continua controlando análise/filtros inteligentes, mas não
                 // reduz mais a precisão básica do optical flow quando há frames ausentes.
                 highQualityMotion = config.frameRepair == FrameRepairMode.MOTION_COMPENSATED || config.aiAssisted,
-                trimStartUs = config.trimStartUs(analysis.durationUs),
-                trimEndUs = config.trimEndUs(analysis.durationUs)
+                trimStartUs = trimStartUs,
+                trimEndUs = trimEndUs
             ),
             progress = progress,
             cancelled = cancelled
