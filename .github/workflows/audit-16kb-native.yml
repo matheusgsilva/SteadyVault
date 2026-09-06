@@ -27,13 +27,21 @@ jobs:
           unzip -q "$APK" 'lib/*' -d /tmp/apk16
           echo '===== ELF 16 KB AUDIT ====='
           bad=0
+          checked=0
+          non_elf=0
           while IFS= read -r so; do
             rel=${so#/tmp/apk16/}
             abi=$(echo "$rel" | cut -d/ -f2)
-            # 16 KB page-size devices are 64-bit. Audit arm64 and x86_64 strictly.
             if [[ "$abi" != "arm64-v8a" && "$abi" != "x86_64" ]]; then
               continue
             fi
+            magic=$(od -An -tx1 -N4 "$so" | tr -d ' \n')
+            if [[ "$magic" != "7f454c46" ]]; then
+              echo "NON_ELF   $rel"
+              non_elf=$((non_elf+1))
+              continue
+            fi
+            checked=$((checked+1))
             aligns=$(readelf -lW "$so" | awk '$1=="LOAD" {print $NF}')
             file_bad=0
             for a in $aligns; do
@@ -47,8 +55,14 @@ jobs:
               echo "ALIGNED   $rel LOAD_ALIGN=[$(echo $aligns | tr '\n' ' ')]"
             fi
           done < <(find /tmp/apk16/lib -type f -name '*.so' | sort)
+          echo "ELF_CHECKED_COUNT=$checked"
+          echo "NON_ELF_WRAPPER_COUNT=$non_elf"
           echo "ELF_UNALIGNED_COUNT=$bad"
           echo '===== ZIPALIGN 16 KB AUDIT ====='
           ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)
-          "$ZIPALIGN" -c -P 16 -v 4 "$APK" || true
-          # Auditoria inicial é diagnóstica: não falhe antes de listar todas as libs.
+          "$ZIPALIGN" -c -P 16 -v 4 "$APK" || echo 'ZIPALIGN_16KB_CHECK_FAILED (native libs are extracted at install because extractNativeLibs=true)'
+          if (( bad > 0 )); then
+            echo "16 KB ELF audit failed: $bad unaligned 64-bit native libraries"
+            exit 1
+          fi
+          echo '16 KB ELF audit passed: all 64-bit ELF LOAD segments are >= 0x4000'
