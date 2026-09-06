@@ -1,0 +1,44 @@
+name: Validate HFR vault final
+
+on:
+  push:
+    branches:
+      - test-1.8.131-motion-gap-repair
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: test-1.8.131-motion-gap-repair
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Apply final patch
+        run: python3 tools/finalize_hfr_vault_fix.py
+      - name: Static audit
+        run: |
+          if grep -q 'setCaptureRate' app/src/main/java/com/steadyvault/camera/capture/recorder/DirectMediaRecorderBackend.kt; then exit 1; fi
+          if grep -q 'highSpeedCapture' app/src/main/java/com/steadyvault/camera/capture/recorder/DirectMediaRecorderBackend.kt; then exit 1; fi
+          grep -q 'selectAlternateHighFpsConfiguration' app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt
+          grep -q 'targetFps == CaptureModeStore.FPS_120' app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt
+          grep -q 'HighFpsCadenceValidator.inspect' app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt
+          grep -q 'it.status != Status.RUNNING' app/src/main/java/com/steadyvault/camera/processing/auto/AutoGapRepairQueueStore.kt
+          grep -q 'Original •' app/src/main/java/com/steadyvault/camera/ui/vault/PrimaryVaultActivity.kt
+          grep -q 'CaptureCapabilityMatrix.scan(applicationContext' app/src/main/java/com/steadyvault/camera/ui/capture/CaptureActivity.kt
+          if grep -Rni --include='*.kt' --include='*.xml' 'iphone' app/src/main; then exit 1; fi
+      - name: Compile and assemble APK
+        run: bash ./gradlew :app:compileDebugKotlin :app:assembleDebug --no-daemon
+      - name: Commit app changes
+        run: |
+          git config user.name 'matheusgsilva'
+          git config user.email '49157527+matheusgsilva@users.noreply.github.com'
+          git add app
+          git commit -m 'finaliza HFR e experiencia de processamento no cofre'
+          git push origin HEAD:test-1.8.131-motion-gap-repair
