@@ -4,6 +4,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -13,7 +14,10 @@ data class VideoAnalysis(
     val height: Int,
     val rotation: Int,
     val durationUs: Long,
+    /** Distância real entre o primeiro e o último PTS do vídeo, sem duração de cauda do container. */
+    val presentationSpanUs: Long,
     val frameCount: Int,
+    /** FPS efetivo resolvido pela cadência. Nunca usa um harmônico enganoso do container como fonte de verdade. */
     val estimatedFps: Int,
     val nominalFpsConfidence: Int,
     val exactFps: Double,
@@ -41,6 +45,8 @@ data class VideoAnalysis(
         }
 
     companion object {
+        private val FPS_CANDIDATES = intArrayOf(24, 25, 30, 48, 50, 60, 90, 120, 144, 240)
+
         fun read(file: File): VideoAnalysis {
             require(file.isFile && file.length() > 0L) { "Vídeo de origem inválido" }
             val metadata = readMetadata(file)
@@ -92,8 +98,7 @@ data class VideoAnalysis(
                 var meanDelta = 0.0
                 var deltaM2 = 0.0
                 var deltaCount = 0
-                val fpsCandidates = intArrayOf(24, 25, 30, 48, 50, 60, 90, 120, 144, 240)
-                val fpsCandidateCounts = IntArray(fpsCandidates.size)
+                val fpsCandidateCounts = IntArray(FPS_CANDIDATES.size)
 
                 while (extractor.sampleTrackIndex >= 0) {
                     val pts = extractor.sampleTime
@@ -110,9 +115,12 @@ data class VideoAnalysis(
                             val instantaneousFps = 1_000_000.0 / delta.toDouble()
                             var closestIndex = -1
                             var closestError = Double.MAX_VALUE
-                            fpsCandidates.forEachIndexed { index, candidate ->
-                                val error = kotlin.math.abs(instantaneousFps - candidate.toDouble()) / candidate.toDouble()
-                                if (error < closestError) { closestError = error; closestIndex = index }
+                            FPS_CANDIDATES.forEachIndexed { index, candidate ->
+                                val error = abs(instantaneousFps - candidate.toDouble()) / candidate.toDouble()
+                                if (error < closestError) {
+                                    closestError = error
+                                    closestIndex = index
+                                }
                             }
                             if (closestIndex >= 0 && closestError <= 0.14) fpsCandidateCounts[closestIndex]++
                             val difference = delta - meanDelta
@@ -128,13 +136,39 @@ data class VideoAnalysis(
 
                 require(frameCount > 0) { "O vídeo não possui quadros legíveis" }
                 val spanUs = max(1L, lastPts - firstPts)
-                val exactFps = if (frameCount > 1) (frameCount - 1L) * 1_000_000.0 / spanUs.toDouble() else 30.0
+                val exactFps = if (frameCount > 1) {
+                    (frameCount - 1L) * 1_000_000.0 / spanUs.toDouble()
+                } else 30.0
+
                 val bestCandidateIndex = fpsCandidateCounts.indices.maxByOrNull { fpsCandidateCounts[it] } ?: -1
                 val bestCandidateCount = bestCandidateIndex.takeIf { it >= 0 }?.let { fpsCandidateCounts[it] } ?: 0
-                val nominalFpsConfidence = if (deltaCount > 0) (bestCandidateCount * 100 / deltaCount).coerceIn(0, 100) else 0
-                val estimatedFps = if (bestCandidateCount >= 4 && nominalFpsConfidence >= 30) {
-                    fpsCandidates[bestCandidateIndex]
-                } else exactFps.roundToInt().coerceIn(1, 240)
+                val histogramConfidence = if (deltaCount > 0) {
+                    (bestCandidateCount * 100 / deltaCount).coerceIn(0, 100)
+                } else 0
+
+                // Fonte principal: quantidade de quadros / span real. Isso evita o falso 120 FPS
+                // que alguns parsers inferem quando uma gravação de 60 FPS possui deltas de
+                // 25/33 ms: o GCD dos timestamps pode sugerir 120 mesmo sem haver 120 quadros/s.
+                val exactCandidateIndex = FPS_CANDIDATES.indices.minByOrNull { index ->
+                    abs(exactFps - FPS_CANDIDATES[index].toDouble()) / FPS_CANDIDATES[index].toDouble()
+                } ?: -1
+                val exactCandidate = exactCandidateIndex.takeIf { it >= 0 }?.let { FPS_CANDIDATES[it] }
+                val exactCandidateError = exactCandidate?.let {
+                    abs(exactFps - it.toDouble()) / it.toDouble()
+                } ?: Double.MAX_VALUE
+
+                val estimatedFps = when {
+                    // Até 12% de perda de quadros ainda preserva a intenção nominal de captura.
+                    // 59.x -> 60, 118.x -> 120 e ~227 -> 240, sem promover 60 -> 120.
+                    exactCandidate != null && exactCandidateError <= 0.12 -> exactCandidate
+                    bestCandidateCount >= 4 && histogramConfidence >= 30 -> FPS_CANDIDATES[bestCandidateIndex]
+                    else -> exactFps.roundToInt().coerceIn(1, 240)
+                }
+                val exactConfidence = if (exactCandidate != null) {
+                    (100.0 - exactCandidateError * 500.0).roundToInt().coerceIn(0, 100)
+                } else 0
+                val nominalFpsConfidence = maxOf(histogramConfidence, exactConfidence)
+
                 val nominalDeltaUs = (1_000_000.0 / estimatedFps.toDouble()).roundToInt().toLong().coerceAtLeast(1L)
                 val durationUs = when {
                     videoTrackDurationUs > 0L -> videoTrackDurationUs
@@ -163,6 +197,7 @@ data class VideoAnalysis(
                     height = height,
                     rotation = metadata.rotation,
                     durationUs = durationUs,
+                    presentationSpanUs = spanUs,
                     frameCount = frameCount,
                     estimatedFps = estimatedFps,
                     nominalFpsConfidence = nominalFpsConfidence,
@@ -183,7 +218,6 @@ data class VideoAnalysis(
                 extractor.release()
             }
         }
-
 
         private fun countGaps(file: File, videoTrack: Int, nominalDeltaUs: Long): Pair<Int, Int> {
             val extractor = MediaExtractor()
