@@ -66,11 +66,12 @@ replacement = '''        fun cancel(context: Context) {\n            val intent 
 assert needle in s
 s = s.replace(needle, replacement, 1)
 
-# Add flag in companion object just before existing constants.
+# Add the actual process-wide flag, not merely a reference to it.
 needle = '    companion object {\n'
 assert needle in s
-if 'capturePriorityRequested' not in s.split('companion object {',1)[1]:
-    s = s.replace(needle, needle + '        @Volatile private var capturePriorityRequested = false\n', 1)
+flag_decl = '        @Volatile private var capturePriorityRequested = false\n'
+if flag_decl not in s:
+    s = s.replace(needle, needle + flag_decl, 1)
 
 # Refuse to start manual optimization while camera is already active.
 needle = '''        fun start(context: Context, source: File, requestedConfig: OptimizationConfig): Boolean {\n'''
