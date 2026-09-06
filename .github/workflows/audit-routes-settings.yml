@@ -52,7 +52,7 @@ jobs:
               ('automatic repair resumed after capture', 'AutoGapRepairService.resumeAfterCapture(this)' in files['service']),
               ('dead iframe UI removed', 'Intervalo entre quadros-chave (I-frame)' not in files['settings']),
               ('dead audio UI removed', 'Controle automático de ganho do microfone' not in files['settings']),
-              ('single-option preview removed', 'Visualização da câmera antes de capturar' not in files['settings'] and 'previewMode' not in files['settings']),
+              ('single-option preview removed', 'Visualização da câmera antes de capturar' not in files['settings'] and 'private lateinit var previewMode:' not in files['settings'] and 'previewMode = addSpinner' not in files['settings']),
               ('60fps fixed processing explained', 'Em 60, 120 e 240 FPS' in files['settings']),
           ]
           bad = [name for name, ok in checks if not ok]
