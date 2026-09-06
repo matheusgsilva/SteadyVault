@@ -26,6 +26,7 @@ import com.steadyvault.camera.core.state.CapturePhase
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.core.storage.RecordingStorageGuard
 import com.steadyvault.camera.storage.vault.VaultRepository
+import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.storage.vault.RecordingRecoveryRepository
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
 import com.steadyvault.camera.ui.capture.CaptureActivity
@@ -242,6 +243,9 @@ class CaptureService : Service() {
             sendState(currentState)
             return
         }
+        // A captura sempre vence qualquer transcodificação automática. O pedido de
+        // cancelamento é síncrono no processo; não esperamos o reparo encerrar.
+        AutoGapRepairService.pauseForCapture(this)
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
         VaultScreenCaptureService.yieldToCameraCapture(this)
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
@@ -320,6 +324,7 @@ class CaptureService : Service() {
         if (!hasRequiredPermissions()) {
             sendState("Falha: permissão de câmera é obrigatória")
             serviceActive.set(false)
+            AutoGapRepairService.resumeAfterCapture(this)
             stopSelf()
             return
         }
@@ -584,15 +589,15 @@ class CaptureService : Service() {
             highSpeedEncoderSupportLevel(size, targetFps, mime) >= 1
         }
         if (sizeSupported.isNotEmpty()) {
-            // Em 240, metadata de rate ausente é tratada de forma conservadora:
-            // usa a menor resolução high-speed comum para maximizar chance de 240 real.
-            return if (targetFps >= CaptureModeStore.FPS_240) {
-                sizeSupported.last().first
-            } else {
-                sizeSupported.first().first
-            }
+            // MediaCodec em Samsung frequentemente omite o limite de FPS de encoders
+            // proprietários. Se o tamanho é aceito pelo hardware, preserve a maior
+            // resolução que a própria câmera anuncia para o FPS solicitado.
+            return sizeSupported.first().first
         }
-        return catalogResolution
+        // Não deixe metadata incompleta do encoder transformar um modo high-speed
+        // Camera2 válido em "aguardando confirmação". MediaRecorder/HAL é a validação
+        // final, exatamente como já fazemos no caminho CLEAN de 60 FPS.
+        return cameraCandidates.first().first
     }
 
     private fun highSpeedEncoderSupportLevel(size: Size, fps: Int, mime: String): Int {
@@ -1921,11 +1926,35 @@ class CaptureService : Service() {
         builder: CaptureRequest.Builder,
         profile: CameraProfile
     ) {
+        // Em CONSTRAINED_HIGH_SPEED a HAL força AE/AWB/AF e pós-processamento FAST.
+        // Mantemos somente controles que a API pública permite influenciar nesse modo.
         setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
         setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
         setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
         setSafely(builder, CaptureRequest.CONTROL_AE_LOCK, false)
         setSafely(builder, CaptureRequest.CONTROL_CAPTURE_INTENT, CameraMetadata.CONTROL_CAPTURE_INTENT_VIDEO_RECORD)
+
+        val exposureRange = profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+        exposureRange?.let { range ->
+            setSafely(
+                builder,
+                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                recordingSettings.exposureCompensation.coerceIn(range.lower, range.upper)
+            )
+        }
+
+        val antibandingModes = profile.characteristics.get(
+            CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES
+        ) ?: intArrayOf()
+        val requestedAntibanding = when (recordingSettings.antibanding) {
+            CaptureSettings.ANTIBANDING_50HZ -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_50HZ
+            CaptureSettings.ANTIBANDING_60HZ -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_60HZ
+            CaptureSettings.ANTIBANDING_OFF -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_OFF
+            else -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_AUTO
+        }
+        if (antibandingModes.contains(requestedAntibanding)) {
+            setSafely(builder, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, requestedAntibanding)
+        }
 
         val afModes = profile.characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
         if (afModes.contains(CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)) {
@@ -1937,10 +1966,36 @@ class CaptureService : Service() {
         }
         setSafely(builder, CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
 
-        // High-speed prioriza cadence. EIS/Preview stabilization/OIS ficam fora do
-        // request constrained e podem ser testados depois de 120/240 estabilizarem.
-        setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-        OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
+        // O Camera2 documenta OIS como controle válido também no modo high-speed.
+        // EIS/preview stabilization são best-effort: só são enviados quando a câmera
+        // publica explicitamente o modo. OFF permanece o fallback mais previsível.
+        val videoModes = profile.characteristics.get(
+            CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES
+        ) ?: intArrayOf()
+        val requestedStabilization = recordingSettings.stabilization
+        val autoUseOis = requestedStabilization == CaptureSettings.STABILIZATION_AUTO && profile.oisSupported
+        val explicitOis = requestedStabilization == CaptureSettings.STABILIZATION_OIS
+        val explicitEis = requestedStabilization == CaptureSettings.STABILIZATION_EIS
+        val explicitPreview = requestedStabilization == CaptureSettings.STABILIZATION_PREVIEW
+        when {
+            (autoUseOis || explicitOis) && profile.oisSupported -> {
+                setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = true)
+            }
+            explicitEis && videoModes.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON) -> {
+                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
+                setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON)
+            }
+            explicitPreview && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                videoModes.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION) -> {
+                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
+                setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION)
+            }
+            else -> {
+                setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
+            }
+        }
         CameraZoom.apply(builder, profile.characteristics, recordingSettings.zoomRatio)
     }
 
@@ -2192,6 +2247,9 @@ class CaptureService : Service() {
             ((SystemClock.elapsedRealtime() - recordingStartedAtElapsedMs) / 1000L).coerceAtLeast(0L)
         } else 0L
         val qualityLabel = if (profile?.hdrHlg10 == true) "HDR HLG10" else "SDR BT.709"
+        // O original já está finalizado e indexado antes de entrar na fila. O reparo
+        // nunca recebe permissão para substituir este arquivo.
+        AutoGapRepairService.enqueue(this, finalFile, fps)
         val message = "Vídeo salvo no cofre • ${sizeName(size)} • $fps FPS • $qualityLabel • ${formatDuration(durationSeconds)}"
         sendStateOnMain(message)
         updateNotificationOnMain(message)
@@ -2389,6 +2447,7 @@ class CaptureService : Service() {
         WidgetRenderer.forceRecordingControls(this)
         CameraResourceCoordinator.releaseCapture(CameraResourceCoordinator.Owner.VIDEO, cameraLeaseToken)
         releaseWakeLock()
+        AutoGapRepairService.resumeAfterCapture(this)
         if (deferredRawCleanup) {
             deferredRawCleanup = false
             cleanupOldRawFilesAsync()
@@ -2454,6 +2513,7 @@ class CaptureService : Service() {
     private fun abortBeforeCaptureStart() {
         CameraResourceCoordinator.releaseCapture(CameraResourceCoordinator.Owner.VIDEO, cameraLeaseToken)
         VaultStartupCoordinator.resumeAfterCapture(cameraLeaseToken)
+        AutoGapRepairService.resumeAfterCapture(this)
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         foregroundNotificationStarted = false
         serviceActive.set(false)

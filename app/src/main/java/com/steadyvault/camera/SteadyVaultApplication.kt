@@ -18,6 +18,7 @@ import com.steadyvault.camera.storage.security.VaultSecuritySettings
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
 import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import com.steadyvault.camera.core.state.CaptureStateStore
+import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.ui.capture.QuickCaptureLauncher
 import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import com.steadyvault.camera.widgets.WidgetPreviewPublisher
@@ -57,6 +58,7 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
         registerActivityLifecycleCallbacks(this)
         AppLogRepository.installCrashCapture(this)
         CaptureStateStore.reconcileInterruptedRecording(this)
+        AutoGapRepairService.resumeIfEnabled(this)
         VaultStartupCoordinator.runAsync(this)
         QuickCaptureLauncher.applySavedConfiguration(this)
         WidgetRenderer.updateAll(this)

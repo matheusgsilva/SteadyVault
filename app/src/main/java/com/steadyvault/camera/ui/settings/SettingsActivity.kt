@@ -47,6 +47,10 @@ import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
 import com.steadyvault.camera.core.settings.VisualIdentityStore
 import com.steadyvault.camera.core.camera.CameraLensCatalog
 import com.steadyvault.camera.core.state.CaptureStateStore
+import com.steadyvault.camera.processing.auto.AutoGapRepairQueueStore
+import com.steadyvault.camera.processing.auto.AutoGapRepairService
+import com.steadyvault.camera.processing.auto.AutoGapRepairSettings
+import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.storage.security.PrimaryVaultLock
 import com.steadyvault.camera.storage.security.VaultSecuritySettings
 import com.steadyvault.camera.storage.security.AppVaultLock
@@ -122,6 +126,11 @@ class SettingsActivity : FragmentActivity() {
     private lateinit var openPhotosExternally: Switch
     private lateinit var mediaDetailsLoadingMode: Spinner
     private lateinit var cacheUsageText: TextView
+    private lateinit var autoGapRepairEnabled: Switch
+    private lateinit var autoGapRepairMode: Spinner
+    private lateinit var autoGapRepairMaxFrames: Spinner
+    private lateinit var autoGapRepairAi: Switch
+    private lateinit var autoGapRepairQueueInfo: TextView
 
     private val executor = Executors.newSingleThreadExecutor()
     private val cacheExecutor = Executors.newSingleThreadExecutor { task ->
@@ -495,7 +504,49 @@ class SettingsActivity : FragmentActivity() {
         }
 
         addSection("Processamento de vídeo")
-        addInfo("Nada é processado automaticamente depois da captura. O MP4 direto é o arquivo final; otimização continua disponível somente por ação manual no Cofre.")
+        val autoRepair = AutoGapRepairSettings.snapshot(this)
+        autoGapRepairEnabled = addSwitch(
+            "Reparar gaps automaticamente após gravar",
+            "Analisa os timestamps do MP4 original em segundo plano. Quando há lacunas, cria uma NOVA cópia reparada; o original nunca é substituído. Se outra gravação começar, o processamento é interrompido e volta para a fila.",
+            autoRepair.enabled
+        )
+        autoGapRepairMode = addSpinner(
+            "Método automático para completar lacunas",
+            listOf(
+                option(FrameRepairMode.ADAPTIVE_BLEND.name, "Mistura temporal por GPU (recomendado)", "Cria somente os quadros ausentes misturando os dois quadros reais vizinhos. Se o gap for grande demais, usa o quadro real mais próximo."),
+                option(FrameRepairMode.FILL_MISSING_FRAMES.name, "Quadro real mais próximo", "Preenche posições CFR usando um quadro vizinho real; não inventa movimento, mas pode deixar um instante repetido."),
+                option(FrameRepairMode.SMOOTH_TIMELINE.name, "Somente corrigir timestamps", "Não cria novos pixels. Regulariza a timeline e é o fallback seguro para HDR ou encoder incompatível.")
+            ),
+            autoRepair.mode.name
+        )
+        autoGapRepairMaxFrames = addSpinner(
+            "Máximo de quadros sintetizados por gap",
+            listOf(
+                option("1", "1 quadro", "Mais conservador; mistura somente gaps curtos."),
+                option("2", "2 quadros", "Conservador para movimento rápido."),
+                option("4", "4 quadros (recomendado)", "Cobre os gaps curtos observados no 60 FPS sem processar trechos longos."),
+                option("8", "8 quadros", "Aceita lacunas maiores antes de cair para quadro vizinho."),
+                option("16", "16 quadros", "Mais agressivo; use somente se houver falhas longas.")
+            ),
+            autoRepair.maxInterpolatedFramesPerGap.toString()
+        )
+        autoGapRepairAi = addSwitch(
+            "Análise visual local assistida",
+            "Opcional. Usa o analisador local já existente para orientar filtros durante a cópia reparada. O preenchimento dos gaps continua determinístico por GPU; nenhum serviço externo recebe o vídeo.",
+            autoRepair.aiAssisted
+        )
+        autoGapRepairQueueInfo = addInfo(AutoGapRepairQueueStore.summary(this).text())
+        addSmallButton("Tentar novamente os reparos com erro") {
+            AutoGapRepairService.retryFailed(this)
+            refreshAutoGapRepairQueueCard()
+            Toast.makeText(this, "Falhas reenfileiradas quando houver", Toast.LENGTH_SHORT).show()
+        }
+        addSmallButton("Retomar fila de reparo agora") {
+            AutoGapRepairService.resumeIfEnabled(this)
+            refreshAutoGapRepairQueueCard()
+            Toast.makeText(this, "Fila de reparo retomada", Toast.LENGTH_SHORT).show()
+        }
+        addInfo("O reparo roda com prioridade baixa e nunca bloqueia a câmera. Cada tentativa começa novamente do MP4 original; temporários incompletos são descartados. A ferramenta Otimizar vídeo no Cofre continua disponível para reprocessar manualmente qualquer arquivo.")
 
         val playback = PlaybackSettings.snapshot(this)
         addSection("Reprodução")
@@ -1263,10 +1314,20 @@ class SettingsActivity : FragmentActivity() {
         listOf(
             hdr, thermal, audioAgc, audioNoise, audioLowCut, vibration, secureScreen,
             lockWhiteBalance, intelligentPlayback, dropLateFrames, prebuffer4k60, autoRecoverStalls,
-            openVideosExternally, openPhotosExternally
+            openVideosExternally, openPhotosExternally, autoGapRepairEnabled, autoGapRepairAi
         ).forEach { control ->
-            control.setOnCheckedChangeListener { _, _ ->
+            control.setOnCheckedChangeListener { _, checked ->
                 if (building) return@setOnCheckedChangeListener
+                if (control === autoGapRepairEnabled) {
+                    AutoGapRepairSettings.setEnabled(this, checked)
+                    if (checked) AutoGapRepairService.resumeIfEnabled(this) else AutoGapRepairService.pauseByUser(this)
+                    refreshAutoGapRepairQueueCard()
+                    return@setOnCheckedChangeListener
+                }
+                if (control === autoGapRepairAi) {
+                    AutoGapRepairSettings.setAiAssisted(this, checked)
+                    return@setOnCheckedChangeListener
+                }
                 if (control === hdr) enforceHdrCompatibility()
                 if (control === hdr) refreshHardwareFeatureOptions()
                 refreshDependentControls()
@@ -1277,6 +1338,17 @@ class SettingsActivity : FragmentActivity() {
 
     private fun onSpinnerChanged(spinner: Spinner) {
         if (building) return
+        if (::autoGapRepairMode.isInitialized && spinner === autoGapRepairMode) {
+            AutoGapRepairSettings.setMode(this, FrameRepairMode.from(selected(spinner)))
+            return
+        }
+        if (::autoGapRepairMaxFrames.isInitialized && spinner === autoGapRepairMaxFrames) {
+            AutoGapRepairSettings.setMaxInterpolatedFramesPerGap(
+                this,
+                selected(spinner).toIntOrNull() ?: 4
+            )
+            return
+        }
         when (spinner) {
             autoLockTimeout -> VaultSecuritySettings.setTimeoutMs(this, selected(spinner).toLongOrNull() ?: VaultSecuritySettings.TIMEOUT_IMMEDIATE)
             trashRetention -> VaultTrashRepository.setRetentionDays(this, selected(spinner).toIntOrNull() ?: VaultTrashRepository.RETENTION_30_DAYS)
@@ -1351,14 +1423,21 @@ class SettingsActivity : FragmentActivity() {
 
     private fun refreshDependentControls() {
         if (!::hdr.isInitialized) return
-        val highFrameRate = selected(fps).toInt() >= 60
         val highSpeed = selected(fps).toInt() >= 120
         val hdrSupport = selectedCameraFeatures()?.hdrHlg10 ?: Support.UNVERIFIED
         val hdrHardwareSelectable = HardwareSupportPolicy.isSelectable(hdrSupport)
         hdr.isEnabled = !highSpeed && selected(codec) != CaptureSettings.CODEC_AVC && hdrHardwareSelectable
         hdr.alpha = if (hdr.isEnabled) 1f else 0.45f
-        colorProfile.isEnabled = !hdr.isChecked && !highFrameRate
+        // 60 FPS pode usar TONEMAP_CONTRAST_CURVE quando a câmera publicar a
+        // chave. As opções individuais do spinner já carregam o suporte real.
+        colorProfile.isEnabled = !hdr.isChecked && !highSpeed
         colorProfile.alpha = if (colorProfile.isEnabled) 1f else 0.45f
+    }
+
+    private fun refreshAutoGapRepairQueueCard() {
+        if (::autoGapRepairQueueInfo.isInitialized) {
+            autoGapRepairQueueInfo.text = AutoGapRepairQueueStore.summary(this).text()
+        }
     }
 
     private fun scheduleSave(immediate: Boolean = false) {
@@ -1471,6 +1550,8 @@ class SettingsActivity : FragmentActivity() {
         ) {
             CaptureSettings.restoreDefaults(this)
             PlaybackSettings.restoreDefaults(this)
+            AutoGapRepairSettings.setEnabled(this, false)
+            AutoGapRepairService.pauseByUser(this)
             VaultMediaCacheSettings.restoreDefaults(this)
             CaptureStateStore.clearEffectiveMode(this)
             buildFormPreservingScroll(CaptureSettings.snapshot(this))

@@ -1086,7 +1086,9 @@ class MediaPlayerActivity : ComponentActivity() {
 
     private fun applyAutomaticPlaybackSpeed(frameRate: Float) {
         if (userSelectedPlaybackSpeed) return
-        val targetSpeed = if (frameRate in HIGH_FRAME_RATE_MIN..HIGH_FRAME_RATE_MAX) 0.5f else 1f
+        // 120/240 gravados pelo SteadyVault são vídeo em tempo real, como 4K120 da
+        // câmera Samsung. Slow motion só acontece se o usuário escolher outra velocidade.
+        val targetSpeed = 1f
         val targetIndex = PLAYBACK_SPEEDS.indexOfFirst { it == targetSpeed }.takeIf { it >= 0 } ?: 2
         if (speedIndex == targetIndex && videoView.isPrepared()) return
         speedIndex = targetIndex

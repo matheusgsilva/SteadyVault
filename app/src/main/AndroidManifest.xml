@@ -237,6 +237,11 @@
             android:exported="false"
             android:foregroundServiceType="mediaProcessing" />
         <service
+            android:name=".processing.auto.AutoGapRepairService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="mediaProcessing" />
+        <service
             android:name=".ui.vault.VaultImportService"
             android:exported="false"
             android:stopWithTask="false"

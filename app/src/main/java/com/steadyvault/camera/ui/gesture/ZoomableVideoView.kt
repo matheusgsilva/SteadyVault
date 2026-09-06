@@ -1266,12 +1266,20 @@ class ZoomableVideoView @JvmOverloads constructor(
             val metadata = readSourceMetadata(uri)
             post {
                 if (generation != analysisGeneration || source != uri) return@post
+                val wasHighFrameRate = isHighFrameRatePlayback()
                 playbackProfile = quickPlaybackProfile(metadata)
                 sourceFrameRate = metadata.frameRate
                 sourceVideoWidth = metadata.width
                 sourceVideoHeight = metadata.height
                 analysisListener?.invoke(playbackProfile)
                 applySurfaceFrameRate()
+                val nowHighFrameRate = isHighFrameRatePlayback()
+                if (!wasHighFrameRate && nowHighFrameRate && engine == PlaybackEngine.MEDIA3 && media3Player != null) {
+                    // O player pode ter sido criado antes da leitura dos PTS. Reabrir
+                    // preservando posição aplica thresholds/buffer específicos de 120/240.
+                    captureCurrentState()
+                    requestEngineOpen(preservePosition = true)
+                }
                 val delayMs = if (metadata.frameRate >= HIGH_FRAME_RATE_SOURCE_MIN) {
                     HIGH_FRAME_RATE_ANALYSIS_DELAY_MS
                 } else {
