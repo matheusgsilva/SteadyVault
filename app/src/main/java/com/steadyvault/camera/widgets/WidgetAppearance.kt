@@ -1,10 +1,26 @@
 package com.steadyvault.camera.widgets
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Shader
 import com.steadyvault.camera.R
 import com.steadyvault.camera.ui.theme.AppearanceStore
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 object WidgetAppearance {
+    enum class LockTone {
+        ACCENT,
+        DISABLED,
+        RECORDING,
+        STOP
+    }
+
     fun expandedAccentBackground(context: Context): Int = accentBackground(AppearanceStore.theme(context), lock = false)
     fun lockAccentBackground(context: Context): Int = lockAccentFor(context, AppearanceStore.theme(context))
 
@@ -22,6 +38,80 @@ object WidgetAppearance {
         R.drawable.bg_widget_lock_button_red_balanced,
         R.drawable.bg_widget_lock_button_red_soft
     )
+
+    /**
+     * O host da tela de bloqueio usa RemoteViews e não consegue receber um GradientDrawable
+     * criado em runtime. Por isso o tile é rasterizado em um bitmap pequeno e usado como
+     * camada de fundo. Assim ele respeita as mesmas preferências de tema, superfície,
+     * contraste, cantos e bordas usadas pelo restante do SteadyVault.
+     *
+     * O tamanho do tile permanece fixo: alterar a densidade do app não deve mudar a
+     * geometria já aceita pela One UI para o slot da tela de bloqueio.
+     */
+    fun lockButtonBitmap(
+        context: Context,
+        tone: LockTone,
+        sizeDp: Float = 40f
+    ): Bitmap {
+        val density = context.resources.displayMetrics.density.coerceAtLeast(1f)
+        val sizePx = (sizeDp * density).roundToInt().coerceAtLeast(1)
+        val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val palette = AppearanceStore.palette(context)
+
+        val recordYellow = context.getColor(R.color.widget_record_yellow)
+        val stopRed = context.getColor(R.color.record_red)
+        val startColor = when (tone) {
+            LockTone.ACCENT -> mix(palette.accent, palette.surface, 0.68f)
+            LockTone.DISABLED -> mix(palette.surfaceHigh, palette.background, 0.24f)
+            LockTone.RECORDING -> mix(recordYellow, palette.surface, 0.76f)
+            LockTone.STOP -> mix(stopRed, palette.surface, 0.72f)
+        }
+        val endColor = when (tone) {
+            LockTone.ACCENT -> palette.background
+            LockTone.DISABLED -> palette.background
+            LockTone.RECORDING -> mix(palette.background, Color.rgb(28, 22, 12), 0.28f)
+            LockTone.STOP -> mix(palette.background, Color.rgb(35, 12, 17), 0.32f)
+        }
+        val borderColor = when (tone) {
+            LockTone.ACCENT -> palette.accent
+            LockTone.DISABLED -> palette.border
+            LockTone.RECORDING -> recordYellow
+            LockTone.STOP -> stopRed
+        }
+
+        val cornerPx = min(
+            sizePx / 2f,
+            AppearanceStore.cornerRadiusDp(context) * 0.60f * density
+        )
+        val borderPx = AppearanceStore.borderWidthDp(context) * density
+        val inset = borderPx / 2f
+        val bounds = RectF(inset, inset, sizePx - inset, sizePx - inset)
+
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            shader = LinearGradient(
+                0f,
+                0f,
+                0f,
+                sizePx.toFloat(),
+                startColor,
+                endColor,
+                Shader.TileMode.CLAMP
+            )
+        }
+        canvas.drawRoundRect(bounds, cornerPx, cornerPx, fill)
+
+        if (borderPx > 0f) {
+            val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = borderPx
+                color = borderColor
+            }
+            canvas.drawRoundRect(bounds, cornerPx, cornerPx, stroke)
+        }
+        return bitmap
+    }
 
     fun expandedShellBackground(context: Context): Int = shellBackground(surfaceTheme(context), compact = false)
     fun compactShellBackground(context: Context): Int = shellBackground(surfaceTheme(context), compact = true)
@@ -143,5 +233,15 @@ object WidgetAppearance {
         AppearanceStore.THEME_MIDNIGHT -> R.drawable.bg_widget_divider_midnight
         AppearanceStore.THEME_COPPER -> R.drawable.bg_widget_divider_copper
         else -> R.drawable.bg_widget_divider_emerald
+    }
+
+    private fun mix(first: Int, second: Int, secondWeight: Float): Int {
+        val weight = secondWeight.coerceIn(0f, 1f)
+        val firstWeight = 1f - weight
+        return Color.rgb(
+            (Color.red(first) * firstWeight + Color.red(second) * weight).roundToInt(),
+            (Color.green(first) * firstWeight + Color.green(second) * weight).roundToInt(),
+            (Color.blue(first) * firstWeight + Color.blue(second) * weight).roundToInt()
+        )
     }
 }
