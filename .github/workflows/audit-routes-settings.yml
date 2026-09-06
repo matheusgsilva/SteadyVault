@@ -25,6 +25,7 @@ jobs:
         run: |
           python3 tools/apply_route_settings_audit.py
           python3 tools/patch_hide_processing_labels.py
+          python3 tools/patch_route_settings_followup.py
 
       - name: Static route audit
         shell: bash
@@ -41,7 +42,9 @@ jobs:
           }
           checks = [
               ('widget effective profile', 'RecordingServiceRouter.effectiveSettings(context, fps)' in files['widget']),
+              ('widget reads current FPS at tap', 'intent.getIntExtra(\n            EXTRA_TARGET_FPS' not in files['widget']),
               ('black widget effective profile', 'RecordingServiceRouter.effectiveSettings(this, targetFps)' in files['black']),
+              ('black widget storage preflight', 'RecordingStorageGuard.checkProfile(this, effectiveSettings)' in files['black']),
               ('home screen routed', 'RecordingServiceRouter.start(' in files['capture'] and 'RecordingServiceRouter.startHeadless(' in files['capture']),
               ('per-fps resolution routed', 'CaptureSettings.resolutionForFps(context, safeFps)' in files['router']),
               ('manual optimization cancelled centrally', 'cancelManualOptimizationIfRunning(context)' in files['router']),
@@ -49,7 +52,7 @@ jobs:
               ('automatic repair resumed after capture', 'AutoGapRepairService.resumeAfterCapture(this)' in files['service']),
               ('dead iframe UI removed', 'Intervalo entre quadros-chave (I-frame)' not in files['settings']),
               ('dead audio UI removed', 'Controle automático de ganho do microfone' not in files['settings']),
-              ('single-option preview removed', 'Visualização da câmera antes de capturar' not in files['settings']),
+              ('single-option preview removed', 'Visualização da câmera antes de capturar' not in files['settings'] and 'previewMode' not in files['settings']),
               ('60fps fixed processing explained', 'Em 60, 120 e 240 FPS' in files['settings']),
           ]
           bad = [name for name, ok in checks if not ok]
@@ -183,7 +186,7 @@ jobs:
       - name: Commit validated app changes and remove temporary audit files
         shell: bash
         run: |
-          rm -f tools/apply_route_settings_audit.py tools/patch_hide_processing_labels.py
+          rm -f tools/apply_route_settings_audit.py tools/patch_hide_processing_labels.py tools/patch_route_settings_followup.py
           rm -f .github/workflows/audit-routes-settings.yml
           rm -f .github/workflows/apply-test-fixes.yml
           rm -f .github/workflows/apply-ui-crash-guards.yml
