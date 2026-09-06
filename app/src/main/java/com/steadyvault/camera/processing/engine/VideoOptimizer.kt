@@ -59,7 +59,7 @@ class VideoOptimizer {
                     trimEndMs = normalizedConfig.trimEndMs
                 ).normalized()
             }
-            aiReport != null -> normalizedConfig.copy(
+            aiReport != null && normalizedConfig.preset != OptimizationPreset.REPAIR_ONLY -> normalizedConfig.copy(
                 filters = normalizedConfig.filters.copy(
                     denoise = if (normalizedConfig.filters.denoise.name == "OFF") aiReport.filters.denoise else normalizedConfig.filters.denoise,
                     sharpen = if (normalizedConfig.filters.sharpen.name == "OFF") aiReport.filters.sharpen else normalizedConfig.filters.sharpen,
@@ -72,6 +72,7 @@ class VideoOptimizer {
                 ),
                 aiAssisted = true
             ).normalized()
+            aiReport != null -> normalizedConfig
             else -> normalizedConfig
         }
         val requestedFps = config.targetFps.takeIf { it in 1..240 }
@@ -125,9 +126,10 @@ class VideoOptimizer {
         }
 
         val canResample = config.frameRepair == FrameRepairMode.FILL_MISSING_FRAMES ||
-            config.frameRepair == FrameRepairMode.ADAPTIVE_BLEND
+            config.frameRepair == FrameRepairMode.ADAPTIVE_BLEND ||
+            config.frameRepair == FrameRepairMode.MOTION_COMPENSATED
         if (requestedFps != null && abs(requestedFps.toDouble() - analysis.exactFps) > 0.75 && !canResample) {
-            throw IllegalArgumentException("Para converter o FPS real, use quadro próximo ou mistura temporal adaptativa")
+            throw IllegalArgumentException("Para converter o FPS real, use um modo de reparo com interpolação")
         }
 
         require(!analysis.hdrHlg10) {
@@ -156,6 +158,7 @@ class VideoOptimizer {
                 keepAudio = config.keepAudio,
                 filters = config.filters,
                 maxInterpolatedFramesPerGap = config.maxInterpolatedFramesPerGap,
+                highQualityMotion = config.aiAssisted,
                 trimStartUs = config.trimStartUs(analysis.durationUs),
                 trimEndUs = config.trimEndUs(analysis.durationUs)
             ),

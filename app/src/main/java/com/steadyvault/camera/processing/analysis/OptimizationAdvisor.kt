@@ -66,7 +66,8 @@ object OptimizationAdvisor {
                 FrameRepairMode.NONE -> add("Não há evidência suficiente para fabricar quadros")
                 FrameRepairMode.SMOOTH_TIMELINE -> add("Os timestamps serão regularizados sem criar imagens")
                 FrameRepairMode.FILL_MISSING_FRAMES -> add("Lacunas usarão o quadro temporalmente mais próximo")
-                FrameRepairMode.ADAPTIVE_BLEND -> add("Somente lacunas muito curtas e com pouco movimento receberão mistura temporal")
+                FrameRepairMode.ADAPTIVE_BLEND -> add("Lacunas curtas receberão mistura temporal simples")
+                FrameRepairMode.MOTION_COMPENSATED -> add("Lacunas receberão interpolação compensada por movimento")
             }
             if (aiReport != null) addAll(aiReport.reasons)
             else if (lowBitrateForSize) add("Filtro leve para reduzir blocos e ruído de compressão")
@@ -82,7 +83,10 @@ object OptimizationAdvisor {
                 bitrateMbps = bitrate,
                 keepAudio = analysis.hasAudio,
                 filters = filters,
-                maxInterpolatedFramesPerGap = if (effectiveRepair == FrameRepairMode.ADAPTIVE_BLEND) 2 else 1,
+                maxInterpolatedFramesPerGap = if (
+                    effectiveRepair == FrameRepairMode.ADAPTIVE_BLEND ||
+                    effectiveRepair == FrameRepairMode.MOTION_COMPENSATED
+                ) 2 else 1,
                 thermalProtection = true,
                 aiAssisted = aiReport != null
             ),

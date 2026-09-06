@@ -4,6 +4,7 @@ import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.processing.model.OptimizationPreset
 import com.steadyvault.camera.processing.model.OptimizationRateMode
 import com.steadyvault.camera.processing.model.VideoFilterConfig
+import com.steadyvault.camera.processing.motion.OpenCvMotionEstimator
 
 import android.graphics.SurfaceTexture
 import android.media.MediaCodec
@@ -43,6 +44,7 @@ class HardwareVideoTranscoder {
         val keepAudio: Boolean,
         val filters: VideoFilterConfig,
         val maxInterpolatedFramesPerGap: Int,
+        val highQualityMotion: Boolean = false,
         val trimStartUs: Long = 0L,
         val trimEndUs: Long = 0L
     )
@@ -198,7 +200,7 @@ class HardwareVideoTranscoder {
             inputSurface = EncoderInputSurface(encoder!!.createInputSurface()).also { it.makeCurrent() }
             encoder!!.start()
 
-            outputSurface = DecoderOutputSurface(request.width, request.height)
+            outputSurface = DecoderOutputSurface(request.width, request.height, request.highQualityMotion)
             val sourceMime = source.videoFormat.getString(MediaFormat.KEY_MIME)
                 ?: throw IllegalStateException("Codec de origem ausente")
             val decoderCodecInfo = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
@@ -302,6 +304,10 @@ class HardwareVideoTranscoder {
                 submitFrame(ptsUs) { outputSurface!!.drawBlend(alpha) }
                 if (alpha > 0.02f && alpha < 0.98f) blendedFrames++
             }
+            fun writeMotionFrame(ptsUs: Long, alpha: Float) {
+                submitFrame(ptsUs) { outputSurface!!.drawMotion(alpha) }
+                if (alpha > 0.02f && alpha < 0.98f) blendedFrames++
+            }
 
             while (!encoderDone) {
                 if (cancelled()) throw InterruptedException("Otimização cancelada")
@@ -344,7 +350,8 @@ class HardwareVideoTranscoder {
 
                                 when (request.frameRepair) {
                                     FrameRepairMode.FILL_MISSING_FRAMES,
-                                    FrameRepairMode.ADAPTIVE_BLEND -> {
+                                    FrameRepairMode.ADAPTIVE_BLEND,
+                                    FrameRepairMode.MOTION_COMPENSATED -> {
                                         if (!loadedFrame) {
                                             writeCurrentFrame(0L)
                                             nextFillPtsUs = frameIntervalUs
@@ -352,6 +359,8 @@ class HardwareVideoTranscoder {
                                         } else {
                                             val intervalUs = (sourceRelative - previousSourceRelativePts).coerceAtLeast(1L)
                                             val outputFramesInGap = ((intervalUs + frameIntervalUs - 1L) / frameIntervalUs).toInt()
+                                            val motionAllowed = request.frameRepair == FrameRepairMode.MOTION_COMPENSATED &&
+                                                    outputFramesInGap <= request.maxInterpolatedFramesPerGap + 1
                                             val blendAllowed = request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND &&
                                                     outputFramesInGap <= request.maxInterpolatedFramesPerGap + 1
                                             while (nextFillPtsUs < sourceRelative) {
@@ -359,6 +368,7 @@ class HardwareVideoTranscoder {
                                                     .toFloat()
                                                     .coerceIn(0f, 1f)
                                                 when {
+                                                    motionAllowed -> writeMotionFrame(nextFillPtsUs, alpha)
                                                     blendAllowed -> writeBlendedFrame(nextFillPtsUs, alpha)
                                                     alpha < 0.5f -> writePreviousFrame(nextFillPtsUs)
                                                     else -> writeCurrentFrame(nextFillPtsUs)
@@ -378,6 +388,7 @@ class HardwareVideoTranscoder {
                                 sourceDecodedFrames++
                                 val percent = ((sourceRelative * 88L / sourceSpanUs).toInt() + 5).coerceIn(5, 93)
                                 val message = when (request.frameRepair) {
+                                    FrameRepairMode.MOTION_COMPENSATED -> "Reconstruindo movimento e cadência por GPU"
                                     FrameRepairMode.ADAPTIVE_BLEND -> "Reconstruindo cadência com mistura temporal por GPU"
                                     FrameRepairMode.FILL_MISSING_FRAMES -> "Preenchendo lacunas com o quadro mais próximo"
                                     FrameRepairMode.SMOOTH_TIMELINE -> "Regularizando a timeline"
@@ -391,7 +402,8 @@ class HardwareVideoTranscoder {
 
                 if (decoderDone) {
                     if ((request.frameRepair == FrameRepairMode.FILL_MISSING_FRAMES ||
-                                request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND) && loadedFrame
+                                request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND ||
+                                request.frameRepair == FrameRepairMode.MOTION_COMPENSATED) && loadedFrame
                     ) {
                         val targetEndExclusiveUs = sourceSpanUs.coerceAtLeast(lastSourceRelativePts + frameIntervalUs)
                         while (nextFillPtsUs < targetEndExclusiveUs) {
@@ -552,10 +564,14 @@ class HardwareVideoTranscoder {
         }
     }
 
-    private class DecoderOutputSurface(private val width: Int, private val height: Int) : SurfaceTexture.OnFrameAvailableListener {
+    private class DecoderOutputSurface(
+        private val width: Int,
+        private val height: Int,
+        highQualityMotion: Boolean
+    ) : SurfaceTexture.OnFrameAvailableListener {
         private val frameSync = Object()
         private var frameAvailable = false
-        private val renderer = TextureRenderer(width, height)
+        private val renderer = TextureRenderer(width, height, highQualityMotion)
         private val surfaceTexture: SurfaceTexture
         val surface: Surface
 
@@ -590,6 +606,7 @@ class HardwareVideoTranscoder {
         fun drawCurrent() = renderer.drawCurrent()
         fun drawPrevious() = renderer.drawPrevious()
         fun drawBlend(alpha: Float) = renderer.drawBlend(alpha)
+        fun drawMotion(alpha: Float) = renderer.drawMotion(alpha)
 
         fun release() {
             surface.release()
@@ -598,7 +615,11 @@ class HardwareVideoTranscoder {
         }
     }
 
-    private class TextureRenderer(private val width: Int, private val height: Int) {
+    private class TextureRenderer(
+        private val width: Int,
+        private val height: Int,
+        private val highQualityMotion: Boolean
+    ) {
         private val triangleVertices: FloatBuffer = ByteBuffer.allocateDirect(VERTICES.size * 4)
             .order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(VERTICES).position(0) }
         private val transform = FloatArray(16)
@@ -610,8 +631,22 @@ class HardwareVideoTranscoder {
         )
         private var externalProgram = 0
         private var blendProgram = 0
+        private var motionInterpolateProgram = 0
         private val frameTextures = IntArray(2)
         private val framebuffers = IntArray(2)
+        private val motionTexture = IntArray(1)
+        private val motionFramebuffer = IntArray(1)
+        private val analysisTexture = IntArray(1)
+        private val analysisFramebuffer = IntArray(1)
+        private val motionWidth = if (highQualityMotion) (width / 12).coerceIn(160, 320) else (width / 16).coerceIn(120, 240)
+        private val motionHeight = ((motionWidth.toLong() * height.toLong()) / width.coerceAtLeast(1).toLong()).toInt().coerceIn(68, 180)
+        private val motionReadback = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4).order(ByteOrder.nativeOrder())
+        private val previousMotionPixels = ByteArray(motionWidth * motionHeight * 4)
+        private val currentMotionPixels = ByteArray(motionWidth * motionHeight * 4)
+        private val motionUpload = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4).order(ByteOrder.nativeOrder())
+        private var motionFlowScaleX = 0f
+        private var motionFlowScaleY = 0f
+        private var motionFieldDirty = true
         private var currentIndex = -1
         private var previousIndex = -1
         var externalTextureId: Int = -1
@@ -625,6 +660,7 @@ class HardwareVideoTranscoder {
             }
             externalProgram = createProgram(VERTEX_SHADER, EXTERNAL_FRAGMENT_SHADER)
             blendProgram = createProgram(VERTEX_SHADER, BLEND_FRAGMENT_SHADER)
+            motionInterpolateProgram = createProgram(VERTEX_SHADER, MOTION_INTERPOLATE_FRAGMENT_SHADER)
 
             val external = IntArray(1)
             GLES20.glGenTextures(1, external, 0)
@@ -666,6 +702,43 @@ class HardwareVideoTranscoder {
                     "Framebuffer de processamento incompleto"
                 }
             }
+            GLES20.glGenTextures(1, motionTexture, 0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTexture[0])
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, motionWidth, motionHeight, 0,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
+            )
+            GLES20.glGenFramebuffers(1, motionFramebuffer, 0)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, motionFramebuffer[0])
+            GLES20.glFramebufferTexture2D(
+                GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, motionTexture[0], 0
+            )
+            check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE) {
+                "Framebuffer do campo de movimento incompleto"
+            }
+
+            GLES20.glGenTextures(1, analysisTexture, 0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, analysisTexture[0])
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, motionWidth, motionHeight, 0,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
+            )
+            GLES20.glGenFramebuffers(1, analysisFramebuffer, 0)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysisFramebuffer[0])
+            GLES20.glFramebufferTexture2D(
+                GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, analysisTexture[0], 0
+            )
+            check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE) {
+                "Framebuffer de análise de movimento incompleto"
+            }
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
         }
@@ -699,12 +772,100 @@ class HardwareVideoTranscoder {
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             if (previousIndex < 0) previousIndex = currentIndex
+            motionFieldDirty = true
             checkGl("capturar quadro")
         }
 
         fun drawCurrent() = drawTextures(currentIndex, currentIndex, 1f)
         fun drawPrevious() = drawTextures(previousIndex, previousIndex, 1f)
         fun drawBlend(alpha: Float) = drawTextures(previousIndex, currentIndex, alpha.coerceIn(0f, 1f))
+
+        fun drawMotion(alpha: Float) {
+            check(previousIndex >= 0 && currentIndex >= 0) { "Quadros insuficientes para interpolação de movimento" }
+            ensureMotionField()
+            val safeAlpha = alpha.coerceIn(0f, 1f)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            GLES20.glViewport(0, 0, width, height)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            GLES20.glUseProgram(motionInterpolateProgram)
+            bindGeometry(motionInterpolateProgram, identity)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTextures[previousIndex])
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(motionInterpolateProgram, "uPrevious"), 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTextures[currentIndex])
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(motionInterpolateProgram, "uCurrent"), 1)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTexture[0])
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(motionInterpolateProgram, "uMotion"), 2)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(motionInterpolateProgram, "uAlpha"), safeAlpha)
+            GLES20.glUniform2f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uFlowScale"),
+                motionFlowScaleX,
+                motionFlowScaleY
+            )
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            checkGl("interpolar movimento")
+        }
+
+        private fun ensureMotionField() {
+            if (!motionFieldDirty) return
+            readMotionFrame(previousIndex, previousMotionPixels)
+            readMotionFrame(currentIndex, currentMotionPixels)
+            val field = OpenCvMotionEstimator.estimate(
+                previousRgba = previousMotionPixels,
+                currentRgba = currentMotionPixels,
+                width = motionWidth,
+                height = motionHeight,
+                highQuality = highQualityMotion
+            )
+            motionFlowScaleX = field.flowScaleX
+            motionFlowScaleY = field.flowScaleY
+            motionUpload.clear()
+            motionUpload.put(field.rgba)
+            motionUpload.flip()
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTexture[0])
+            GLES20.glTexSubImage2D(
+                GLES20.GL_TEXTURE_2D,
+                0,
+                0,
+                0,
+                motionWidth,
+                motionHeight,
+                GLES20.GL_RGBA,
+                GLES20.GL_UNSIGNED_BYTE,
+                motionUpload
+            )
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+            motionFieldDirty = false
+            checkGl("enviar campo de movimento")
+        }
+
+        private fun readMotionFrame(textureIndex: Int, target: ByteArray) {
+            check(textureIndex >= 0) { "Quadro de movimento indisponível" }
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysisFramebuffer[0])
+            GLES20.glViewport(0, 0, motionWidth, motionHeight)
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            GLES20.glUseProgram(blendProgram)
+            bindGeometry(blendProgram, identity)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTextures[textureIndex])
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(blendProgram, "uPrevious"), 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTextures[textureIndex])
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(blendProgram, "uCurrent"), 1)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(blendProgram, "uAlpha"), 1f)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            motionReadback.clear()
+            GLES20.glReadPixels(
+                0, 0, motionWidth, motionHeight,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, motionReadback
+            )
+            motionReadback.position(0)
+            motionReadback.get(target, 0, target.size)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            checkGl("ler quadro para fluxo óptico")
+        }
 
         private fun drawTextures(firstIndex: Int, secondIndex: Int, alpha: Float) {
             check(firstIndex >= 0 && secondIndex >= 0) { "Nenhum quadro foi capturado para renderização" }
@@ -741,11 +902,17 @@ class HardwareVideoTranscoder {
             if (externalTextureId >= 0) GLES20.glDeleteTextures(1, intArrayOf(externalTextureId), 0)
             GLES20.glDeleteTextures(2, frameTextures, 0)
             GLES20.glDeleteFramebuffers(2, framebuffers, 0)
+            GLES20.glDeleteTextures(1, motionTexture, 0)
+            GLES20.glDeleteFramebuffers(1, motionFramebuffer, 0)
+            GLES20.glDeleteTextures(1, analysisTexture, 0)
+            GLES20.glDeleteFramebuffers(1, analysisFramebuffer, 0)
             if (externalProgram != 0) GLES20.glDeleteProgram(externalProgram)
             if (blendProgram != 0) GLES20.glDeleteProgram(blendProgram)
+            if (motionInterpolateProgram != 0) GLES20.glDeleteProgram(motionInterpolateProgram)
             externalTextureId = -1
             externalProgram = 0
             blendProgram = 0
+            motionInterpolateProgram = 0
         }
 
         private fun createProgram(vertex: String, fragment: String): Int {
@@ -844,6 +1011,30 @@ uniform float uAlpha;
 void main(){
     float eased=uAlpha*uAlpha*(3.0-2.0*uAlpha);
     gl_FragColor=mix(texture2D(uPrevious,vTextureCoord),texture2D(uCurrent,vTextureCoord),eased);
+}"""
+            private const val MOTION_INTERPOLATE_FRAGMENT_SHADER = """precision highp float;
+varying vec2 vTextureCoord;
+uniform sampler2D uPrevious;
+uniform sampler2D uCurrent;
+uniform sampler2D uMotion;
+uniform vec2 uFlowScale;
+uniform float uAlpha;
+void main(){
+    float a=clamp(uAlpha,0.0,1.0);
+    float eased=a*a*(3.0-2.0*a);
+    vec4 flow=texture2D(uMotion,vTextureCoord);
+    vec2 delta=(flow.rg*2.0-1.0)*uFlowScale;
+    vec2 prevUv=clamp(vTextureCoord-delta*a,vec2(0.0),vec2(1.0));
+    vec2 currUv=clamp(vTextureCoord+delta*(1.0-a),vec2(0.0),vec2(1.0));
+    vec4 previous=texture2D(uPrevious,vTextureCoord);
+    vec4 current=texture2D(uCurrent,vTextureCoord);
+    vec4 warped=mix(texture2D(uPrevious,prevUv),texture2D(uCurrent,currUv),eased);
+    vec4 simple=mix(previous,current,eased);
+    vec4 nearest=a<0.5?previous:current;
+    float fallbackBlend=smoothstep(0.08,0.34,flow.b);
+    vec4 fallback=mix(nearest,simple,fallbackBlend);
+    float motionConfidence=smoothstep(0.18,0.72,flow.b);
+    gl_FragColor=mix(fallback,warped,motionConfidence);
 }"""
         }
     }

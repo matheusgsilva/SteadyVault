@@ -172,7 +172,10 @@ class AutoGapRepairService : Service() {
             }
             val modes = buildList {
                 add(requestedMode)
-                if (!analysis.hdrHlg10 && requestedMode != FrameRepairMode.FILL_MISSING_FRAMES) {
+                if (!analysis.hdrHlg10 && requestedMode == FrameRepairMode.MOTION_COMPENSATED) {
+                    add(FrameRepairMode.ADAPTIVE_BLEND)
+                    add(FrameRepairMode.FILL_MISSING_FRAMES)
+                } else if (!analysis.hdrHlg10 && requestedMode == FrameRepairMode.ADAPTIVE_BLEND) {
                     add(FrameRepairMode.FILL_MISSING_FRAMES)
                 }
                 if (requestedMode != FrameRepairMode.SMOOTH_TIMELINE) add(FrameRepairMode.SMOOTH_TIMELINE)
@@ -184,6 +187,7 @@ class AutoGapRepairService : Service() {
                 workFile?.takeIf { it.exists() }?.delete()
                 workFile = VaultRepository.createOptimizationWorkFile(this, source)
                 val modeLabel = when (mode) {
+                    FrameRepairMode.MOTION_COMPENSATED -> "interpolação compensada por movimento"
                     FrameRepairMode.ADAPTIVE_BLEND -> "mistura temporal por GPU"
                     FrameRepairMode.FILL_MISSING_FRAMES -> "preenchimento por quadro vizinho"
                     FrameRepairMode.SMOOTH_TIMELINE -> "correção segura de timestamps"
@@ -209,7 +213,7 @@ class AutoGapRepairService : Service() {
                     maxInterpolatedFramesPerGap = settings.maxInterpolatedFramesPerGap,
                     thermalProtection = true,
                     smartAutoTune = false,
-                    aiAssisted = settings.aiAssisted && !analysis.hdrHlg10 && mode != FrameRepairMode.SMOOTH_TIMELINE
+                    aiAssisted = settings.aiAssisted && !analysis.hdrHlg10 && mode == FrameRepairMode.MOTION_COMPENSATED
                 ).normalized()
 
                 val attempt = runCatching {
@@ -253,7 +257,7 @@ class AutoGapRepairService : Service() {
                         buildString {
                             append("Cópia reparada criada; original preservado")
                             if (result.repairedGaps > 0) append(" • ").append(result.repairedGaps).append(" gap(s) tratado(s)")
-                            if (result.blendedFrames > 0) append(" • ").append(result.blendedFrames).append(" quadro(s) misturado(s)")
+                            if (result.blendedFrames > 0) append(" • ").append(result.blendedFrames).append(" quadro(s) reconstruído(s)")
                             val repeated = (result.createdFrames - result.blendedFrames).coerceAtLeast(0)
                             if (repeated > 0) append(" • ").append(repeated).append(" posição(ões) CFR preenchida(s)")
                         }

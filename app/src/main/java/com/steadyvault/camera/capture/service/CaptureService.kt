@@ -852,7 +852,7 @@ class CaptureService : Service() {
     }
 
     /**
-     * Equivalente Android do Auto FPS do iPhone: permanece desligado por padrão.
+     * Auto FPS em pouca luz: permanece desligado por padrão.
      * Quando habilitado, 30/60 usam apenas uma faixa variável que a própria HAL
      * publica e cujo teto é exatamente o FPS escolhido. Nunca se aplica a 120/240.
      */
@@ -1570,7 +1570,7 @@ class CaptureService : Service() {
                     startWithFixedSensorCadence(session, request, profile, token)
                 }
             } else {
-                // 30 FPS e Auto FPS seguem AE contínuo, como o comportamento do AVFoundation.
+                // 30 FPS e Auto FPS seguem AE contínuo, com AE contínuo.
                 session.setRepeatingRequest(request, null, mainHandler)
                 commitRecorderStart(profile, token, highSpeed = false)
             }

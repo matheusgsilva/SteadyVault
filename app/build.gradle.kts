@@ -15,7 +15,7 @@ android {
         ndk {
             abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
-        versionCode = 1000144
+        versionCode = 1000145
         versionName = "1.8.131"
     }
 
@@ -33,6 +33,9 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // VLC e OpenCV distribuem a mesma runtime libc++_shared. O APK deve
+            // carregar uma única cópia por ABI; ambas usam a ABI estável do NDK.
+            pickFirsts += setOf("**/libc++_shared.so")
             keepDebugSymbols += setOf(
                 "**/libc++_shared.so",
                 "**/libvlc.so",
@@ -77,6 +80,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("androidx.media3:media3-ui:1.10.1")
     implementation("org.videolan.android:libvlc-all:3.7.4")
+    implementation("org.opencv:opencv:4.10.0")
     implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
     implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
     implementation("io.github.junkfood02.youtubedl-android:aria2c:0.18.1")

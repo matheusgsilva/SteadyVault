@@ -178,8 +178,7 @@ object AiVideoEnhancer {
         val preferredRepair = when {
             !analysis.hasCadenceProblems -> FrameRepairMode.NONE
             analysis.estimatedMissingFrames <= 0 -> FrameRepairMode.SMOOTH_TIMELINE
-            safeForBlend -> FrameRepairMode.ADAPTIVE_BLEND
-            else -> FrameRepairMode.FILL_MISSING_FRAMES
+            else -> FrameRepairMode.MOTION_COMPENSATED
         }
         val decision = AiImprovementPolicy.decide(
             blur, noise, compression, underExposure, overExposure, yellowCast, motion, analysis.hasCadenceProblems
@@ -193,7 +192,7 @@ object AiVideoEnhancer {
             if (brightness < 0) add("Áreas claras estouradas; redução moderada de brilho recomendada")
             if (temperature < 0) add("Dominante amarela detectada; temperatura ${temperature} recomendada para esfriar a imagem")
             if (analysis.hasCadenceProblems && !safeForBlend) {
-                add("Mistura temporal foi evitada para reduzir rastros e artefatos")
+                add("Movimento relevante detectado; o reparo usará fluxo óptico em vez de mistura simples")
             }
             if (!decision.needsImprovement) add("Cadência e imagem já estão dentro dos limites; recodificação automática não é necessária")
         }

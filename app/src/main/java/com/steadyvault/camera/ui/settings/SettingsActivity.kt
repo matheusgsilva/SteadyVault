@@ -309,7 +309,7 @@ class SettingsActivity : FragmentActivity() {
         )
         autoFpsLowLight = addSwitch(
             "FPS automático em pouca luz",
-            "Equivalente ao Auto FPS do iPhone. Fica desligado por padrão. Em 30/60 FPS, se a câmera publicar uma faixa variável compatível, permite reduzir temporariamente o FPS para ganhar exposição em pouca luz. 120/240 permanecem fixos.",
+            "Fica desligado por padrão. Em 30/60 FPS, se a câmera publicar uma faixa variável compatível, permite reduzir temporariamente o FPS para ganhar exposição em pouca luz. 120/240 permanecem fixos.",
             snapshot.autoFpsLowLight
         )
         modeCapabilitiesText = addCapabilitiesCard()
@@ -323,7 +323,7 @@ class SettingsActivity : FragmentActivity() {
             bitrateOptions(snapshot.bitrateMbps),
             snapshot.bitrateMbps.toString()
         )
-        addInfo("O bitrate funciona como a taxa média-alvo do AVFoundation: o valor escolhido fica salvo e é enviado diretamente ao encoder. No MediaRecorder o fabricante controla internamente CBR/VBR; o SteadyVault não troca o bitrate escolhido silenciosamente.")
+        addInfo("O valor escolhido de bitrate fica salvo e é enviado diretamente ao encoder. No MediaRecorder o fabricante controla internamente CBR/VBR; o SteadyVault não troca o bitrate escolhido silenciosamente.")
         addSmallButton("Recalcular bitrate recomendado") {
             setSelection(
                 bitrate,
@@ -345,7 +345,7 @@ class SettingsActivity : FragmentActivity() {
             ),
             snapshot.iFrameIntervalSeconds.toString()
         )
-        addInfo("Pipeline direto Camera2 → Surface → MediaRecorder, equivalente ao caminho de captura simples do AVFoundation: uma única saída de vídeo, sem interpolação ou callbacks por quadro. HEVC/H.264 e bitrate-alvo são configurados quando suportados pelo hardware.")
+        addInfo("Pipeline direto Camera2 → Surface → MediaRecorder: uma única saída de vídeo durante a captura, sem interpolação ou callbacks por quadro. HEVC/H.264 e bitrate-alvo são configurados quando suportados pelo hardware.")
         hdr = addSwitch(
             "HDR HLG10",
             "Usa HEVC Main10, BT.2020 HLG e faixa limitada. Combinações incompatíveis são informadas em vez de serem trocadas silenciosamente.",
@@ -513,14 +513,15 @@ class SettingsActivity : FragmentActivity() {
         autoGapRepairMode = addSpinner(
             "Método automático para completar lacunas",
             listOf(
-                option(FrameRepairMode.ADAPTIVE_BLEND.name, "Mistura temporal por GPU (recomendado)", "Cria somente os quadros ausentes misturando os dois quadros reais vizinhos. Se o gap for grande demais, usa o quadro real mais próximo."),
+                option(FrameRepairMode.MOTION_COMPENSATED.name, "Interpolação com movimento (recomendado)", "Calcula um campo de movimento entre os quadros reais, desloca cada lado até a posição intermediária e reconstrói somente as lacunas. Se não houver confiança suficiente, usa fallbacks seguros."),
+                option(FrameRepairMode.ADAPTIVE_BLEND.name, "Mistura temporal simples", "Mistura os dois quadros reais vizinhos sem estimar deslocamento. Serve como fallback quando a interpolação por movimento não for aceita."),
                 option(FrameRepairMode.FILL_MISSING_FRAMES.name, "Quadro real mais próximo", "Preenche posições CFR usando um quadro vizinho real; não inventa movimento, mas pode deixar um instante repetido."),
                 option(FrameRepairMode.SMOOTH_TIMELINE.name, "Somente corrigir timestamps", "Não cria novos pixels. Regulariza a timeline e é o fallback seguro para HDR ou encoder incompatível.")
             ),
             autoRepair.mode.name
         )
         autoGapRepairMaxFrames = addSpinner(
-            "Máximo de quadros sintetizados por gap",
+            "Máximo de quadros reconstruídos por gap",
             listOf(
                 option("1", "1 quadro", "Mais conservador; mistura somente gaps curtos."),
                 option("2", "2 quadros", "Conservador para movimento rápido."),
@@ -531,8 +532,8 @@ class SettingsActivity : FragmentActivity() {
             autoRepair.maxInterpolatedFramesPerGap.toString()
         )
         autoGapRepairAi = addSwitch(
-            "Análise visual local assistida",
-            "Opcional. Usa o analisador local já existente para orientar filtros durante a cópia reparada. O preenchimento dos gaps continua determinístico por GPU; nenhum serviço externo recebe o vídeo.",
+            "Análise avançada de movimento",
+            "Opcional. Aumenta o detalhamento do campo de movimento e executa análise visual local antes do reparo. Nenhum serviço externo recebe o vídeo e o original continua intacto.",
             autoRepair.aiAssisted
         )
         autoGapRepairQueueInfo = addInfo(AutoGapRepairQueueStore.summary(this).text())
@@ -2232,7 +2233,7 @@ class SettingsActivity : FragmentActivity() {
         val features = selectedCameraFeatures()
         val activeFps = if (::fps.isInitialized) selected(fps).toIntOrNull() ?: CaptureSettings.snapshot(this).fps else CaptureSettings.snapshot(this).fps
         val specs = listOf(
-            FeatureOptionSpec(CaptureSettings.STABILIZATION_AUTO, "Automática (estilo iPhone)", "Escolhe Preview stabilization, EIS, OIS ou Off conforme o formato e as capacidades. Acima de 60 FPS prioriza cadência."),
+            FeatureOptionSpec(CaptureSettings.STABILIZATION_AUTO, "Automática", "Escolhe Preview stabilization, EIS, OIS ou Off conforme o formato e as capacidades. Acima de 60 FPS prioriza cadência."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_PREVIEW, "Preview stabilization", "Estabilização avançada da câmera."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_EIS, "EIS eletrônica", "Recorta a imagem e usa processamento eletrônico."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_OIS, "OIS óptica", "Usa o movimento físico da lente."),
