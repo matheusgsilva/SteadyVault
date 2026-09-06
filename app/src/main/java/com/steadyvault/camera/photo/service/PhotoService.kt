@@ -799,7 +799,7 @@ class PhotoService : Service() {
         )
     }
 
-    private fun fastSingleCapture(): Boolean = false
+    private fun fastSingleCapture(): Boolean = fromWidget && !isSequenceMode
 
     private fun framesBeforeFocus(): Int =
         if (fastSingleCapture()) FAST_FRAMES_BEFORE_FOCUS else FRAMES_BEFORE_FOCUS
