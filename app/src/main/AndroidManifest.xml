@@ -235,6 +235,7 @@
         <service
             android:name=".processing.service.VideoOptimizationService"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="mediaProcessing" />
         <service
             android:name=".processing.auto.AutoGapRepairService"

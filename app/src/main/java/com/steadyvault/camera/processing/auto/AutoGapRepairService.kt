@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.Process
+import android.os.SystemClock
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.core.settings.VisualIdentityStore
 import com.steadyvault.camera.processing.analysis.VideoAnalysis
@@ -55,10 +56,15 @@ class AutoGapRepairService : Service() {
     }
     private val workerRunning = AtomicBoolean(false)
     private val cancelCurrent = AtomicBoolean(false)
+    private val progressPublishLock = Any()
     @Volatile private var currentJobId: String? = null
     @Volatile private var currentSourcePath: String? = null
     @Volatile private var currentProgress = 0
     @Volatile private var currentMessage = ""
+    @Volatile private var lastPublishedProgress = -1
+    @Volatile private var lastPublishedMessage = ""
+    @Volatile private var lastPublishedAtMs = 0L
+    @Volatile private var foregroundStarted = false
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
@@ -68,8 +74,12 @@ class AutoGapRepairService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        val action = intent?.action
+        when (action) {
             ACTION_ENQUEUE -> {
+                // startForegroundService() exige promoção imediata, mesmo se a fila mudar
+                // entre o envio do Intent e a execução deste callback.
+                ensureForegroundStarted("Verificando fila de reparo…")
                 val path = intent.getStringExtra(EXTRA_SOURCE_PATH).orEmpty()
                 val fps = intent.getIntExtra(EXTRA_TARGET_FPS, 60)
                 File(path).takeIf { it.isFile }?.let {
@@ -77,18 +87,26 @@ class AutoGapRepairService : Service() {
                 }
                 kickWorker()
             }
-            ACTION_RESUME -> kickWorker()
+            ACTION_RESUME -> {
+                ensureForegroundStarted("Verificando fila de reparo…")
+                kickWorker()
+            }
             ACTION_RETRY_FAILED -> {
+                ensureForegroundStarted("Verificando fila de reparo…")
                 AutoGapRepairQueueStore.retryFailed(this)
                 kickWorker()
             }
             ACTION_PAUSE_CAPTURE, ACTION_PAUSE_USER -> {
                 cancelCurrent.set(true)
                 if (!workerRunning.get()) stopSelf(startId)
-                else publish(currentProgress, "Pausando reparo para priorizar a gravação…")
+                else publish(currentProgress, "Pausando reparo para priorizar a gravação…", force = true)
             }
         }
-        return START_NOT_STICKY
+        return if (action == ACTION_ENQUEUE || action == ACTION_RESUME || action == ACTION_RETRY_FAILED) {
+            START_REDELIVER_INTENT
+        } else {
+            START_NOT_STICKY
+        }
     }
 
     private fun kickWorker() {
@@ -117,6 +135,11 @@ class AutoGapRepairService : Service() {
                 currentSourcePath = job.sourcePath
                 currentProgress = 0
                 currentMessage = "Preparando reparo automático"
+                synchronized(progressPublishLock) {
+                    lastPublishedProgress = -1
+                    lastPublishedMessage = ""
+                    lastPublishedAtMs = 0L
+                }
                 cancelCurrent.set(false)
                 val continueQueue = processJob(job)
                 broadcastProgress(running = false)
@@ -145,7 +168,7 @@ class AutoGapRepairService : Service() {
         }
 
         AutoGapRepairQueueStore.markRunning(this, job.id, "Analisando timestamps do original")
-        publish(1, "Analisando ${source.name}…")
+        publish(1, "Analisando ${source.name}…", force = true)
 
         var sourceLocked = false
         var workFile: File? = null
@@ -288,7 +311,7 @@ class AutoGapRepairService : Service() {
                 job.id,
                 lastFailure?.message ?: "Nenhuma estratégia de reparo foi aceita pelo aparelho"
             )
-            publish(0, "Falha no reparo de ${source.name}; disponível para tentar novamente")
+            publish(0, "Falha no reparo de ${source.name}; disponível para tentar novamente", force = true)
             return true
         } catch (interrupted: InterruptedException) {
             workFile?.takeIf { it.exists() }?.delete()
@@ -340,7 +363,15 @@ class AutoGapRepairService : Service() {
     }
 
     private fun startForegroundProcessing(message: String) {
-        val notification = buildNotification(0, message)
+        currentMessage = message
+        ensureForegroundStarted(message)
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, buildNotification(currentProgress, message))
+    }
+
+    private fun ensureForegroundStarted(message: String) {
+        if (foregroundStarted) return
+        val notification = buildNotification(currentProgress, message)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
             startForeground(
                 NOTIFICATION_ID,
@@ -350,15 +381,32 @@ class AutoGapRepairService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
+        foregroundStarted = true
     }
 
-    private fun publish(progress: Int, message: String) {
-        currentProgress = progress.coerceIn(0, 100)
+    private fun publish(progress: Int, message: String, force: Boolean = false) {
+        val safeProgress = progress.coerceIn(0, 100)
+        currentProgress = safeProgress
         currentMessage = message
-        currentJobId?.let { AutoGapRepairQueueStore.updateProgress(this, it, currentProgress, message) }
-        broadcastProgress(running = currentProgress < 100)
+
+        val now = SystemClock.elapsedRealtime()
+        val shouldPublish = synchronized(progressPublishLock) {
+            val changed = safeProgress != lastPublishedProgress || message != lastPublishedMessage
+            val intervalElapsed = lastPublishedAtMs == 0L || now - lastPublishedAtMs >= PROGRESS_PUBLISH_INTERVAL_MS
+            val publishNow = force || safeProgress >= 100 || changed && intervalElapsed
+            if (publishNow) {
+                lastPublishedProgress = safeProgress
+                lastPublishedMessage = message
+                lastPublishedAtMs = now
+            }
+            publishNow
+        }
+        if (!shouldPublish) return
+
+        currentJobId?.let { AutoGapRepairQueueStore.updateProgress(this, it, safeProgress, message) }
+        broadcastProgress(running = safeProgress < 100)
         getSystemService(NotificationManager::class.java)
-            .notify(NOTIFICATION_ID, buildNotification(currentProgress, message))
+            .notify(NOTIFICATION_ID, buildNotification(safeProgress, message))
     }
 
     private fun broadcastProgress(running: Boolean) {
@@ -371,7 +419,10 @@ class AutoGapRepairService : Service() {
     }
 
     private fun clearNotification() {
-        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+        if (foregroundStarted) {
+            runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+            foregroundStarted = false
+        }
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
     }
 
@@ -470,6 +521,7 @@ class AutoGapRepairService : Service() {
         private const val CHANNEL_ID = "steadyvault_auto_gap_repair"
         private const val NOTIFICATION_ID = 4011
         private const val MAX_WAKE_LOCK_MS = 5L * 60L * 60L * 1_000L
+        private const val PROGRESS_PUBLISH_INTERVAL_MS = 300L
 
         @Volatile private var capturePriorityRequested = false
 

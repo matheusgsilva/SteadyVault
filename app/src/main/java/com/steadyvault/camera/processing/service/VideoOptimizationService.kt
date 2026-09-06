@@ -93,7 +93,7 @@ class VideoOptimizationService : Service() {
                 }
             }
         }
-        return START_NOT_STICKY
+        return if (intent?.action == ACTION_START) START_REDELIVER_INTENT else START_NOT_STICKY
     }
 
     private fun startOptimization(intent: Intent) {
