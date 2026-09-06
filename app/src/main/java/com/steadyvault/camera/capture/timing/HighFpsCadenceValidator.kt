@@ -43,6 +43,11 @@ object HighFpsCadenceValidator {
             val largeGapRatio = deltas.count { it > nominalUs * LARGE_GAP_FACTOR }.toDouble() / deltas.size
             val shortBurstRatio = deltas.count { it < nominalUs * SHORT_BURST_FACTOR }.toDouble() / deltas.size
             val fpsRatio = actualFps / targetFps.toDouble()
+
+            // High FPS precisa ser muito mais rigoroso que vídeo comum: poucos gaps de
+            // 20 ms em 240 FPS já removem vários quadros e são claramente percebidos.
+            // Também rejeite cadência em rajadas (ex.: 120 FPS entregue como blocos de
+            // timestamps a 240 FPS seguidos de pausas), mesmo que a média fique perto de 120.
             val stable = fpsRatio in MIN_FPS_RATIO..MAX_FPS_RATIO &&
                 largeGapRatio <= MAX_LARGE_GAP_RATIO && shortBurstRatio <= MAX_SHORT_BURST_RATIO
             Result(distinct.size, actualFps, largeGapRatio, shortBurstRatio, stable)
@@ -56,10 +61,10 @@ object HighFpsCadenceValidator {
     private const val MAX_SAMPLES = 6000
     private const val MIN_SAMPLES = 40
     private const val MIN_SPAN_US = 500_000L
-    private const val LARGE_GAP_FACTOR = 1.75
-    private const val SHORT_BURST_FACTOR = 0.65
-    private const val MIN_FPS_RATIO = 0.88
-    private const val MAX_FPS_RATIO = 1.12
-    private const val MAX_LARGE_GAP_RATIO = 0.15
-    private const val MAX_SHORT_BURST_RATIO = 0.30
+    private const val LARGE_GAP_FACTOR = 1.50
+    private const val SHORT_BURST_FACTOR = 0.72
+    private const val MIN_FPS_RATIO = 0.985
+    private const val MAX_FPS_RATIO = 1.015
+    private const val MAX_LARGE_GAP_RATIO = 0.005
+    private const val MAX_SHORT_BURST_RATIO = 0.02
 }
