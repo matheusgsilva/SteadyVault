@@ -3291,8 +3291,11 @@ class CaptureActivity : ComponentActivity() {
     private fun selectedCapabilityMatrix(): CaptureCapabilityMatrix.Matrix? {
         val matrix = capabilityMatrix ?: return null
         val selectedId = CaptureSettings.snapshot(this).selectedCameraId
-        if (selectedId != null) return matrix.forCamera(selectedId)
-        val allowedIds = cameraOptions.filter { it.isBack }.mapTo(mutableSetOf()) { it.id }
+        val allOptions = CameraLensCatalog.options(this)
+        val selectedOption = allOptions.firstOrNull { it.id == selectedId }
+        if (selectedOption?.isFront == true) return matrix.forCamera(selectedId)
+        val allowedIds = allOptions.filter { it.isBack }.mapTo(mutableSetOf()) { it.id }
+        if (allowedIds.isEmpty() && selectedId != null) return matrix.forCamera(selectedId)
         return matrix.copy(
             modes = matrix.modes.filter { it.cameraId in allowedIds },
             cameras = matrix.cameras.filter { it.cameraId in allowedIds }

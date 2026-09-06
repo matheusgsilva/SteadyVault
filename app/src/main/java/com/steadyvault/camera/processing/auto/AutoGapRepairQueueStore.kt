@@ -196,7 +196,12 @@ object AutoGapRepairQueueStore {
 
     @Synchronized
     fun updateProgress(context: Context, id: String, progress: Int, message: String): Job? = update(context, id) {
-        it.copy(status = Status.RUNNING, progress = progress.coerceIn(0, 100), message = message, updatedAtMs = System.currentTimeMillis())
+        if (it.status != Status.RUNNING) it
+        else it.copy(
+            progress = progress.coerceIn(0, 100),
+            message = message,
+            updatedAtMs = System.currentTimeMillis()
+        )
     }
 
     @Synchronized

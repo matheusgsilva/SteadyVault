@@ -548,7 +548,17 @@ class CaptureService : Service() {
         storedResolution: String
     ): String {
         if (cameraId.isNullOrBlank()) return storedResolution
-        val cachedMatrix = CaptureCapabilityMatrix.cached(this)?.forCamera(cameraId)
+        val fullMatrix = CaptureCapabilityMatrix.cached(this)
+        val selectedOption = CameraLensCatalog.options(this).firstOrNull { it.id == cameraId }
+        val cachedMatrix = if (targetFps >= CaptureModeStore.FPS_120 && selectedOption?.isBack == true) {
+            val backIds = CameraLensCatalog.options(this).filter { it.isBack }.mapTo(mutableSetOf()) { it.id }
+            fullMatrix?.copy(
+                modes = fullMatrix.modes.filter { it.cameraId in backIds },
+                cameras = fullMatrix.cameras.filter { it.cameraId in backIds }
+            )
+        } else {
+            fullMatrix?.forCamera(cameraId)
+        }
         val catalogResolution = CaptureModeCatalog.preferredResolution(
             context = this,
             fps = targetFps,
@@ -830,6 +840,57 @@ class CaptureService : Service() {
             val encoder = selectDirectRecorderEncoder(profile) ?: continue
             if (profile.hasExactFpsRange()) return profile to encoder
         }
+        return selectAlternateHighFpsConfiguration(targetFps, allowHdr)
+    }
+
+    private fun selectAlternateHighFpsConfiguration(
+        targetFps: Int,
+        allowHdr: Boolean
+    ): Pair<CameraProfile, EncoderProfile>? {
+        if (targetFps < CaptureModeStore.FPS_120 || allowHdr) return null
+        val selectedId = preferredCameraId ?: return null
+        val manager = getSystemService(CameraManager::class.java)
+        val selectedCharacteristics = runCatching { manager.getCameraCharacteristics(selectedId) }.getOrNull() ?: return null
+        val selectedFacing = selectedCharacteristics.get(CameraCharacteristics.LENS_FACING)
+        val requestedSize = recordingSettings.exactPreferredSize() ?: return null
+        val dynamicRange = standardDynamicRangeProfile()
+
+        val candidates = manager.cameraIdList.asSequence()
+            .filter { it != selectedId }
+            .mapNotNull { id ->
+                val c = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return@mapNotNull null
+                if (c.get(CameraCharacteristics.LENS_FACING) != selectedFacing) return@mapNotNull null
+                id to c
+            }
+            .toList()
+
+        // Primeiro tente 120 regular na camera fisica. Depois constrained high-speed.
+        if (targetFps == CaptureModeStore.FPS_120) {
+            for ((id, c) in candidates) {
+                val regularRange = resolveRegularHighFpsRange(c, requestedSize, targetFps) ?: continue
+                val profile = createCameraProfile(
+                    cameraId = id, characteristics = c, videoSize = requestedSize,
+                    targetFps = targetFps, fpsRange = regularRange, highSpeed = false,
+                    dynamicRangeProfile = dynamicRange
+                )
+                val encoder = selectDirectRecorderEncoder(profile) ?: continue
+                if (matchesRequestedMode(profile, targetFps)) return profile to encoder
+            }
+        }
+
+        for ((id, c) in candidates) {
+            val map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: continue
+            val sizes = runCatching { map.highSpeedVideoSizes?.toSet().orEmpty() }.getOrDefault(emptySet())
+            if (requestedSize !in sizes) continue
+            val range = resolveFpsRange(c, requestedSize, targetFps, highSpeed = true) ?: continue
+            val profile = createCameraProfile(
+                cameraId = id, characteristics = c, videoSize = requestedSize,
+                targetFps = targetFps, fpsRange = range, highSpeed = true,
+                dynamicRangeProfile = dynamicRange
+            )
+            val encoder = selectDirectRecorderEncoder(profile) ?: continue
+            if (profile.hasExactFpsRange() && matchesRequestedMode(profile, targetFps)) return profile to encoder
+        }
         return null
     }
 
@@ -881,6 +942,7 @@ class CaptureService : Service() {
         val exact = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
             ?.firstOrNull { StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper) }
             ?: return null
+        if (targetFps == CaptureModeStore.FPS_120) return exact
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val minFrameNs = encoderSurfaceMinFrameDurationNs(map, size, preferMediaRecorder = true)
         val targetFrameNs = frameDurationNs(targetFps)
@@ -1102,7 +1164,16 @@ class CaptureService : Service() {
 
     private fun preferredCameraCompatible(profile: CameraProfile): Boolean {
         val selected = preferredCameraId ?: return true
-        return profile.cameraId == selected
+        if (profile.cameraId == selected) return true
+        if (profile.targetFps < CaptureModeStore.FPS_120) return false
+        val manager = getSystemService(CameraManager::class.java)
+        val selectedFacing = runCatching {
+            manager.getCameraCharacteristics(selected).get(CameraCharacteristics.LENS_FACING)
+        }.getOrNull() ?: return false
+        val profileFacing = runCatching {
+            manager.getCameraCharacteristics(profile.cameraId).get(CameraCharacteristics.LENS_FACING)
+        }.getOrNull() ?: return false
+        return selectedFacing == CameraCharacteristics.LENS_FACING_BACK && profileFacing == selectedFacing
     }
 
 
@@ -1183,7 +1254,6 @@ class CaptureService : Service() {
             width = cameraProfile.videoSize.width,
             height = cameraProfile.videoSize.height,
             targetFps = cameraProfile.targetFps,
-            highSpeedCapture = cameraProfile.highSpeed,
             videoMime = encoderProfile.mime,
             videoBitrate = encoderProfile.bitrate,
             hdrHlg10 = cameraProfile.hdrHlg10,
@@ -1971,36 +2041,14 @@ class CaptureService : Service() {
         }
         setSafely(builder, CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
 
-        // O Camera2 documenta OIS como controle válido também no modo high-speed.
-        // EIS/preview stabilization são best-effort: só são enviados quando a câmera
-        // publica explicitamente o modo. OFF permanece o fallback mais previsível.
-        val videoModes = profile.characteristics.get(
-            CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES
-        ) ?: intArrayOf()
-        val requestedStabilization = recordingSettings.stabilization
-        val autoUseOis = requestedStabilization == CaptureSettings.STABILIZATION_AUTO && profile.oisSupported
-        val explicitOis = requestedStabilization == CaptureSettings.STABILIZATION_OIS
-        val explicitEis = requestedStabilization == CaptureSettings.STABILIZATION_EIS
-        val explicitPreview = requestedStabilization == CaptureSettings.STABILIZATION_PREVIEW
-        when {
-            (autoUseOis || explicitOis) && profile.oisSupported -> {
-                setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = true)
-            }
-            explicitEis && videoModes.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON) -> {
-                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
-                setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON)
-            }
-            explicitPreview && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                videoModes.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION) -> {
-                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
-                setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION)
-            }
-            else -> {
-                setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-                OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
-            }
-        }
+        // HFR prioriza cadence: constrained high-speed recebe o request minimo.
+        // OIS/EIS/preview stabilization permanecem disponíveis normalmente em 30/60.
+        setSafely(
+            builder,
+            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+            CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+        )
+        OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
         CameraZoom.apply(builder, profile.characteristics, recordingSettings.zoomRatio)
     }
 
