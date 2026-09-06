@@ -32,8 +32,8 @@ jobs:
           grep -q 'calcOpticalFlowFarneback' app/src/main/java/com/steadyvault/camera/processing/motion/OpenCvMotionEstimator.kt
           grep -q 'org.opencv:opencv:4.10.0' app/build.gradle.kts
           grep -q 'Interpolação com movimento' app/src/main/java/com/steadyvault/camera/ui/settings/SettingsActivity.kt
-      - name: Compile Kotlin
-        run: bash ./gradlew :app:compileDebugKotlin --no-daemon
+      - name: Compile and assemble APK
+        run: bash ./gradlew :app:compileDebugKotlin :app:assembleDebug --no-daemon
       - name: Commit direct source
         run: |
           git config user.name 'matheusgsilva'
