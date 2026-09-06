@@ -39,6 +39,7 @@ import com.steadyvault.camera.core.capability.HardwareSupportPolicy
 import com.steadyvault.camera.core.capability.HardwareSupportPolicy.Support
 import com.steadyvault.camera.core.capability.PowerPolicy
 import com.steadyvault.camera.core.feedback.Haptics
+import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import com.steadyvault.camera.core.playback.PlaybackSettings
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
@@ -145,6 +146,7 @@ class SettingsActivity : FragmentActivity() {
     private var capabilityScanInProgress = false
     private var editingFps = 60
     private var building = false
+    private var formReady = false
     private var saveGeneration = 0
     private var cacheUsageRefreshGeneration = 0
     private var protectedCaptureFlowPending = false
@@ -232,27 +234,90 @@ class SettingsActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
-        SystemBarInsets.applyTop(findViewById<View>(R.id.settingsScreenRoot))
-        BottomNavigation.bind(this, BottomNavigation.TAB_SETTINGS)
         settingsScroll = findViewById(R.id.settingsScroll)
         container = findViewById(R.id.settingsContainer)
+        runCatching { SystemBarInsets.applyTop(findViewById<View>(R.id.settingsScreenRoot)) }
+            .onFailure { AppLogRepository.warn(this, "SETTINGS_UI", "Falha ao aplicar insets", it) }
+        runCatching { BottomNavigation.bind(this, BottomNavigation.TAB_SETTINGS) }
+            .onFailure { AppLogRepository.warn(this, "SETTINGS_UI", "Falha ao montar navegacao inferior", it) }
+        rebuildSettingsSafely("abertura")
+    }
+
+    private fun activeSettingsSnapshot(): CaptureSettings.Snapshot {
         val requestedProfileMode = intent.getStringExtra(EXTRA_PROFILE_MODE)
             ?.let { runCatching { CameraProfileStore.FunctionMode.valueOf(it) }.getOrNull() }
             ?: CameraProfileStore.FunctionMode.VIDEO
         val current = CaptureSettings.snapshot(this)
-        val activeSnapshot = current.selectedCameraId?.takeIf { it.isNotBlank() }?.let { cameraId ->
+        return current.selectedCameraId?.takeIf { it.isNotBlank() }?.let { cameraId ->
             CameraProfileStore.ensureProfiles(this, cameraId, current)
             CameraProfileStore.activate(this, cameraId, requestedProfileMode, current)
         } ?: current.also { CameraProfileStore.setActiveMode(this, requestedProfileMode) }
-        capabilityMatrix = CaptureCapabilityMatrix.cached(this)
-        capabilityScanCompleted = capabilityMatrix != null
-        buildForm(activeSnapshot)
+    }
+
+    private fun rebuildSettingsSafely(reason: String) {
+        if (isFinishing || isDestroyed) return
+        formReady = false
+        building = true
+        runCatching {
+            capabilityMatrix = CaptureCapabilityMatrix.cached(this)
+            capabilityScanCompleted = capabilityMatrix != null
+            buildForm(activeSettingsSnapshot())
+        }.onFailure { error ->
+            showSettingsRecovery(reason, error)
+        }
+    }
+
+    private fun showSettingsRecovery(reason: String, error: Throwable) {
+        formReady = false
+        building = true
+        saveGeneration++
+        mainHandler.removeCallbacksAndMessages(null)
+        AppLogRepository.error(this, "SETTINGS_UI", "Falha ao montar Configuracoes ($reason)", error)
+        helperBySpinner.clear()
+        labelBySpinner.clear()
+        resolutionSelections.clear()
+        container.removeAllViews()
+        settingsScroll.scrollTo(0, 0)
+
+        addTitle(
+            "Configurações",
+            "Uma opção salva ou uma capacidade do aparelho não pôde ser carregada agora. O app permaneceu aberto e nenhum arquivo do cofre foi alterado."
+        )
+        addInfo("Você pode tentar novamente. Se uma preferência antiga estiver incompatível, restaure somente os ajustes de câmera; cofres, PINs e mídias não são apagados.")
+        addSmallButton("Tentar abrir configurações novamente") {
+            rebuildSettingsSafely("nova tentativa")
+        }
+        addSmallButton("Restaurar somente ajustes de câmera") {
+            OneUiDialog.confirm(
+                activity = this,
+                title = "Restaurar ajustes de câmera?",
+                message = "Restaura resolução, FPS, codec e controles da câmera. Cofres, PINs, mídias, navegador e apps protegidos permanecem intactos.",
+                positiveLabel = "Restaurar",
+                destructive = false
+            ) {
+                CaptureSettings.restoreDefaults(this)
+                CaptureCapabilityMatrix.invalidate(this)
+                CaptureStateStore.clearEffectiveMode(this)
+                rebuildSettingsSafely("apos restaurar camera")
+            }
+        }
+        Toast.makeText(this, "Configurações entraram em modo de recuperação em vez de fechar o app.", Toast.LENGTH_LONG).show()
+    }
+
+    private fun runUiAction(name: String, action: () -> Unit) {
+        if (isFinishing || isDestroyed) return
+        runCatching(action).onFailure { error ->
+            AppLogRepository.error(this, "UI_ACTION", "Falha em $name", error)
+            Haptics.error(this)
+            Toast.makeText(this, error.message ?: "Não foi possível concluir esta ação agora.", Toast.LENGTH_LONG).show()
+        }
     }
 
     override fun onPause() {
-        if (!building && ::autoSaveStatus.isInitialized) {
+        if (formReady && !building && ::autoSaveStatus.isInitialized) {
             saveGeneration++
-            saveCurrent()
+            runCatching { saveCurrent() }
+                .onFailure { AppLogRepository.error(this, "SETTINGS_SAVE", "Falha ao salvar ajustes no onPause", it) }
         }
         super.onPause()
     }
@@ -266,6 +331,7 @@ class SettingsActivity : FragmentActivity() {
     }
 
     private fun buildForm(snapshot: CaptureSettings.Snapshot) {
+        formReady = false
         building = true
         helperBySpinner.clear()
         labelBySpinner.clear()
@@ -749,8 +815,11 @@ class SettingsActivity : FragmentActivity() {
         refreshHardwareFeatureOptions()
         refreshDependentControls()
         mainHandler.post {
+            if (isFinishing || isDestroyed) return@post
+            formReady = true
             building = false
-            refreshCacheUsage()
+            runCatching { refreshCacheUsage() }
+                .onFailure { AppLogRepository.warn(this, "SETTINGS_UI", "Falha ao atualizar cache", it) }
         }
     }
 
@@ -1387,8 +1456,11 @@ class SettingsActivity : FragmentActivity() {
         val requestedFps = selected(fps).toIntOrNull() ?: CaptureSettings.snapshot(this).fps
 
         updateOptions(fps, fpsOptions(catalog), requestedFps.toString())
-        var selectedFps = selected(fps).toInt()
-        var capability = catalog.profile(selectedFps)
+        val selectedFps = selected(fps).toIntOrNull()
+            ?.takeIf { it in CaptureSettings.supportedFpsValues }
+            ?: requestedFps.takeIf { it in CaptureSettings.supportedFpsValues }
+            ?: 60
+        val capability = catalog.profile(selectedFps)
 
         editingFps = selectedFps
         val requestedResolution = preferredResolutionForFps(selectedFps)
@@ -1413,8 +1485,9 @@ class SettingsActivity : FragmentActivity() {
 
     private fun enforceHdrCompatibility() {
         if (!hdr.isChecked) return
+        val activeFps = selected(fps).toIntOrNull() ?: editingFps
         val incompatible = selected(codec) == CaptureSettings.CODEC_AVC ||
-                selected(fps).toInt() >= 120 ||
+                activeFps >= 120 ||
                 selectedCameraFeatures()?.hdrHlg10 == Support.UNSUPPORTED
         if (incompatible) {
             hdr.isChecked = false
@@ -1424,7 +1497,7 @@ class SettingsActivity : FragmentActivity() {
 
     private fun refreshDependentControls() {
         if (!::hdr.isInitialized) return
-        val highSpeed = selected(fps).toInt() >= 120
+        val highSpeed = (selected(fps).toIntOrNull() ?: editingFps) >= 120
         val hdrSupport = selectedCameraFeatures()?.hdrHlg10 ?: Support.UNVERIFIED
         val hdrHardwareSelectable = HardwareSupportPolicy.isSelectable(hdrSupport)
         hdr.isEnabled = !highSpeed && selected(codec) != CaptureSettings.CODEC_AVC && hdrHardwareSelectable
@@ -1445,23 +1518,28 @@ class SettingsActivity : FragmentActivity() {
         if (building) return
         val generation = ++saveGeneration
         val action = Runnable {
-            if (generation != saveGeneration || isDestroyed) return@Runnable
-            saveCurrent()
+            if (generation != saveGeneration || isDestroyed || !formReady) return@Runnable
+            runCatching { saveCurrent() }
+                .onFailure { AppLogRepository.error(this, "SETTINGS_SAVE", "Falha no salvamento automatico", it) }
         }
         if (immediate) action.run() else mainHandler.postDelayed(action, AUTO_SAVE_DELAY_MS)
     }
 
     private fun snapshotFromForm(
         base: CaptureSettings.Snapshot,
-        fpsValue: Int = selected(fps).toInt(),
-        resolutionValue: String = selected(resolution)
+        fpsValue: Int = selected(fps).toIntOrNull()
+            ?.takeIf { it in CaptureSettings.supportedFpsValues }
+            ?: editingFps.takeIf { it in CaptureSettings.supportedFpsValues }
+            ?: base.fps,
+        resolutionValue: String = selected(resolution).takeIf { it in CaptureSettings.supportedResolutionValues }
+            ?: base.resolution
     ): CaptureSettings.Snapshot = base.copy(
         resolution = resolutionValue,
         fps = fpsValue,
         autoFpsLowLight = autoFpsLowLight.isChecked,
         codec = selected(codec),
         bitrateMbps = selected(bitrate).toIntOrNull()?.coerceIn(4, 240) ?: base.bitrateMbps,
-        iFrameIntervalSeconds = selected(iframe).toInt(),
+        iFrameIntervalSeconds = selected(iframe).toIntOrNull()?.coerceIn(1, 10) ?: base.iFrameIntervalSeconds,
         hdrHlg10 = hdr.isChecked,
         colorProfile = selected(colorProfile),
         stabilization = selected(stabilization),
@@ -1475,8 +1553,8 @@ class SettingsActivity : FragmentActivity() {
         previewMode = CaptureSettings.PREVIEW_OFF,
         exposureCompensation = selected(exposure).toIntOrNull()?.coerceIn(-12, 12) ?: 0,
         thermalProtection = thermal.isChecked,
-        audioSampleRate = selected(audioSampleRate).toInt(),
-        audioBitrateKbps = selected(audioBitrate).toInt(),
+        audioSampleRate = selected(audioSampleRate).toIntOrNull()?.takeIf { it == 44_100 || it == 48_000 } ?: base.audioSampleRate,
+        audioBitrateKbps = selected(audioBitrate).toIntOrNull()?.coerceIn(96, 320) ?: base.audioBitrateKbps,
         audioChannels = selected(audioChannels),
         audioGainDb = selected(audioGain).toIntOrNull()?.coerceIn(0, 30) ?: 0,
         audioAgc = audioAgc.isChecked,
@@ -1517,7 +1595,7 @@ class SettingsActivity : FragmentActivity() {
     }
 
     private fun saveCurrent() {
-        if (building) return
+        if (building || !formReady) return
         resolutionSelections[editingFps] = selected(resolution)
         val old = CaptureSettings.snapshot(this)
         val value = snapshotFromForm(old)
@@ -2071,7 +2149,7 @@ class SettingsActivity : FragmentActivity() {
                 }
                 adapter.selectedPosition = position
                 helper.text = item.description
-                onSpinnerChanged(spinner)
+                runUiAction("seletor: $label") { onSpinnerChanged(spinner) }
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
@@ -2107,7 +2185,7 @@ class SettingsActivity : FragmentActivity() {
             setBackgroundResource(R.drawable.bg_oneui_button_secondary)
             isClickable = true
             isFocusable = true
-            setOnClickListener { action() }
+            setOnClickListener { runUiAction("botao: $text", action) }
         }
         container.addView(button, matchWrap(bottom = AppearanceStore.controlSpacingDp(this)))
         return button
@@ -2184,8 +2262,10 @@ class SettingsActivity : FragmentActivity() {
     }
 
     private fun selected(spinner: Spinner): String {
-        val adapter = spinner.adapter as ChoiceSpinnerAdapter
-        return adapter.valueAt(spinner.selectedItemPosition.coerceAtLeast(0))
+        val adapter = spinner.adapter as? ChoiceSpinnerAdapter ?: return ""
+        if (adapter.count <= 0) return ""
+        val position = spinner.selectedItemPosition.coerceIn(0, adapter.count - 1)
+        return runCatching { adapter.valueAt(position) }.getOrDefault("")
     }
 
     private data class FeatureOptionSpec(

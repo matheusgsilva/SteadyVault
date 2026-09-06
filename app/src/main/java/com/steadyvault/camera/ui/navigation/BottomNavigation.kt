@@ -8,8 +8,10 @@ import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.steadyvault.camera.R
+import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import com.steadyvault.camera.ui.theme.AppearanceStore
 import com.steadyvault.camera.ui.capture.CaptureActivity
 import com.steadyvault.camera.ui.apps.ProtectedAppsActivity
@@ -27,12 +29,12 @@ object BottomNavigation {
     const val TAB_SETTINGS = 4
 
     fun bind(activity: Activity, currentTab: Int, onBeforeNavigate: (() -> Unit)? = null) {
-        val root = activity.findViewById<View>(R.id.bottomNavigationRoot)
-        val record = activity.findViewById<TextView>(R.id.navRecord)
-        val library = activity.findViewById<TextView>(R.id.navLibrary)
-        val browser = activity.findViewById<TextView>(R.id.navBrowser)
-        val apps = activity.findViewById<TextView>(R.id.navApps)
-        val settings = activity.findViewById<TextView>(R.id.navSettings)
+        val root = activity.findViewById<View>(R.id.bottomNavigationRoot) ?: return
+        val record = activity.findViewById<TextView>(R.id.navRecord) ?: return
+        val library = activity.findViewById<TextView>(R.id.navLibrary) ?: return
+        val browser = activity.findViewById<TextView>(R.id.navBrowser) ?: return
+        val apps = activity.findViewById<TextView>(R.id.navApps) ?: return
+        val settings = activity.findViewById<TextView>(R.id.navSettings) ?: return
 
         val items = listOf(
             Triple(record, R.drawable.ic_nav_record, currentTab == TAB_RECORD),
@@ -139,10 +141,19 @@ object BottomNavigation {
         alreadyOpen: Boolean,
         onBeforeNavigate: (() -> Unit)?
     ) {
-        if (alreadyOpen) return
-        onBeforeNavigate?.invoke()
+        if (alreadyOpen || activity.isFinishing || activity.isDestroyed) return
+        runCatching { onBeforeNavigate?.invoke() }
+            .onFailure { AppLogRepository.error(activity, "NAVIGATION", "Falha antes de navegar para ${target.simpleName}", it) }
         val intent = Intent(activity, target).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-        val options = ActivityOptions.makeCustomAnimation(activity, 0, 0).toBundle()
-        activity.startActivity(intent, options)
+        val result = runCatching {
+            val options = ActivityOptions.makeCustomAnimation(activity, 0, 0).toBundle()
+            activity.startActivity(intent, options)
+        }.recoverCatching {
+            activity.startActivity(intent)
+        }
+        result.onFailure { error ->
+            AppLogRepository.error(activity, "NAVIGATION", "Nao foi possivel abrir ${target.simpleName}", error)
+            Toast.makeText(activity, "Não foi possível abrir esta tela agora.", Toast.LENGTH_LONG).show()
+        }
     }
 }
