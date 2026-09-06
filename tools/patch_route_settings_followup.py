@@ -9,6 +9,8 @@ def replace_once(path: Path, old: str, new: str, label: str):
     path.write_text(text.replace(old, new, 1))
 
 # Remove referencia residual ao spinner de preview que nao existe mais.
+# O campo previewMode permanece no Snapshot como compatibilidade interna e e
+# fixado em PREVIEW_OFF; o que nao deve existir e um controle de UI sem escolha real.
 settings = Path('app/src/main/java/com/steadyvault/camera/ui/settings/SettingsActivity.kt')
 replace_once(
     settings,
@@ -73,7 +75,8 @@ discreet.write_text(text.replace(old, new, 1))
 settings_text = settings.read_text()
 widget_text = widget.read_text()
 black_text = discreet.read_text()
-assert 'previewMode' not in settings_text
+assert 'private lateinit var previewMode:' not in settings_text
+assert 'previewMode = addSpinner' not in settings_text
 assert 'intent.getIntExtra(\n            EXTRA_TARGET_FPS' not in widget_text
 assert 'RecordingStorageGuard.checkProfile(this, effectiveSettings)' in black_text
 print('FOLLOWUP AUDIT OK')
