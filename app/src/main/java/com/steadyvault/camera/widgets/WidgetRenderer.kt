@@ -94,7 +94,6 @@ object WidgetRenderer {
         lastRecordingControlsState = recordingControlsState(context)
     }
 
-
     /**
      * Atualiza os estados dos controles sem reinflar o widget inteiro.
      * A atualização parcial bloqueia todos os comandos durante foto/processamento
@@ -149,6 +148,9 @@ object WidgetRenderer {
                 val views = RemoteViews(context.packageName, spec.type.layoutId)
                 val zoomAvailable = supportsUsefulZoom(context)
                 views.setViewVisibility(R.id.widgetZoom, if (zoomAvailable) View.VISIBLE else View.GONE)
+                if (spec.type == WidgetType.LOCK_SCREEN) {
+                    views.setViewVisibility(R.id.widgetZoomBackground, if (zoomAvailable) View.VISIBLE else View.GONE)
+                }
                 if (zoomAvailable) {
                     configureZoomButton(
                         views,
@@ -252,6 +254,9 @@ object WidgetRenderer {
         if (type.hasZoom) {
             val zoomAvailable = supportsUsefulZoom(context)
             views.setViewVisibility(R.id.widgetZoom, if (zoomAvailable) View.VISIBLE else View.GONE)
+            if (type == WidgetType.LOCK_SCREEN) {
+                views.setViewVisibility(R.id.widgetZoomBackground, if (zoomAvailable) View.VISIBLE else View.GONE)
+            }
             if (zoomAvailable) {
                 configureZoomButton(
                     views,
@@ -306,10 +311,12 @@ object WidgetRenderer {
                 }
                 val neutralWidgetActions = VisualIdentityStore.neutralWidgetActions(context)
                 configureButton(
-                    views,
-                    R.id.widgetSequence,
-                    captureEnabled,
-                    sequenceIntent,
+                    views = views,
+                    context = context,
+                    type = type,
+                    viewId = R.id.widgetSequence,
+                    enabled = captureEnabled,
+                    clickIntent = sequenceIntent,
                     enabledIcon = if (neutralWidgetActions) R.drawable.ic_grid else R.drawable.ic_burst,
                     disabledIcon = if (neutralWidgetActions) R.drawable.ic_grid else R.drawable.ic_burst_disabled,
                     enabledBackground = if (type == WidgetType.LOCK_SCREEN) WidgetAppearance.lockAccentBackground(context) else WidgetAppearance.expandedAccentBackground(context),
@@ -318,10 +325,12 @@ object WidgetRenderer {
             }
             val neutralWidgetActions = VisualIdentityStore.neutralWidgetActions(context)
             configureButton(
-                views,
-                R.id.widgetPhoto,
-                captureEnabled,
-                photoIntent,
+                views = views,
+                context = context,
+                type = type,
+                viewId = R.id.widgetPhoto,
+                enabled = captureEnabled,
+                clickIntent = photoIntent,
                 enabledIcon = if (neutralWidgetActions) R.drawable.ic_add else R.drawable.ic_camera,
                 disabledIcon = if (neutralWidgetActions) R.drawable.ic_add else R.drawable.ic_camera_disabled,
                 enabledBackground = if (type == WidgetType.LOCK_SCREEN) WidgetAppearance.lockAccentBackground(context) else WidgetAppearance.expandedAccentBackground(context),
@@ -519,16 +528,20 @@ object WidgetRenderer {
             0,
             0
         )
-        views.setInt(
-            R.id.widgetZoom,
-            "setBackgroundResource",
-            when {
-                type == WidgetType.LOCK_SCREEN && enabled -> WidgetAppearance.lockAccentBackground(context)
-                type == WidgetType.LOCK_SCREEN -> WidgetAppearance.lockDisabledBackground(context)
-                enabled -> WidgetAppearance.expandedAccentBackground(context)
-                else -> WidgetAppearance.expandedDisabledBackground(context)
-            }
-        )
+        if (type == WidgetType.LOCK_SCREEN) {
+            applyLockButtonBackground(
+                views,
+                context,
+                R.id.widgetZoom,
+                if (enabled) WidgetAppearance.LockTone.ACCENT else WidgetAppearance.LockTone.DISABLED
+            )
+        } else {
+            views.setInt(
+                R.id.widgetZoom,
+                "setBackgroundResource",
+                if (enabled) WidgetAppearance.expandedAccentBackground(context) else WidgetAppearance.expandedDisabledBackground(context)
+            )
+        }
         views.setOnClickPendingIntent(R.id.widgetZoom, clickIntent)
         views.setContentDescription(R.id.widgetZoom, "Zoom da foto e do vídeo: $label. Toque para mudar.")
     }
@@ -564,29 +577,33 @@ object WidgetRenderer {
 
         views.setImageViewResource(viewId, icon)
 
-        views.setInt(
-            viewId,
-            "setBackgroundResource",
-            when {
-                type == WidgetType.LOCK_SCREEN && recording && stopIcon ->
-                    WidgetAppearance.lockStopBackground(context)
-                type == WidgetType.LOCK_SCREEN && recording ->
-                    WidgetAppearance.lockRecordingBackground(context)
-                type == WidgetType.LOCK_SCREEN && !stopIcon && enabled ->
-                    WidgetAppearance.lockAccentBackground(context)
-                type == WidgetType.LOCK_SCREEN ->
-                    WidgetAppearance.lockDisabledBackground(context)
-                recording && stopIcon -> R.drawable.bg_widget_expanded_button_red
-                recording -> R.drawable.bg_widget_expanded_button_recording
-                !stopIcon && enabled -> WidgetAppearance.expandedAccentBackground(context)
-                else -> WidgetAppearance.expandedDisabledBackground(context)
+        if (type == WidgetType.LOCK_SCREEN) {
+            val tone = when {
+                recording && stopIcon -> WidgetAppearance.LockTone.STOP
+                recording -> WidgetAppearance.LockTone.RECORDING
+                !stopIcon && enabled -> WidgetAppearance.LockTone.ACCENT
+                else -> WidgetAppearance.LockTone.DISABLED
             }
-        )
+            applyLockButtonBackground(views, context, viewId, tone)
+        } else {
+            views.setInt(
+                viewId,
+                "setBackgroundResource",
+                when {
+                    recording && stopIcon -> R.drawable.bg_widget_expanded_button_red
+                    recording -> R.drawable.bg_widget_expanded_button_recording
+                    !stopIcon && enabled -> WidgetAppearance.expandedAccentBackground(context)
+                    else -> WidgetAppearance.expandedDisabledBackground(context)
+                }
+            )
+        }
         views.setOnClickPendingIntent(viewId, clickIntent)
     }
 
     private fun configureButton(
         views: RemoteViews,
+        context: Context,
+        type: WidgetType,
         viewId: Int,
         enabled: Boolean,
         clickIntent: PendingIntent,
@@ -598,11 +615,40 @@ object WidgetRenderer {
         views.setBoolean(viewId, "setEnabled", enabled)
         views.setFloat(viewId, "setAlpha", 1f)
         views.setImageViewResource(viewId, if (enabled) enabledIcon else disabledIcon)
-        views.setInt(
-            viewId,
-            "setBackgroundResource",
-            if (enabled) enabledBackground else disabledBackground
-        )
+        if (type == WidgetType.LOCK_SCREEN) {
+            applyLockButtonBackground(
+                views,
+                context,
+                viewId,
+                if (enabled) WidgetAppearance.LockTone.ACCENT else WidgetAppearance.LockTone.DISABLED
+            )
+        } else {
+            views.setInt(
+                viewId,
+                "setBackgroundResource",
+                if (enabled) enabledBackground else disabledBackground
+            )
+        }
         views.setOnClickPendingIntent(viewId, clickIntent)
+    }
+
+    private fun applyLockButtonBackground(
+        views: RemoteViews,
+        context: Context,
+        viewId: Int,
+        tone: WidgetAppearance.LockTone
+    ) {
+        val backgroundViewId = when (viewId) {
+            R.id.widgetZoom -> R.id.widgetZoomBackground
+            R.id.widgetPhoto -> R.id.widgetPhotoBackground
+            R.id.widgetStart -> R.id.widgetStartBackground
+            R.id.widgetStop -> R.id.widgetStopBackground
+            else -> return
+        }
+        views.setInt(viewId, "setBackgroundResource", android.R.color.transparent)
+        views.setImageViewBitmap(
+            backgroundViewId,
+            WidgetAppearance.lockButtonBitmap(context, tone, WidgetType.LOCK_SCREEN.buttonSizeDp)
+        )
     }
 }
