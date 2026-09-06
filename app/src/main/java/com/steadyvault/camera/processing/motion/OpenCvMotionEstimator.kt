@@ -15,16 +15,17 @@ import kotlin.math.roundToInt
  * Fluxo óptico local entre dois quadros vizinhos.
  *
  * A entrada vem de um downsample feito pela GPU. Farneback calcula movimento nos
- * dois sentidos. O vetor final não é mais apenas o forward: ele é corrigido pelo
- * backward amostrado no destino. A confiança continua codificada no canal B para
- * o shader decidir quando deve cair para uma mistura segura.
+ * dois sentidos. O forward continua sendo a trajetória principal e o backward só
+ * corrige proporcionalmente quando os dois campos concordam. Isso evita reduzir a
+ * velocidade aparente no meio do gap quando o backward é incerto.
  */
 object OpenCvMotionEstimator {
     data class Field(
         val rgba: ByteArray,
         val flowScaleX: Float,
         val flowScaleY: Float,
-        val meanConfidence: Float
+        val meanConfidence: Float,
+        val meanMotionPixels: Float
     )
 
     @Volatile
@@ -95,6 +96,7 @@ object OpenCvMotionEstimator {
             val maxFlow = if (highQuality) 24f else 12f
             val encoded = ByteArray(pixels * 4)
             var confidenceSum = 0.0
+            var motionSum = 0.0
 
             for (y in 0 until height) {
                 for (x in 0 until width) {
@@ -109,25 +111,31 @@ object OpenCvMotionEstimator {
                     val sampledBackwardDx = sampleFlow(backwardData, width, height, targetX, targetY, 0)
                     val sampledBackwardDy = sampleFlow(backwardData, width, height, targetX, targetY, 1)
 
-                    // Em uma trajetória consistente, backward ~= -forward. Use os dois
-                    // sentidos para definir o vetor efetivamente enviado ao shader.
-                    // Isso reduz overshoot/undershoot quando um único sentido erra.
-                    val correctedDx = ((forwardDx - sampledBackwardDx) * 0.5f)
-                        .coerceIn(-maxFlow, maxFlow)
-                    val correctedDy = ((forwardDy - sampledBackwardDy) * 0.5f)
-                        .coerceIn(-maxFlow, maxFlow)
-
                     val consistencyError = hypot(
                         (forwardDx + sampledBackwardDx).toDouble(),
                         (forwardDy + sampledBackwardDy).toDouble()
                     ).toFloat()
-                    val previousValue = previousLuma[index].toInt() and 0xff
-                    val currentValue = sampleGray(currentLuma, width, height, targetX, targetY)
-                    val photoError = abs(previousValue.toFloat() - currentValue) / 255f
-
                     val consistencyConfidence = exp(
                         (-consistencyError / if (highQuality) 2.2f else 2.5f).toDouble()
                     ).toFloat()
+
+                    // Backward ~= -forward quando a trajetória é confiável. Em vez de
+                    // sempre fazer média 50/50, preserve o forward quando há conflito.
+                    // Isso remove o efeito de desacelerar no frame sintético e acelerar
+                    // novamente logo depois do gap.
+                    val backwardAsForwardDx = -sampledBackwardDx
+                    val backwardAsForwardDy = -sampledBackwardDy
+                    val backwardWeight = (consistencyConfidence * 0.5f).coerceIn(0f, 0.5f)
+                    val correctedDx = (
+                        forwardDx * (1f - backwardWeight) + backwardAsForwardDx * backwardWeight
+                    ).coerceIn(-maxFlow, maxFlow)
+                    val correctedDy = (
+                        forwardDy * (1f - backwardWeight) + backwardAsForwardDy * backwardWeight
+                    ).coerceIn(-maxFlow, maxFlow)
+
+                    val previousValue = previousLuma[index].toInt() and 0xff
+                    val currentValue = sampleGray(currentLuma, width, height, targetX, targetY)
+                    val photoError = abs(previousValue.toFloat() - currentValue) / 255f
                     val photoConfidence = (1f - photoError * 2.2f).coerceIn(0f, 1f)
                     val clipped = abs(rawForwardDx) > maxFlow || abs(rawForwardDy) > maxFlow
                     val boundaryPenalty = if (clipped) 0.55f else 1f
@@ -135,11 +143,18 @@ object OpenCvMotionEstimator {
                         (consistencyConfidence * 0.75f + photoConfidence * 0.25f) * boundaryPenalty
                     ).coerceIn(0f, 1f)
                     confidenceSum += confidence.toDouble()
+                    motionSum += hypot(correctedDx.toDouble(), correctedDy.toDouble())
+
+                    // O shader antigo usava nearest-frame quando B ficava muito baixo,
+                    // produzindo uma microcongelada seguida de salto. Um piso de 0.36
+                    // mantém o fallback em mistura temporal contínua, sem fingir que a
+                    // confiança real é maior no relatório (meanConfidence continua raw).
+                    val shaderConfidence = (0.36f + confidence * 0.64f).coerceIn(0f, 1f)
 
                     val out = index * 4
                     encoded[out] = encodeFlow(correctedDx, maxFlow)
                     encoded[out + 1] = encodeFlow(correctedDy, maxFlow)
-                    encoded[out + 2] = (confidence * 255f).roundToInt().coerceIn(0, 255).toByte()
+                    encoded[out + 2] = (shaderConfidence * 255f).roundToInt().coerceIn(0, 255).toByte()
                     encoded[out + 3] = 0xff.toByte()
                 }
             }
@@ -148,7 +163,8 @@ object OpenCvMotionEstimator {
                 rgba = encoded,
                 flowScaleX = maxFlow / width.toFloat(),
                 flowScaleY = maxFlow / height.toFloat(),
-                meanConfidence = (confidenceSum / pixels.coerceAtLeast(1).toDouble()).toFloat()
+                meanConfidence = (confidenceSum / pixels.coerceAtLeast(1).toDouble()).toFloat(),
+                meanMotionPixels = (motionSum / pixels.coerceAtLeast(1).toDouble()).toFloat()
             )
         } finally {
             previous.release()
