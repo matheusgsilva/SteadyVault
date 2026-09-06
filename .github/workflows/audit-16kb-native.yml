@@ -1,0 +1,54 @@
+name: Audit Android 16 KB native libs
+
+on:
+  push:
+    branches:
+      - test-1.8.131-motion-gap-repair
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: test-1.8.131-motion-gap-repair
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Assemble debug APK
+        run: bash ./gradlew :app:assembleDebug --no-daemon
+      - name: Audit ELF LOAD alignment and APK zip alignment
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          rm -rf /tmp/apk16 && mkdir -p /tmp/apk16
+          unzip -q "$APK" 'lib/*' -d /tmp/apk16
+          echo '===== ELF 16 KB AUDIT ====='
+          bad=0
+          while IFS= read -r so; do
+            rel=${so#/tmp/apk16/}
+            abi=$(echo "$rel" | cut -d/ -f2)
+            # 16 KB page-size devices are 64-bit. Audit arm64 and x86_64 strictly.
+            if [[ "$abi" != "arm64-v8a" && "$abi" != "x86_64" ]]; then
+              continue
+            fi
+            aligns=$(readelf -lW "$so" | awk '$1=="LOAD" {print $NF}')
+            file_bad=0
+            for a in $aligns; do
+              value=$((a))
+              if (( value < 16384 )); then file_bad=1; fi
+            done
+            if (( file_bad )); then
+              echo "UNALIGNED $rel LOAD_ALIGN=[$(echo $aligns | tr '\n' ' ')]"
+              bad=$((bad+1))
+            else
+              echo "ALIGNED   $rel LOAD_ALIGN=[$(echo $aligns | tr '\n' ' ')]"
+            fi
+          done < <(find /tmp/apk16/lib -type f -name '*.so' | sort)
+          echo "ELF_UNALIGNED_COUNT=$bad"
+          echo '===== ZIPALIGN 16 KB AUDIT ====='
+          ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -1)
+          "$ZIPALIGN" -c -P 16 -v 4 "$APK" || true
+          # Auditoria inicial é diagnóstica: não falhe antes de listar todas as libs.
