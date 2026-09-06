@@ -18,14 +18,15 @@ object AutoGapRepairSettings {
     private const val KEY_MAX_FRAMES = "max_frames"
     private const val KEY_AI_ASSISTED = "ai_assisted"
     private const val KEY_SCHEMA = "schema"
-    private const val SCHEMA = 2
+    private const val SCHEMA = 3
 
     fun snapshot(context: Context): Snapshot {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val stored = FrameRepairMode.from(
             prefs.getString(KEY_MODE, FrameRepairMode.MOTION_COMPENSATED.name)
         )
-        val migrated = if (prefs.getInt(KEY_SCHEMA, 0) < SCHEMA && stored == FrameRepairMode.ADAPTIVE_BLEND) {
+        val previousSchema = prefs.getInt(KEY_SCHEMA, 0)
+        val migrated = if (previousSchema < 2 && stored == FrameRepairMode.ADAPTIVE_BLEND) {
             FrameRepairMode.MOTION_COMPENSATED
         } else stored
         val safeMode = migrated.takeIf {
@@ -34,7 +35,14 @@ object AutoGapRepairSettings {
                 it == FrameRepairMode.FILL_MISSING_FRAMES ||
                 it == FrameRepairMode.SMOOTH_TIMELINE
         } ?: FrameRepairMode.MOTION_COMPENSATED
-        if (prefs.getInt(KEY_SCHEMA, 0) < SCHEMA || safeMode != stored) {
+
+        // Schema 3 aumenta o limite padrão para cobrir gaps de 120/240 FPS sem cair
+        // prematuramente em repetição de quadro. Preserve valores que o usuário já alterou.
+        val storedMaxFrames = if (prefs.contains(KEY_MAX_FRAMES)) {
+            prefs.getInt(KEY_MAX_FRAMES, 8)
+        } else 8
+
+        if (previousSchema < SCHEMA || safeMode != stored) {
             prefs.edit()
                 .putInt(KEY_SCHEMA, SCHEMA)
                 .putString(KEY_MODE, safeMode.name)
@@ -43,7 +51,7 @@ object AutoGapRepairSettings {
         return Snapshot(
             enabled = prefs.getBoolean(KEY_ENABLED, false),
             mode = safeMode,
-            maxInterpolatedFramesPerGap = prefs.getInt(KEY_MAX_FRAMES, 4).coerceIn(1, 16),
+            maxInterpolatedFramesPerGap = storedMaxFrames.coerceIn(1, 16),
             aiAssisted = prefs.getBoolean(KEY_AI_ASSISTED, false)
         )
     }
