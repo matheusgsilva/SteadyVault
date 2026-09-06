@@ -24,6 +24,7 @@ jobs:
         run: |
           python3 tools/apply_motion_gap_repair.py
           python3 tools/apply_opencv_motion_upgrade.py
+          python3 tools/apply_opencv_packaging_fix.py
       - name: Static audit
         run: |
           if grep -Rni --include='*.kt' --include='*.xml' 'iphone' app/src/main; then exit 1; fi
@@ -31,6 +32,7 @@ jobs:
           grep -q 'OpenCvMotionEstimator' app/src/main/java/com/steadyvault/camera/processing/transcode/HardwareVideoTranscoder.kt
           grep -q 'calcOpticalFlowFarneback' app/src/main/java/com/steadyvault/camera/processing/motion/OpenCvMotionEstimator.kt
           grep -q 'org.opencv:opencv:4.10.0' app/build.gradle.kts
+          grep -q 'pickFirsts.*libc++_shared' app/build.gradle.kts
           grep -q 'Interpolação com movimento' app/src/main/java/com/steadyvault/camera/ui/settings/SettingsActivity.kt
       - name: Compile and assemble APK
         run: bash ./gradlew :app:compileDebugKotlin :app:assembleDebug --no-daemon
