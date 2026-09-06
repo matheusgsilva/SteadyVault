@@ -17,62 +17,114 @@
         android:paddingEnd="1dp"
         android:paddingBottom="1dp">
 
-    <TextView
-        android:id="@+id/widgetZoom"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:alpha="1"
-        android:background="@drawable/bg_widget_lock_accent_button_emerald_balanced"
-        android:contentDescription="@string/zoom_content_description"
-        android:drawablePadding="0dp"
-        android:drawableTop="@drawable/ic_zoom"
-        android:gravity="center"
-        android:includeFontPadding="false"
-        android:maxLines="1"
-        android:paddingStart="4dp"
-        android:paddingTop="4dp"
-        android:paddingEnd="4dp"
-        android:paddingBottom="4dp"
-        android:text="@string/widget_zoom_preview"
-        android:textColor="@android:color/white"
-        android:textSize="8sp"
-        android:textStyle="bold" />
+        <FrameLayout
+            android:layout_width="40dp"
+            android:layout_height="40dp">
 
-    <ImageView
-        android:id="@+id/widgetPhoto"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:alpha="1"
-        android:layout_marginStart="1dp"
-        android:background="@drawable/bg_widget_lock_accent_button_emerald_balanced"
-        android:contentDescription="@string/photo_content_description"
-        android:padding="11dp"
-        android:scaleType="centerInside"
-        android:src="@drawable/ic_camera" />
+            <ImageView
+                android:id="@+id/widgetZoomBackground"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@null"
+                android:importantForAccessibility="no"
+                android:scaleType="fitXY" />
 
-    <ImageView
-        android:id="@+id/widgetStart"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:alpha="1"
-        android:layout_marginStart="1dp"
-        android:background="@drawable/bg_widget_lock_accent_button_emerald_balanced"
-        android:contentDescription="@string/record_content_description"
-        android:padding="11dp"
-        android:scaleType="centerInside"
-        android:src="@drawable/ic_record" />
+            <TextView
+                android:id="@+id/widgetZoom"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:alpha="1"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/zoom_content_description"
+                android:drawablePadding="0dp"
+                android:drawableTop="@drawable/ic_zoom"
+                android:gravity="center"
+                android:includeFontPadding="false"
+                android:maxLines="1"
+                android:paddingStart="4dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="4dp"
+                android:paddingBottom="4dp"
+                android:text="@string/widget_zoom_preview"
+                android:textColor="@android:color/white"
+                android:textSize="8sp"
+                android:textStyle="bold" />
+        </FrameLayout>
 
-    <ImageView
-        android:id="@+id/widgetStop"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:alpha="1"
-        android:layout_marginStart="1dp"
-        android:background="@drawable/bg_widget_lock_disabled_button_emerald_balanced"
-        android:contentDescription="@string/stop_content_description"
-        android:enabled="false"
-        android:padding="11dp"
-        android:scaleType="centerInside"
-        android:src="@drawable/ic_widget_stop_off" />
+        <FrameLayout
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="1dp">
+
+            <ImageView
+                android:id="@+id/widgetPhotoBackground"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@null"
+                android:importantForAccessibility="no"
+                android:scaleType="fitXY" />
+
+            <ImageView
+                android:id="@+id/widgetPhoto"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:alpha="1"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/photo_content_description"
+                android:padding="11dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_camera" />
+        </FrameLayout>
+
+        <FrameLayout
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="1dp">
+
+            <ImageView
+                android:id="@+id/widgetStartBackground"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@null"
+                android:importantForAccessibility="no"
+                android:scaleType="fitXY" />
+
+            <ImageView
+                android:id="@+id/widgetStart"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:alpha="1"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/record_content_description"
+                android:padding="11dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_record" />
+        </FrameLayout>
+
+        <FrameLayout
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="1dp">
+
+            <ImageView
+                android:id="@+id/widgetStopBackground"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@null"
+                android:importantForAccessibility="no"
+                android:scaleType="fitXY" />
+
+            <ImageView
+                android:id="@+id/widgetStop"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:alpha="1"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/stop_content_description"
+                android:enabled="false"
+                android:padding="11dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_widget_stop_off" />
+        </FrameLayout>
     </LinearLayout>
 </FrameLayout>
