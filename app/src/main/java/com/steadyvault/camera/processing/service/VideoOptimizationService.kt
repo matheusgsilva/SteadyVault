@@ -17,6 +17,7 @@ import android.os.Process
 import android.os.SystemClock
 import com.steadyvault.camera.core.settings.VisualIdentityStore
 import com.steadyvault.camera.core.state.OptimizationStateStore
+import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.processing.engine.ProcessingPolicy
 import com.steadyvault.camera.processing.engine.VideoOptimizer
 import com.steadyvault.camera.processing.model.FilterStrength
@@ -164,7 +165,7 @@ class VideoOptimizationService : Service() {
                 if (preflight.warnings.isNotEmpty()) {
                     publishProgress(currentProgress, preflight.warnings.joinToString(" • "))
                 }
-                policy.awaitSafeTemperature(config.thermalProtection, cancelled::get) { message ->
+                policy.awaitSafeTemperature(config.thermalProtection, ::cancelledForCapture) { message ->
                     publishProgress(currentProgress, message)
                 }
 
@@ -185,13 +186,13 @@ class VideoOptimizationService : Service() {
                         }
                         publishProgress(percent, message)
                     },
-                    cancelled = cancelled::get
+                    cancelled = ::cancelledForCapture
                 )
 
                 require(result.output.isFile && result.output.length() > 0L) {
                     "O processador não gerou um arquivo válido"
                 }
-                if (cancelled.get()) throw InterruptedException("Otimização cancelada")
+                if (cancelledForCapture()) throw InterruptedException("Otimização pausada para a gravação")
 
                 publishProgress(98, "Validando integridade, duração, orientação e áudio", forceNotification = true)
                 val validation = VideoValidator.validate(
@@ -199,7 +200,7 @@ class VideoOptimizationService : Service() {
                     result.analysis,
                     expectedDurationUs = if (config.hasTrim()) config.trimmedDurationUs(result.analysis.durationUs) else null
                 )
-                if (cancelled.get()) throw InterruptedException("Otimização cancelada")
+                if (cancelledForCapture()) throw InterruptedException("Otimização pausada para a gravação")
 
                 var replacementDeferred = false
                 val finalFile = if (config.replaceOriginal) {
@@ -263,6 +264,9 @@ class VideoOptimizationService : Service() {
             }
         }
     }
+
+    private fun cancelledForCapture(): Boolean =
+        cancelled.get() || capturePriorityRequested || CaptureStateStore.isBusy(this) || Thread.currentThread().isInterrupted
 
     private fun publishProgress(
         progress: Int,
@@ -419,6 +423,7 @@ class VideoOptimizationService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        @Volatile private var capturePriorityRequested = false
         const val ACTION_STATE = "com.steadyvault.camera.OPTIMIZATION_STATE"
         const val STATE_PROGRESS = "progress"
         const val STATE_SUCCESS = "success"
@@ -467,7 +472,19 @@ class VideoOptimizationService : Service() {
             context.startService(intent)
         }
 
+        fun pauseForCapture(context: Context) {
+            capturePriorityRequested = true
+            runCatching {
+                context.startService(Intent(context, VideoOptimizationService::class.java).setAction(ACTION_CANCEL))
+            }
+        }
+
+        fun resumeAfterCapture() {
+            capturePriorityRequested = false
+        }
+
         fun start(context: Context, source: File, requestedConfig: OptimizationConfig): Boolean {
+            if (capturePriorityRequested || CaptureStateStore.isBusy(context)) return false
             val active = OptimizationStateStore.snapshot(context)
             if (active.running) return false
             val config = requestedConfig.normalized()
