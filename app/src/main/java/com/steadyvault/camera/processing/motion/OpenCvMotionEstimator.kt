@@ -9,14 +9,15 @@ import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 /**
  * Fluxo óptico local entre dois quadros vizinhos.
  *
  * A entrada vem de um downsample feito pela GPU. Farneback calcula movimento nos
- * dois sentidos e o resultado volta como uma textura RGBA compacta:
- * R/G = fluxo previous -> current e B/A = fluxo current -> previous.
- * O shader usa os dois campos para reconstruir o instante intermediário em 4K.
+ * dois sentidos. O vetor final não é mais apenas o forward: ele é corrigido pelo
+ * backward amostrado no destino. A confiança continua codificada no canal B para
+ * o shader decidir quando deve cair para uma mistura segura.
  */
 object OpenCvMotionEstimator {
     data class Field(
@@ -66,8 +67,7 @@ object OpenCvMotionEstimator {
             Imgproc.cvtColor(previous, previousGray, Imgproc.COLOR_RGBA2GRAY)
             Imgproc.cvtColor(current, currentGray, Imgproc.COLOR_RGBA2GRAY)
 
-            // O reparo é pós-captura: no modo de alta qualidade vale priorizar a
-            // trajetória correta sobre alguns milissegundos extras de processamento.
+            // O reparo roda depois da captura; aqui qualidade vale mais que latência.
             val levels = if (highQuality) 6 else 4
             val window = if (highQuality) 31 else 21
             val iterations = if (highQuality) 7 else 3
@@ -91,8 +91,7 @@ object OpenCvMotionEstimator {
             previousGray.get(0, 0, previousLuma)
             currentGray.get(0, 0, currentLuma)
 
-            // 24 px na malha de análise cobre movimentos bem maiores no quadro final.
-            // O limite anterior (10/14 px) cortava panorâmicas rápidas justamente nos gaps.
+            // O limite antigo de 10/14 px cortava panorâmicas rápidas nos gaps.
             val maxFlow = if (highQuality) 24f else 12f
             val encoded = ByteArray(pixels * 4)
             var confidenceSum = 0.0
@@ -109,14 +108,23 @@ object OpenCvMotionEstimator {
                     val targetY = y + forwardDy
                     val sampledBackwardDx = sampleFlow(backwardData, width, height, targetX, targetY, 0)
                     val sampledBackwardDy = sampleFlow(backwardData, width, height, targetX, targetY, 1)
+
+                    // Em uma trajetória consistente, backward ~= -forward. Use os dois
+                    // sentidos para definir o vetor efetivamente enviado ao shader.
+                    // Isso reduz overshoot/undershoot quando um único sentido erra.
+                    val correctedDx = ((forwardDx - sampledBackwardDx) * 0.5f)
+                        .coerceIn(-maxFlow, maxFlow)
+                    val correctedDy = ((forwardDy - sampledBackwardDy) * 0.5f)
+                        .coerceIn(-maxFlow, maxFlow)
+
                     val consistencyError = hypot(
                         (forwardDx + sampledBackwardDx).toDouble(),
                         (forwardDy + sampledBackwardDy).toDouble()
                     ).toFloat()
-
                     val previousValue = previousLuma[index].toInt() and 0xff
                     val currentValue = sampleGray(currentLuma, width, height, targetX, targetY)
                     val photoError = abs(previousValue.toFloat() - currentValue) / 255f
+
                     val consistencyConfidence = exp(
                         (-consistencyError / if (highQuality) 2.2f else 2.5f).toDouble()
                     ).toFloat()
@@ -128,13 +136,11 @@ object OpenCvMotionEstimator {
                     ).coerceIn(0f, 1f)
                     confidenceSum += confidence.toDouble()
 
-                    val rawBackwardDx = backwardData[index * 2]
-                    val rawBackwardDy = backwardData[index * 2 + 1]
                     val out = index * 4
-                    encoded[out] = encodeFlow(forwardDx, maxFlow)
-                    encoded[out + 1] = encodeFlow(forwardDy, maxFlow)
-                    encoded[out + 2] = encodeFlow(rawBackwardDx.coerceIn(-maxFlow, maxFlow), maxFlow)
-                    encoded[out + 3] = encodeFlow(rawBackwardDy.coerceIn(-maxFlow, maxFlow), maxFlow)
+                    encoded[out] = encodeFlow(correctedDx, maxFlow)
+                    encoded[out + 1] = encodeFlow(correctedDy, maxFlow)
+                    encoded[out + 2] = (confidence * 255f).roundToInt().coerceIn(0, 255).toByte()
+                    encoded[out + 3] = 0xff.toByte()
                 }
             }
 
@@ -156,7 +162,7 @@ object OpenCvMotionEstimator {
 
     private fun encodeFlow(value: Float, maximum: Float): Byte {
         val encoded = (((value / maximum).coerceIn(-1f, 1f) * 0.5f + 0.5f) * 255f)
-            .toInt().coerceIn(0, 255)
+            .roundToInt().coerceIn(0, 255)
         return encoded.toByte()
     }
 
