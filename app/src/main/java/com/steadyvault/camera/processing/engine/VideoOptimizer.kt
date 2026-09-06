@@ -158,7 +158,10 @@ class VideoOptimizer {
                 keepAudio = config.keepAudio,
                 filters = config.filters,
                 maxInterpolatedFramesPerGap = config.maxInterpolatedFramesPerGap,
-                highQualityMotion = config.aiAssisted,
+                // Compensação de movimento é sempre um reparo de qualidade. A opção
+                // aiAssisted continua controlando análise/filtros inteligentes, mas não
+                // reduz mais a precisão básica do optical flow quando há frames ausentes.
+                highQualityMotion = config.frameRepair == FrameRepairMode.MOTION_COMPENSATED || config.aiAssisted,
                 trimStartUs = config.trimStartUs(analysis.durationUs),
                 trimEndUs = config.trimEndUs(analysis.durationUs)
             ),
