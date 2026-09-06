@@ -37,18 +37,23 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
     private val delayedLock = object : Runnable {
         override fun run() {
             if (startedActivities != 0) return
-            if (PrimaryVaultLock.isEnabled(this@SteadyVaultApplication)) PrimaryVaultLock.lock()
-            if (SecondaryVaultLock.isEnabled(this@SteadyVaultApplication)) SecondaryVaultLock.lock()
-            if (TertiaryVaultLock.isEnabled(this@SteadyVaultApplication)) TertiaryVaultLock.lock()
+            protect("APP_LIFECYCLE", "bloqueio atrasado dos cofres") {
+                if (PrimaryVaultLock.isEnabled(this@SteadyVaultApplication)) PrimaryVaultLock.lock()
+                if (SecondaryVaultLock.isEnabled(this@SteadyVaultApplication)) SecondaryVaultLock.lock()
+                if (TertiaryVaultLock.isEnabled(this@SteadyVaultApplication)) TertiaryVaultLock.lock()
+            }
         }
     }
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_SCREEN_OFF && VaultSecuritySettings.lockOnScreenOff(this@SteadyVaultApplication)) {
-                PrimaryVaultLock.lock()
-                SecondaryVaultLock.lock()
-                TertiaryVaultLock.lock()
+            if (intent?.action != Intent.ACTION_SCREEN_OFF) return
+            protect("APP_LIFECYCLE", "bloqueio ao apagar a tela") {
+                if (VaultSecuritySettings.lockOnScreenOff(this@SteadyVaultApplication)) {
+                    PrimaryVaultLock.lock()
+                    SecondaryVaultLock.lock()
+                    TertiaryVaultLock.lock()
+                }
             }
         }
     }
@@ -56,31 +61,51 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
     override fun onCreate() {
         super.onCreate()
         registerActivityLifecycleCallbacks(this)
-        AppLogRepository.installCrashCapture(this)
-        CaptureStateStore.reconcileInterruptedRecording(this)
-        AutoGapRepairService.resumeIfEnabled(this)
-        VaultStartupCoordinator.runAsync(this)
-        QuickCaptureLauncher.applySavedConfiguration(this)
-        WidgetRenderer.updateAll(this)
-        WidgetPreviewPublisher.publishIfNeeded(this)
-        ContextCompat.registerReceiver(
-            this,
-            screenReceiver,
-            IntentFilter(Intent.ACTION_SCREEN_OFF),
-            ContextCompat.RECEIVER_EXPORTED
-        )
+        runCatching { AppLogRepository.installCrashCapture(this) }
+            .onFailure { Log.e(TAG, "Falha ao instalar captura de diagnostico", it) }
+
+        protect("APP_STARTUP", "reconciliar gravacao interrompida") {
+            CaptureStateStore.reconcileInterruptedRecording(this)
+        }
+        protect("APP_STARTUP", "retomar reparo automatico") {
+            AutoGapRepairService.resumeIfEnabled(this)
+        }
+        protect("APP_STARTUP", "inicializar cofres") {
+            VaultStartupCoordinator.runAsync(this)
+        }
+        protect("APP_STARTUP", "aplicar atalhos de captura") {
+            QuickCaptureLauncher.applySavedConfiguration(this)
+        }
+        protect("APP_STARTUP", "atualizar widgets") {
+            WidgetRenderer.updateAll(this)
+        }
+        protect("APP_STARTUP", "publicar preview de widget") {
+            WidgetPreviewPublisher.publishIfNeeded(this)
+        }
+        protect("APP_STARTUP", "registrar observador de tela") {
+            ContextCompat.registerReceiver(
+                this,
+                screenReceiver,
+                IntentFilter(Intent.ACTION_SCREEN_OFF),
+                ContextCompat.RECEIVER_EXPORTED
+            )
+        }
     }
 
     override fun onActivityStarted(activity: Activity) {
         if (startedActivities == 0 && !changingConfiguration) {
             handler.removeCallbacks(delayedLock)
-            if (VaultSecuritySettings.shouldLockOnForeground(this)) {
-                PrimaryVaultLock.lock()
-                SecondaryVaultLock.lock()
-                TertiaryVaultLock.lock()
+            protect("APP_LIFECYCLE", "retorno ao primeiro plano") {
+                if (VaultSecuritySettings.shouldLockOnForeground(this)) {
+                    PrimaryVaultLock.lock()
+                    SecondaryVaultLock.lock()
+                    TertiaryVaultLock.lock()
+                }
+                VaultSecuritySettings.clearBackgroundMark(this)
             }
-            VaultSecuritySettings.clearBackgroundMark(this)
-            VaultStartupCoordinator.runAsync(this)
+            protect("APP_LIFECYCLE", "coordenar cofres no primeiro plano") {
+                VaultStartupCoordinator.runAsync(this)
+            }
         }
         changingConfiguration = false
         startedActivities++
@@ -90,31 +115,46 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
         changingConfiguration = activity.isChangingConfigurations
         startedActivities = (startedActivities - 1).coerceAtLeast(0)
         if (startedActivities == 0 && !changingConfiguration) {
-            VaultSecuritySettings.markBackground(this)
-            handler.removeCallbacks(delayedLock)
-            val timeout = VaultSecuritySettings.timeoutMs(this)
-            when {
-                timeout == VaultSecuritySettings.TIMEOUT_IMMEDIATE -> delayedLock.run()
-                timeout > 0L -> handler.postDelayed(delayedLock, timeout)
+            protect("APP_LIFECYCLE", "entrada em segundo plano") {
+                VaultSecuritySettings.markBackground(this)
+                handler.removeCallbacks(delayedLock)
+                val timeout = VaultSecuritySettings.timeoutMs(this)
+                when {
+                    timeout == VaultSecuritySettings.TIMEOUT_IMMEDIATE -> delayedLock.run()
+                    timeout > 0L -> handler.postDelayed(delayedLock, timeout)
+                }
             }
         }
     }
 
     override fun onTerminate() {
         runCatching { unregisterReceiver(screenReceiver) }
-        unregisterActivityLifecycleCallbacks(this)
+        runCatching { unregisterActivityLifecycleCallbacks(this) }
         super.onTerminate()
     }
 
     override fun onActivityCreated(activity: Activity, state: Bundle?) {
-        AppearanceRuntime.apply(activity)
+        protect("APP_APPEARANCE", "aplicar aparencia em ${activity.javaClass.simpleName}") {
+            AppearanceRuntime.apply(activity)
+        }
     }
+
     override fun onActivityResumed(activity: Activity) {
-        AppearanceRuntime.apply(activity)
+        protect("APP_APPEARANCE", "reaplicar aparencia em ${activity.javaClass.simpleName}") {
+            AppearanceRuntime.apply(activity)
+        }
     }
+
     override fun onActivityPaused(activity: Activity) = Unit
     override fun onActivitySaveInstanceState(activity: Activity, state: Bundle) = Unit
     override fun onActivityDestroyed(activity: Activity) = Unit
+
+    private inline fun protect(category: String, operation: String, block: () -> Unit) {
+        runCatching(block).onFailure { error ->
+            AppLogRepository.error(this, category, "Falha em $operation; app continuou em execucao", error)
+        }
+    }
+
     companion object {
         private const val TAG = "SteadyVaultApplication"
         private val mediaEngineExecutor = Executors.newSingleThreadExecutor { task ->
@@ -201,5 +241,4 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
         private const val KEY_LAST_COMPATIBILITY_REPAIR = "last_compatibility_repair_v1"
         private const val MEDIA_ENGINE_REPAIR_COOLDOWN_MS = 6L * 60L * 60L * 1_000L
     }
-
 }
