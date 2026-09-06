@@ -96,10 +96,16 @@ class AutoGapRepairService : Service() {
                 AutoGapRepairQueueStore.retryFailed(this)
                 kickWorker()
             }
-            ACTION_PAUSE_CAPTURE, ACTION_PAUSE_USER -> {
+            ACTION_PAUSE_CAPTURE -> {
                 cancelCurrent.set(true)
                 if (!workerRunning.get()) stopSelf(startId)
                 else publish(currentProgress, "Pausando reparo para priorizar a gravação…", force = true)
+            }
+            ACTION_PAUSE_USER -> {
+                userPauseRequested = true
+                cancelCurrent.set(true)
+                if (!workerRunning.get()) stopSelf(startId)
+                else publish(currentProgress, "Reparo pausado pelo usuário…", force = true)
             }
         }
         return if (action == ACTION_ENQUEUE || action == ACTION_RESUME || action == ACTION_RETRY_FAILED) {
@@ -110,7 +116,13 @@ class AutoGapRepairService : Service() {
     }
 
     private fun kickWorker() {
-        if (!AutoGapRepairSettings.snapshot(this).enabled || capturePriorityRequested || CaptureStateStore.isBusy(this)) {
+        if (
+            !AutoGapRepairSettings.snapshot(this).enabled ||
+            capturePriorityRequested ||
+            interactivePriorityRequested ||
+            userPauseRequested ||
+            CaptureStateStore.isBusy(this)
+        ) {
             cancelCurrent.set(true)
             if (!workerRunning.get()) stopSelf()
             return
@@ -178,7 +190,7 @@ class AutoGapRepairService : Service() {
                 AutoGapRepairQueueStore.markError(this, job.id, "O vídeo já está sendo processado por outra operação")
                 return true
             }
-            if (cancelledForCaptureOrUser()) return pauseJob(job, "Reparo adiado para priorizar nova gravação")
+            if (cancelledForCaptureOrUser()) return pauseJob(job, pauseReason())
 
             val analysis = VideoAnalysis.read(source)
             if (!analysis.hasCadenceProblems || analysis.estimatedMissingFrames <= 0) {
@@ -212,7 +224,7 @@ class AutoGapRepairService : Service() {
 
             var lastFailure: Throwable? = null
             for ((index, mode) in modes.withIndex()) {
-                if (cancelledForCaptureOrUser()) return pauseJob(job, "Reparo pausado; original preservado na fila")
+                if (cancelledForCaptureOrUser()) return pauseJob(job, pauseReason())
                 workFile?.takeIf { it.exists() }?.delete()
                 workFile = VaultRepository.createOptimizationWorkFile(this, source)
                 val modeLabel = when (mode) {
@@ -299,7 +311,7 @@ class AutoGapRepairService : Service() {
                 if (failure is InterruptedException || cancelledForCaptureOrUser()) {
                     workFile?.takeIf { it.exists() }?.delete()
                     workFile = null
-                    return pauseJob(job, "Reparo pausado; será retomado do original")
+                    return pauseJob(job, pauseReason())
                 }
                 lastFailure = failure
                 workFile?.takeIf { it.exists() }?.delete()
@@ -315,7 +327,7 @@ class AutoGapRepairService : Service() {
             return true
         } catch (interrupted: InterruptedException) {
             workFile?.takeIf { it.exists() }?.delete()
-            return pauseJob(job, "Reparo interrompido para priorizar a gravação")
+            return pauseJob(job, pauseReason())
         } catch (throwable: Throwable) {
             workFile?.takeIf { it.exists() }?.delete()
             AutoGapRepairQueueStore.markError(
@@ -337,15 +349,30 @@ class AutoGapRepairService : Service() {
     private fun shouldContinueQueue(): Boolean =
         AutoGapRepairSettings.snapshot(this).enabled &&
             !capturePriorityRequested &&
+            !interactivePriorityRequested &&
+            !userPauseRequested &&
             !CaptureStateStore.isBusy(this) &&
             !cancelCurrent.get()
 
     private fun cancelledForCaptureOrUser(): Boolean =
         cancelCurrent.get() ||
             capturePriorityRequested ||
+            interactivePriorityRequested ||
+            userPauseRequested ||
             CaptureStateStore.isBusy(this) ||
             !AutoGapRepairSettings.snapshot(this).enabled ||
             Thread.currentThread().isInterrupted
+
+    private fun pauseReason(): String = when {
+        capturePriorityRequested || CaptureStateStore.isBusy(this) ->
+            "Reparo pausado para priorizar uma nova gravação"
+        interactivePriorityRequested ->
+            "Reparo pausado enquanto o app está em uso; será retomado em segundo plano"
+        userPauseRequested ->
+            "Reparo pausado pelo usuário"
+        else ->
+            "Reparo interrompido; será retomado do original"
+    }
 
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
@@ -524,14 +551,21 @@ class AutoGapRepairService : Service() {
         private const val PROGRESS_PUBLISH_INTERVAL_MS = 300L
 
         @Volatile private var capturePriorityRequested = false
+        @Volatile private var interactivePriorityRequested = false
+        @Volatile private var userPauseRequested = false
 
         fun enqueue(context: Context, source: File, targetFps: Int) {
             if (!AutoGapRepairSettings.snapshot(context).enabled || !source.isFile) return
+            // Persist first. Starting a foreground transcoder is intentionally deferred
+            // while the camera or an interactive SteadyVault screen owns resources.
             AutoGapRepairQueueStore.enqueue(context, source, targetFps)
-            startSelf(context, ACTION_ENQUEUE) {
-                putExtra(EXTRA_SOURCE_PATH, source.absolutePath)
-                putExtra(EXTRA_TARGET_FPS, targetFps)
-            }
+            if (
+                capturePriorityRequested ||
+                interactivePriorityRequested ||
+                userPauseRequested ||
+                CaptureStateStore.isBusy(context)
+            ) return
+            startSelf(context, ACTION_RESUME)
         }
 
         fun pauseForCapture(context: Context) {
@@ -550,7 +584,19 @@ class AutoGapRepairService : Service() {
             resumeIfEnabled(context)
         }
 
+        fun pauseForInteractiveUse() {
+            // Same-process flag: a running transcoder observes this in its cancellation
+            // callback without starting another Android service just to stop work.
+            interactivePriorityRequested = true
+        }
+
+        fun resumeForBackground(context: Context) {
+            interactivePriorityRequested = false
+            resumeIfEnabled(context)
+        }
+
         fun pauseByUser(context: Context) {
+            userPauseRequested = true
             runCatching {
                 context.startService(
                     Intent(context, AutoGapRepairService::class.java).setAction(ACTION_PAUSE_USER)
@@ -558,18 +604,28 @@ class AutoGapRepairService : Service() {
             }
         }
 
+        fun resumeByUser(context: Context) {
+            userPauseRequested = false
+            resumeIfEnabled(context)
+        }
+
         fun resumeIfEnabled(context: Context) {
             if (!AutoGapRepairSettings.snapshot(context).enabled) return
+            if (
+                capturePriorityRequested ||
+                interactivePriorityRequested ||
+                userPauseRequested ||
+                CaptureStateStore.isBusy(context)
+            ) return
             AutoGapRepairQueueStore.recoverInterrupted(context)
             if (!AutoGapRepairQueueStore.hasPending(context)) return
             startSelf(context, ACTION_RESUME)
         }
 
         fun retryFailed(context: Context) {
+            userPauseRequested = false
             AutoGapRepairQueueStore.retryFailed(context)
-            if (AutoGapRepairSettings.snapshot(context).enabled) {
-                startSelf(context, ACTION_RETRY_FAILED)
-            }
+            resumeIfEnabled(context)
         }
 
         private fun startSelf(context: Context, action: String, configure: Intent.() -> Unit = {}) {

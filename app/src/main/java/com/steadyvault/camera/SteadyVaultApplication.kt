@@ -55,6 +55,11 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
                     TertiaryVaultLock.lock()
                 }
             }
+            // Screen-off is the ideal time for automatic repair: no player/UI is
+            // competing for decoder/GPU and the foreground service owns a wake lock.
+            protect("APP_LIFECYCLE", "retomar reparo com tela apagada") {
+                AutoGapRepairService.resumeForBackground(this@SteadyVaultApplication)
+            }
         }
     }
 
@@ -66,9 +71,6 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
 
         protect("APP_STARTUP", "reconciliar gravacao interrompida") {
             CaptureStateStore.reconcileInterruptedRecording(this)
-        }
-        protect("APP_STARTUP", "retomar reparo automatico") {
-            AutoGapRepairService.resumeIfEnabled(this)
         }
         protect("APP_STARTUP", "inicializar cofres") {
             VaultStartupCoordinator.runAsync(this)
@@ -94,6 +96,9 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
 
     override fun onActivityStarted(activity: Activity) {
         if (startedActivities == 0 && !changingConfiguration) {
+            // Automatic transcode yields while the user is navigating, opening the
+            // vault/settings or playing the original. The job stays persisted.
+            AutoGapRepairService.pauseForInteractiveUse()
             handler.removeCallbacks(delayedLock)
             protect("APP_LIFECYCLE", "retorno ao primeiro plano") {
                 if (VaultSecuritySettings.shouldLockOnForeground(this)) {
@@ -124,6 +129,9 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
                     timeout > 0L -> handler.postDelayed(delayedLock, timeout)
                 }
             }
+            protect("APP_LIFECYCLE", "retomar reparo em segundo plano") {
+                AutoGapRepairService.resumeForBackground(this)
+            }
         }
     }
 
@@ -140,6 +148,7 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
     }
 
     override fun onActivityResumed(activity: Activity) {
+        AutoGapRepairService.pauseForInteractiveUse()
         protect("APP_APPEARANCE", "reaplicar aparencia em ${activity.javaClass.simpleName}") {
             AppearanceRuntime.apply(activity)
         }

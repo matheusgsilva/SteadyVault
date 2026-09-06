@@ -608,12 +608,12 @@ class SettingsActivity : FragmentActivity() {
             refreshAutoGapRepairQueueCard()
             Toast.makeText(this, "Falhas reenfileiradas quando houver", Toast.LENGTH_SHORT).show()
         }
-        addSmallButton("Retomar fila de reparo agora") {
-            AutoGapRepairService.resumeIfEnabled(this)
+        addSmallButton("Liberar fila para reparo em segundo plano") {
+            AutoGapRepairService.resumeByUser(this)
             refreshAutoGapRepairQueueCard()
-            Toast.makeText(this, "Fila de reparo retomada", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Fila liberada; o reparo começa ao sair do app ou apagar a tela", Toast.LENGTH_LONG).show()
         }
-        addInfo("O reparo roda com prioridade baixa e nunca bloqueia a câmera. Cada tentativa começa novamente do MP4 original; temporários incompletos são descartados. A ferramenta Otimizar vídeo no Cofre continua disponível para reprocessar manualmente qualquer arquivo.")
+        addInfo("Para evitar travamentos e disputa de GPU/decoder, o reparo automático fica pausado enquanto você navega no SteadyVault e retoma quando o app vai para segundo plano ou a tela é apagada. Uma nova gravação sempre tem prioridade e interrompe qualquer processamento. Cada tentativa recomeça do MP4 original; temporários incompletos são descartados.")
 
         val playback = PlaybackSettings.snapshot(this)
         addSection("Reprodução")
