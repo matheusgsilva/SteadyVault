@@ -7,6 +7,7 @@ import com.steadyvault.camera.capture.timing.RecordingStabilizationPolicy
 import com.steadyvault.camera.capture.timing.CaptureCadencePolicy
 import com.steadyvault.camera.capture.timing.StrictCaptureModePolicy
 import com.steadyvault.camera.capture.timing.SensorCadencePolicy
+import com.steadyvault.camera.capture.timing.HighFpsCadenceValidator
 
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.diagnostics.AppLogRepository
@@ -1182,6 +1183,7 @@ class CaptureService : Service() {
             width = cameraProfile.videoSize.width,
             height = cameraProfile.videoSize.height,
             targetFps = cameraProfile.targetFps,
+            highSpeedCapture = cameraProfile.highSpeed,
             videoMime = encoderProfile.mime,
             videoBitrate = encoderProfile.bitrate,
             hdrHlg10 = cameraProfile.hdrHlg10,
@@ -1693,7 +1695,10 @@ class CaptureService : Service() {
 
         logRecordingStartup(profile)
         logFpsFallbackIfNeeded(profile)
-        CaptureStateStore.updateEffectiveMode(this, resolutionValue(profile.videoSize), sizeName(profile.videoSize), profile.targetFps)
+        CaptureStateStore.updateEffectiveMode(
+            this, resolutionValue(profile.videoSize), sizeName(profile.videoSize), profile.targetFps,
+            rememberHistory = profile.targetFps < CaptureModeStore.FPS_120
+        )
         if (recordingSettings.vibrateStartStop) Haptics.start(this)
 
         val suffix = if (highSpeed) "high-speed • MediaRecorder direto" else "MediaRecorder direto • ${stabilizationName(profile)}"
@@ -2247,10 +2252,28 @@ class CaptureService : Service() {
             ((SystemClock.elapsedRealtime() - recordingStartedAtElapsedMs) / 1000L).coerceAtLeast(0L)
         } else 0L
         val qualityLabel = if (profile?.hdrHlg10 == true) "HDR HLG10" else "SDR BT.709"
-        // O original já está finalizado e indexado antes de entrar na fila. O reparo
-        // nunca recebe permissão para substituir este arquivo.
-        AutoGapRepairService.enqueue(this, finalFile, fps)
-        val message = "Vídeo salvo no cofre • ${sizeName(size)} • $fps FPS • $qualityLabel • ${formatDuration(durationSeconds)}"
+        val hfrCadence = if (fps >= CaptureModeStore.FPS_120) HighFpsCadenceValidator.inspect(finalFile, fps) else null
+        if (profile != null && hfrCadence != null) {
+            if (hfrCadence.stable) {
+                CaptureStateStore.rememberValidatedModeForFps(
+                    this, resolutionValue(profile.videoSize), sizeName(profile.videoSize), fps
+                )
+            } else {
+                CaptureStateStore.clearEffectiveModeHistoryForFps(this, fps)
+                AppLogRepository.warn(
+                    this, "hfr_cadence",
+                    "${sizeName(profile.videoSize)} $fps FPS entregou ${hfrCadence.label} FPS reais; gaps=${hfrCadence.largeGapRatio}; bursts=${hfrCadence.shortBurstRatio}"
+                )
+            }
+        }
+        // Uma falha estrutural HFR nao deve ser mascarada sintetizando metade do video.
+        if (hfrCadence?.stable != false) AutoGapRepairService.enqueue(this, finalFile, fps)
+        val cadenceLabel = when {
+            hfrCadence == null -> ""
+            hfrCadence.stable -> " • ${hfrCadence.label} FPS reais confirmados"
+            else -> " • ${hfrCadence.label} FPS reais • cadência high-speed instável"
+        }
+        val message = "Vídeo salvo no cofre • ${sizeName(size)} • $fps FPS • $qualityLabel$cadenceLabel • ${formatDuration(durationSeconds)}"
         sendStateOnMain(message)
         updateNotificationOnMain(message)
         finishServiceOnMain()

@@ -27,6 +27,8 @@ import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.state.OptimizationStateStore
 import com.steadyvault.camera.processing.service.VideoOptimizationService
+import com.steadyvault.camera.processing.auto.AutoGapRepairService
+import com.steadyvault.camera.processing.auto.AutoGapRepairQueueStore
 import com.steadyvault.camera.storage.security.SecondaryVaultLock
 import com.steadyvault.camera.storage.security.TertiaryVaultLock
 import com.steadyvault.camera.storage.security.PrimaryVaultLock
@@ -159,8 +161,13 @@ class PrimaryVaultActivity : FragmentActivity() {
         override fun run() {
             if (!PrimaryVaultLock.isUnlocked(this@PrimaryVaultActivity)) return
             val snapshot = OptimizationStateStore.snapshot(this@PrimaryVaultActivity)
-            updateOptimizationUi(snapshot)
-            if (snapshot.running) mainHandler.postDelayed(this, OPTIMIZATION_REFRESH_MS) else refresh()
+            val autoJob = AutoGapRepairQueueStore.runningJob(this@PrimaryVaultActivity)
+            when {
+                snapshot.running -> updateOptimizationUi(snapshot)
+                autoJob != null -> updateProcessingUi(autoJob.sourcePath, autoJob.progress, autoJob.message, "Reparo")
+                else -> { refresh(); return }
+            }
+            mainHandler.postDelayed(this, OPTIMIZATION_REFRESH_MS)
         }
     }
     private val importStatusRefresh = object : Runnable {
@@ -178,11 +185,32 @@ class PrimaryVaultActivity : FragmentActivity() {
     }
     private val optimizationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val state = intent?.getStringExtra(VideoOptimizationService.EXTRA_STATE).orEmpty()
-            if (state == VideoOptimizationService.STATE_PROGRESS) {
-                updateOptimizationUi(OptimizationStateStore.snapshot(this@PrimaryVaultActivity))
-                scheduleOptimizationRefresh()
-            } else refresh()
+            when (intent?.action) {
+                VideoOptimizationService.ACTION_STATE -> {
+                    val state = intent.getStringExtra(VideoOptimizationService.EXTRA_STATE).orEmpty()
+                    if (state == VideoOptimizationService.STATE_PROGRESS) {
+                        updateProcessingUi(
+                            intent.getStringExtra(VideoOptimizationService.EXTRA_SOURCE_PATH),
+                            intent.getIntExtra(VideoOptimizationService.EXTRA_PROGRESS, 0),
+                            intent.getStringExtra(VideoOptimizationService.EXTRA_MESSAGE).orEmpty(),
+                            "Otimização"
+                        )
+                        scheduleOptimizationRefresh()
+                    } else mainHandler.postDelayed({ refresh() }, 100L)
+                }
+                AutoGapRepairService.ACTION_STATE -> {
+                    val running = intent.getBooleanExtra(AutoGapRepairService.EXTRA_RUNNING, false)
+                    if (running) {
+                        updateProcessingUi(
+                            intent.getStringExtra(AutoGapRepairService.EXTRA_SOURCE_PATH),
+                            intent.getIntExtra(AutoGapRepairService.EXTRA_PROGRESS, 0),
+                            intent.getStringExtra(AutoGapRepairService.EXTRA_MESSAGE).orEmpty(),
+                            "Reparo"
+                        )
+                        scheduleOptimizationRefresh()
+                    } else mainHandler.postDelayed({ refresh() }, 100L)
+                }
+            }
         }
     }
 
@@ -1478,13 +1506,15 @@ class PrimaryVaultActivity : FragmentActivity() {
         trashLabel.text = "Lixeira"
         trashLabel.contentDescription = if (page.trashCount == 0) "Lixeira" else "Lixeira, ${page.trashCount} item(ns)"
         applyGalleryView(page.optimization)
+        val autoJob = if (!page.optimization.running) AutoGapRepairQueueStore.runningJob(this) else null
+        if (autoJob != null) adapter.updateProcessing(autoJob.sourcePath, autoJob.progress)
         if (restorePosition >= 0 && mediaGrid.visibility == View.VISIBLE) {
             mediaGrid.setSelectionFromTop(restorePosition, restoreTop)
         }
-        storageText.text = if (page.optimization.running) {
-            "Otimização ${page.optimization.progress}% • ${page.optimization.message}"
-        } else {
-            "${page.total} mídia(s) • ${VaultRepository.formatBytes(page.usedBytes)} • privado até exportar"
+        storageText.text = when {
+            page.optimization.running -> "Otimização ${page.optimization.progress}% • ${page.optimization.message}"
+            autoJob != null -> "Reparo ${autoJob.progress}% • ${autoJob.message}"
+            else -> "${page.total} mídia(s) • ${VaultRepository.formatBytes(page.usedBytes)} • privado até exportar"
         }
         updateLockUi()
         renderImportState(showPopup = true)
@@ -1538,12 +1568,16 @@ class PrimaryVaultActivity : FragmentActivity() {
     }
 
     private fun updateOptimizationUi(snapshot: OptimizationStateStore.Snapshot) {
+        updateProcessingUi(snapshot.sourcePath.takeIf { snapshot.running }, snapshot.progress, snapshot.message, "Otimização")
+    }
+
+    private fun updateProcessingUi(sourcePath: String?, progress: Int, message: String, label: String) {
         if (!::adapter.isInitialized || !::mediaGrid.isInitialized) return
         val firstPosition = mediaGrid.firstVisiblePosition
         val firstTop = mediaGrid.getChildAt(0)?.top ?: 0
-        adapter.updateProcessing(snapshot.sourcePath.takeIf { snapshot.running }, snapshot.progress)
+        adapter.updateProcessing(sourcePath?.takeIf { it.isNotBlank() }, progress)
         if (firstPosition >= 0) mediaGrid.setSelectionFromTop(firstPosition, firstTop)
-        if (snapshot.running) storageText.text = "Otimização ${snapshot.progress}% • ${snapshot.message}"
+        if (!sourcePath.isNullOrBlank()) storageText.text = "$label ${progress.coerceIn(0, 100)}% • ${message.ifBlank { "Processando vídeo" }}"
     }
 
     private fun openImporter() {
@@ -1641,7 +1675,7 @@ class PrimaryVaultActivity : FragmentActivity() {
         val processing = optimization?.running == true || VaultRepository.isBeingProcessed(item.file)
         val actions = when {
             item.video && processing -> arrayOf(
-                "Abrir com segurança", "Detalhes", "Ver progresso (${optimization?.progress ?: 0}%)",
+                "Abrir original", "Detalhes", "Ver progresso (${optimization?.progress ?: 0}%)",
                 "Cancelar otimização", "Cancelar e mover para a lixeira", "Cancelar e excluir direto"
             )
             item.video -> arrayOf("Abrir", "Detalhes", "Cortar/editar", "Melhorar/otimizar", "Exportar", "Mover para a lixeira", "Excluir direto")
@@ -1852,7 +1886,10 @@ class PrimaryVaultActivity : FragmentActivity() {
 
     private fun registerOptimizationReceiver() {
         if (optimizationReceiverRegistered) return
-        val filter = IntentFilter(VideoOptimizationService.ACTION_STATE)
+        val filter = IntentFilter().apply {
+            addAction(VideoOptimizationService.ACTION_STATE)
+            addAction(AutoGapRepairService.ACTION_STATE)
+        }
         optimizationReceiverRegistered = runCatching {
             ContextCompat.registerReceiver(
                 this,
@@ -1872,7 +1909,7 @@ class PrimaryVaultActivity : FragmentActivity() {
 
     private fun scheduleOptimizationRefresh() {
         mainHandler.removeCallbacks(optimizationRefresh)
-        if (OptimizationStateStore.snapshot(this).running) {
+        if (OptimizationStateStore.snapshot(this).running || AutoGapRepairQueueStore.runningJob(this) != null) {
             mainHandler.postDelayed(optimizationRefresh, OPTIMIZATION_REFRESH_MS)
         }
     }
@@ -2033,7 +2070,9 @@ class PrimaryVaultActivity : FragmentActivity() {
             if (item.video && (durationLabel.isBlank() || item.width <= 0 || item.height <= 0)) onMetadataNeeded(item)
             holder.duration.bringToFront()
             holder.processing.visibility = if (processing) View.VISIBLE else View.GONE
-            holder.processing.text = if (processing) "${if (processingPath == path) processingProgress else 0}%" else ""
+            holder.processing.text = if (processing) {
+                if (processingPath == path) "Original • $processingProgress%" else "Original • processando"
+            } else ""
             holder.more.visibility = if (selectionMode) View.GONE else View.VISIBLE
             holder.more.setOnClickListener { onMore(item) }
             holder.overlay.visibility = if (selected) View.VISIBLE else View.GONE
@@ -2095,7 +2134,7 @@ class PrimaryVaultActivity : FragmentActivity() {
     companion object {
         private const val BIOMETRIC_CANCEL_FALLBACK_MS = 350L
         private const val BIOMETRIC_SUCCESS_DEBOUNCE_MS = 900L
-        private const val OPTIMIZATION_REFRESH_MS = 1_000L
+        private const val OPTIMIZATION_REFRESH_MS = 350L
         private const val PROCESSING_POLL_MS = 250L
         private const val IMPORT_STATUS_REFRESH_MS = 500L
         private const val PROCESSING_RELEASE_TIMEOUT_MS = 20_000L

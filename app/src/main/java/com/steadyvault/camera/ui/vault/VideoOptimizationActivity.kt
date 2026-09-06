@@ -110,7 +110,8 @@ class VideoOptimizationActivity : Activity() {
         FrameRepairMode.NONE,
         FrameRepairMode.SMOOTH_TIMELINE,
         FrameRepairMode.FILL_MISSING_FRAMES,
-        FrameRepairMode.ADAPTIVE_BLEND
+        FrameRepairMode.ADAPTIVE_BLEND,
+        FrameRepairMode.MOTION_COMPENSATED
     )
     private val codecValues = listOf(OutputCodec.SOURCE, OutputCodec.HEVC, OutputCodec.AVC)
     private val rateValues = listOf(
@@ -297,7 +298,8 @@ class VideoOptimizationActivity : Activity() {
                 "Manter exatamente como gravado",
                 "Corrigir o tempo dos quadros (recomendado)",
                 "Preencher lacunas repetindo o quadro mais próximo",
-                "Suavizar lacunas misturando quadros (pode criar rastro)"
+                "Suavizar lacunas misturando quadros (pode criar rastro)",
+                "Interpolar lacunas acompanhando o movimento (recomendado)"
             )
         )
         bind(codec, "Formato do novo arquivo", listOf("Manter o formato original quando possível", "HEVC / H.265: menor arquivo", "AVC / H.264: maior compatibilidade"))

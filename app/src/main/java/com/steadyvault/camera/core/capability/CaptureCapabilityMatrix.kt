@@ -851,5 +851,5 @@ object CaptureCapabilityMatrix {
 
     private const val CACHE_PREFS = "steadyvault_hardware_capabilities"
     private const val CACHE_KEY = "matrix_json"
-    private const val CACHE_SCHEMA = 8
+    private const val CACHE_SCHEMA = 9
 }

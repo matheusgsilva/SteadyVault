@@ -22,6 +22,8 @@ object CaptureStateStore {
     private const val KEY_SESSION_ID = "session_id"
     private const val KEY_OWNER = "owner"
     private const val KEY_STARTED_AT_ELAPSED = "started_at_elapsed"
+    private const val KEY_HISTORY_SCHEMA = "effective_history_schema"
+    private const val HISTORY_SCHEMA = 2
 
     fun update(
         context: Context,
@@ -75,19 +77,42 @@ object CaptureStateStore {
         context: Context,
         resolutionValue: String,
         resolutionLabel: String,
-        fps: Int
+        fps: Int,
+        rememberHistory: Boolean = true
     ) {
         if (resolutionLabel.isBlank() || fps <= 0) return
-        val safeValue = resolutionValue.takeIf {
-            it in CaptureSettings.supportedResolutionValues
-        } ?: resolutionValueFromLabel(resolutionLabel)
+        val safeValue = resolutionValue.takeIf { it in CaptureSettings.supportedResolutionValues }
+            ?: resolutionValueFromLabel(resolutionLabel)
         preferences(context).edit()
             .putString(KEY_EFFECTIVE_RESOLUTION_VALUE, safeValue)
             .putString(KEY_EFFECTIVE_RESOLUTION, resolutionLabel)
             .putInt(KEY_EFFECTIVE_FPS, fps)
+            .apply {
+                if (rememberHistory) {
+                    putString(historyResolutionValueKey(fps), safeValue)
+                    putString(historyResolutionLabelKey(fps), resolutionLabel)
+                    putLong(historyUpdatedKey(fps), System.currentTimeMillis())
+                }
+            }
+            .apply()
+    }
+
+    fun rememberValidatedModeForFps(context: Context, resolutionValue: String, resolutionLabel: String, fps: Int) {
+        if (fps <= 0 || resolutionLabel.isBlank()) return
+        val safeValue = resolutionValue.takeIf { it in CaptureSettings.supportedResolutionValues }
+            ?: resolutionValueFromLabel(resolutionLabel)
+        preferences(context).edit()
             .putString(historyResolutionValueKey(fps), safeValue)
             .putString(historyResolutionLabelKey(fps), resolutionLabel)
             .putLong(historyUpdatedKey(fps), System.currentTimeMillis())
+            .apply()
+    }
+
+    fun clearEffectiveModeHistoryForFps(context: Context, fps: Int) {
+        preferences(context).edit()
+            .remove(historyResolutionValueKey(fps))
+            .remove(historyResolutionLabelKey(fps))
+            .remove(historyUpdatedKey(fps))
             .apply()
     }
 
@@ -106,6 +131,7 @@ object CaptureStateStore {
 
     fun effectiveModeForFps(context: Context, fps: Int): EffectiveMode? {
         if (fps <= 0) return null
+        migrateEffectiveHistoryIfNeeded(context)
         val preferences = preferences(context)
         val label = preferences.getString(historyResolutionLabelKey(fps), null)
             ?.takeIf { it.isNotBlank() }
@@ -177,6 +203,20 @@ object CaptureStateStore {
             owner = OWNER_STARTUP_RECOVERY
         )
         return true
+    }
+
+    private fun migrateEffectiveHistoryIfNeeded(context: Context) {
+        val prefs = preferences(context)
+        if (prefs.getInt(KEY_HISTORY_SCHEMA, 0) >= HISTORY_SCHEMA) return
+        prefs.edit()
+            .remove(historyResolutionValueKey(120))
+            .remove(historyResolutionLabelKey(120))
+            .remove(historyUpdatedKey(120))
+            .remove(historyResolutionValueKey(240))
+            .remove(historyResolutionLabelKey(240))
+            .remove(historyUpdatedKey(240))
+            .putInt(KEY_HISTORY_SCHEMA, HISTORY_SCHEMA)
+            .apply()
     }
 
     private fun resolutionValueFromLabel(label: String): String = when {

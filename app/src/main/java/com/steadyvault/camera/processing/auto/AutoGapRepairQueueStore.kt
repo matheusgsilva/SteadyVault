@@ -19,6 +19,7 @@ object AutoGapRepairQueueStore {
         val targetFps: Int,
         val status: Status,
         val attempts: Int,
+        val progress: Int,
         val message: String,
         val lastError: String?,
         val outputPath: String?,
@@ -58,6 +59,7 @@ object AutoGapRepairQueueStore {
             if (job.status == Status.RUNNING) {
                 job.copy(
                     status = Status.PENDING,
+                    progress = 0,
                     message = "Reparo interrompido; será retomado do original",
                     lastError = "O processo anterior foi encerrado durante o reparo",
                     updatedAtMs = now
@@ -81,6 +83,7 @@ object AutoGapRepairQueueStore {
             targetFps = targetFps.coerceIn(1, 240),
             status = Status.PENDING,
             attempts = 0,
+            progress = 0,
             message = "Aguardando reparo de cadência",
             lastError = null,
             outputPath = null,
@@ -102,6 +105,7 @@ object AutoGapRepairQueueStore {
         it.copy(
             status = Status.RUNNING,
             attempts = it.attempts + 1,
+            progress = 0,
             message = message,
             lastError = null,
             updatedAtMs = System.currentTimeMillis()
@@ -112,6 +116,7 @@ object AutoGapRepairQueueStore {
     fun markPending(context: Context, id: String, message: String): Job? = update(context, id) {
         it.copy(
             status = Status.PENDING,
+            progress = 0,
             message = message,
             updatedAtMs = System.currentTimeMillis()
         )
@@ -121,6 +126,7 @@ object AutoGapRepairQueueStore {
     fun markSuccess(context: Context, id: String, output: File, message: String): Job? = update(context, id) {
         it.copy(
             status = Status.SUCCESS,
+            progress = 100,
             message = message,
             lastError = null,
             outputPath = output.absoluteFile.normalize().path,
@@ -132,6 +138,7 @@ object AutoGapRepairQueueStore {
     fun markSkipped(context: Context, id: String, message: String): Job? = update(context, id) {
         it.copy(
             status = Status.SKIPPED,
+            progress = 100,
             message = message,
             lastError = null,
             outputPath = null,
@@ -143,6 +150,7 @@ object AutoGapRepairQueueStore {
     fun markError(context: Context, id: String, error: String): Job? = update(context, id) {
         it.copy(
             status = Status.ERROR,
+            progress = 0,
             message = "Falha no reparo automático",
             lastError = error,
             outputPath = null,
@@ -159,6 +167,7 @@ object AutoGapRepairQueueStore {
                 changed++
                 job.copy(
                     status = Status.PENDING,
+                    progress = 0,
                     message = "Reparo reenfileirado manualmente",
                     lastError = job.lastError,
                     updatedAtMs = now
@@ -184,6 +193,16 @@ object AutoGapRepairQueueStore {
                 ?.lastError
         )
     }
+
+    @Synchronized
+    fun updateProgress(context: Context, id: String, progress: Int, message: String): Job? = update(context, id) {
+        it.copy(status = Status.RUNNING, progress = progress.coerceIn(0, 100), message = message, updatedAtMs = System.currentTimeMillis())
+    }
+
+    @Synchronized
+    fun runningJob(context: Context): Job? = load(context)
+        .filter { it.status == Status.RUNNING }
+        .maxByOrNull { it.updatedAtMs }
 
     @Synchronized
     fun hasPending(context: Context): Boolean = load(context).any { it.status == Status.PENDING }
@@ -234,6 +253,7 @@ object AutoGapRepairQueueStore {
         .put("targetFps", job.targetFps)
         .put("status", job.status.name)
         .put("attempts", job.attempts)
+        .put("progress", job.progress)
         .put("message", job.message)
         .put("lastError", job.lastError ?: JSONObject.NULL)
         .put("outputPath", job.outputPath ?: JSONObject.NULL)
@@ -246,6 +266,7 @@ object AutoGapRepairQueueStore {
         targetFps = json.optInt("targetFps", 60).coerceIn(1, 240),
         status = runCatching { Status.valueOf(json.optString("status")) }.getOrDefault(Status.ERROR),
         attempts = json.optInt("attempts", 0).coerceAtLeast(0),
+        progress = json.optInt("progress", 0).coerceIn(0, 100),
         message = json.optString("message", ""),
         lastError = json.optString("lastError", "").takeIf { it.isNotBlank() && it != "null" },
         outputPath = json.optString("outputPath", "").takeIf { it.isNotBlank() && it != "null" },

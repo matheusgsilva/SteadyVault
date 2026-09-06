@@ -56,7 +56,9 @@ class AutoGapRepairService : Service() {
     private val workerRunning = AtomicBoolean(false)
     private val cancelCurrent = AtomicBoolean(false)
     @Volatile private var currentJobId: String? = null
+    @Volatile private var currentSourcePath: String? = null
     @Volatile private var currentProgress = 0
+    @Volatile private var currentMessage = ""
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
@@ -112,10 +114,14 @@ class AutoGapRepairService : Service() {
             while (shouldContinueQueue()) {
                 val job = AutoGapRepairQueueStore.nextPending(this) ?: break
                 currentJobId = job.id
+                currentSourcePath = job.sourcePath
                 currentProgress = 0
+                currentMessage = "Preparando reparo automático"
                 cancelCurrent.set(false)
                 val continueQueue = processJob(job)
+                broadcastProgress(running = false)
                 currentJobId = null
+                currentSourcePath = null
                 if (!continueQueue) break
             }
         } finally {
@@ -348,8 +354,20 @@ class AutoGapRepairService : Service() {
 
     private fun publish(progress: Int, message: String) {
         currentProgress = progress.coerceIn(0, 100)
+        currentMessage = message
+        currentJobId?.let { AutoGapRepairQueueStore.updateProgress(this, it, currentProgress, message) }
+        broadcastProgress(running = currentProgress < 100)
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification(currentProgress, message))
+    }
+
+    private fun broadcastProgress(running: Boolean) {
+        sendBroadcast(Intent(ACTION_STATE).setPackage(packageName).apply {
+            putExtra(EXTRA_SOURCE_PATH, currentSourcePath.orEmpty())
+            putExtra(EXTRA_PROGRESS, currentProgress)
+            putExtra(EXTRA_MESSAGE, currentMessage)
+            putExtra(EXTRA_RUNNING, running)
+        })
     }
 
     private fun clearNotification() {
@@ -438,12 +456,16 @@ class AutoGapRepairService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        const val ACTION_STATE = "com.steadyvault.camera.AUTO_GAP_REPAIR_STATE"
+        const val EXTRA_PROGRESS = "progress"
+        const val EXTRA_MESSAGE = "message"
+        const val EXTRA_RUNNING = "running"
         private const val ACTION_ENQUEUE = "com.steadyvault.camera.AUTO_GAP_REPAIR_ENQUEUE"
         private const val ACTION_RESUME = "com.steadyvault.camera.AUTO_GAP_REPAIR_RESUME"
         private const val ACTION_RETRY_FAILED = "com.steadyvault.camera.AUTO_GAP_REPAIR_RETRY_FAILED"
         private const val ACTION_PAUSE_CAPTURE = "com.steadyvault.camera.AUTO_GAP_REPAIR_PAUSE_CAPTURE"
         private const val ACTION_PAUSE_USER = "com.steadyvault.camera.AUTO_GAP_REPAIR_PAUSE_USER"
-        private const val EXTRA_SOURCE_PATH = "source_path"
+        const val EXTRA_SOURCE_PATH = "source_path"
         private const val EXTRA_TARGET_FPS = "target_fps"
         private const val CHANNEL_ID = "steadyvault_auto_gap_repair"
         private const val NOTIFICATION_ID = 4011

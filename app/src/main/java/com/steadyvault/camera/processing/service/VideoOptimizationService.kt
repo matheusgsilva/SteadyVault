@@ -334,6 +334,7 @@ class VideoOptimizationService : Service() {
     private fun broadcast(state: String, message: String, progress: Int, outputPath: String?) {
         sendBroadcast(Intent(ACTION_STATE).setPackage(packageName).apply {
             putExtra(EXTRA_STATE, state)
+            putExtra(EXTRA_SOURCE_PATH, currentSourcePath.orEmpty())
             putExtra(EXTRA_MESSAGE, message)
             putExtra(EXTRA_PROGRESS, progress)
             outputPath?.let { putExtra(EXTRA_OUTPUT_PATH, it) }

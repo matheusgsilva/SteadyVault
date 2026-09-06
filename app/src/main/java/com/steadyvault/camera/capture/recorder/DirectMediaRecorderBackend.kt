@@ -18,6 +18,7 @@ class DirectMediaRecorderBackend(
     private val width: Int,
     private val height: Int,
     private val targetFps: Int,
+    private val highSpeedCapture: Boolean,
     private val videoMime: String,
     private val videoBitrate: Int,
     private val hdrHlg10: Boolean,
@@ -93,6 +94,9 @@ class DirectMediaRecorderBackend(
                 }
 
                 setVideoSize(width, height)
+                // Constrained high-speed tem uma taxa de captura propria. Informar a
+                // mesma taxa ao MediaRecorder evita tratar os bursts como stream comum.
+                if (highSpeedCapture) setCaptureRate(targetFps.toDouble())
                 setVideoFrameRate(targetFps)
                 setVideoEncodingBitRate(videoBitrate)
 

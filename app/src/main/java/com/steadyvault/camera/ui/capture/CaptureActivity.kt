@@ -212,6 +212,12 @@ class CaptureActivity : ComponentActivity() {
             task.run()
         }, "SteadyVault-CaptureThumbnail")
     }
+    private val capabilityExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread({
+            runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
+            task.run()
+        }, "SteadyVault-CapabilityScan")
+    }
     @Volatile private var latestCapturedMedia: VaultRepository.MediaItem? = null
     private val thumbnailRefreshGeneration = java.util.concurrent.atomic.AtomicLong(0L)
     private val idlePreview by lazy {
@@ -758,6 +764,7 @@ class CaptureActivity : ComponentActivity() {
         releaseCameraPreview()
         idlePreview.release()
         thumbnailExecutor.shutdownNow()
+        capabilityExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -3191,17 +3198,56 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun refreshCapabilityMatrix(force: Boolean = false) {
-        capabilityMatrix = CaptureCapabilityMatrix.cached(this) ?: capabilityMatrix
-        capabilityScanInProgress = false
+        if (capabilityScanInProgress) {
+            if (force) capabilityRescanPending = true
+            return
+        }
+        if (CaptureStateStore.isBusy(this) || photoBusy) {
+            capabilityRescanPending = true
+            return
+        }
+        val cached = if (force) null else CaptureCapabilityMatrix.cached(this)
+        if (cached != null) {
+            applyCapabilityMatrix(cached)
+            return
+        }
+        capabilityScanInProgress = true
+        capabilityScanCompleted = false
         capabilityRescanPending = false
-        capabilityScanCompleted = true
+        lastCapabilityScanStartedAtMs = SystemClock.elapsedRealtime()
+        renderRecordingMode(busy = false)
+        renderPreviewQuickControls()
+        runCatching {
+            capabilityExecutor.execute {
+                val result = runCatching { CaptureCapabilityMatrix.scan(applicationContext, force = force) }
+                mainHandler.post {
+                    if (isFinishing || isDestroyed) return@post
+                    capabilityScanInProgress = false
+                    capabilityScanCompleted = true
+                    result.onSuccess(::applyCapabilityMatrix)
+                        .onFailure { applyCapabilityMatrix(CaptureCapabilityMatrix.cached(this) ?: capabilityMatrix) }
+                    if (capabilityRescanPending && !CaptureStateStore.isBusy(this) && !photoBusy) {
+                        capabilityRescanPending = false
+                        mainHandler.post { refreshCapabilityMatrix(force = force) }
+                    }
+                }
+            }
+        }.onFailure {
+            capabilityScanInProgress = false
+            capabilityScanCompleted = true
+            applyCapabilityMatrix(CaptureCapabilityMatrix.cached(this) ?: capabilityMatrix)
+        }
+    }
+
+    private fun applyCapabilityMatrix(matrix: CaptureCapabilityMatrix.Matrix?) {
+        capabilityMatrix = matrix ?: capabilityMatrix
         cameraOptions = CameraLensCatalog.options(this).filter { it.isFront || it.logical }
         synchronizeSelectedCameraWithCatalog()
-        capabilityMatrix?.let { matrix ->
+        capabilityMatrix?.let { detected ->
             val rearCameraIds = cameraOptions.filter { it.isBack }.mapTo(mutableSetOf()) { it.id }
-            val rearMatrix = matrix.copy(
-                modes = matrix.modes.filter { it.cameraId in rearCameraIds },
-                cameras = matrix.cameras.filter { it.cameraId in rearCameraIds }
+            val rearMatrix = detected.copy(
+                modes = detected.modes.filter { it.cameraId in rearCameraIds },
+                cameras = detected.cameras.filter { it.cameraId in rearCameraIds }
             )
             if (rearMatrix.modes.isNotEmpty()) CaptureModeCatalog.remember(this, rearMatrix)
         }
