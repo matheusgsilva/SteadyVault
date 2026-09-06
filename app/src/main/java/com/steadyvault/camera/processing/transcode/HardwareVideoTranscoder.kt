@@ -638,8 +638,8 @@ class HardwareVideoTranscoder {
         private val motionFramebuffer = IntArray(1)
         private val analysisTexture = IntArray(1)
         private val analysisFramebuffer = IntArray(1)
-        private val motionWidth = if (highQualityMotion) (width / 12).coerceIn(160, 320) else (width / 16).coerceIn(120, 240)
-        private val motionHeight = ((motionWidth.toLong() * height.toLong()) / width.coerceAtLeast(1).toLong()).toInt().coerceIn(68, 180)
+        private val motionWidth = if (highQualityMotion) (width / 6).coerceIn(240, 480) else (width / 16).coerceIn(120, 240)
+        private val motionHeight = ((motionWidth.toLong() * height.toLong()) / width.coerceAtLeast(1).toLong()).toInt().coerceIn(90, 270)
         private val motionReadback = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4).order(ByteOrder.nativeOrder())
         private val previousMotionPixels = ByteArray(motionWidth * motionHeight * 4)
         private val currentMotionPixels = ByteArray(motionWidth * motionHeight * 4)
@@ -1021,7 +1021,7 @@ uniform vec2 uFlowScale;
 uniform float uAlpha;
 void main(){
     float a=clamp(uAlpha,0.0,1.0);
-    float eased=a*a*(3.0-2.0*a);
+    float eased=a;
     vec4 flow=texture2D(uMotion,vTextureCoord);
     vec2 delta=(flow.rg*2.0-1.0)*uFlowScale;
     vec2 prevUv=clamp(vTextureCoord-delta*a,vec2(0.0),vec2(1.0));
