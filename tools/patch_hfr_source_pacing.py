@@ -1,0 +1,191 @@
+from pathlib import Path
+
+capture_path = Path("app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt")
+capture = capture_path.read_text()
+
+old_selection = '''        val requestedSize = recordingSettings.exactPreferredSize() ?: return null
+
+        // A API permite high-FPS em sessão regular quando a câmera publica a faixa
+        // exata em CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES. Preferimos esse caminho
+        // quando também há cadence pública suficiente, pois ele evita o batching do
+        // constrained high-speed observado no S25 (rajadas + buracos em 120 FPS).
+        val regularRange = resolveRegularHighFpsRange(characteristics, requestedSize, targetFps)
+        if (regularRange != null) {
+            val regularProfile = createCameraProfile(
+                cameraId = cameraId,
+                characteristics = characteristics,
+                videoSize = requestedSize,
+                targetFps = targetFps,
+                fpsRange = regularRange,
+                highSpeed = false,
+                dynamicRangeProfile = dynamicRange
+            )
+            if (matchesRequestedMode(regularProfile, targetFps)) {
+                val encoder = selectDirectRecorderEncoder(regularProfile)
+                if (encoder != null) return regularProfile to encoder
+            }
+        }
+
+        // Se a câmera não confirma sessão regular, use constrained high-speed com
+        // request mínimo e somente uma Surface de gravação.
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
+'''
+new_selection = '''        val requestedSize = recordingSettings.exactPreferredSize() ?: return null
+
+        // 120/240 FPS nunca usam SESSION_REGULAR. No S25 Ultra a HAL pode publicar
+        // [120,120] e aceitar a sessão regular, mas entregar na prática ~60 FPS com
+        // quadros ausentes. Isso cria um arquivo rotulado como HFR que exige reparo
+        // pesado depois. Para HFR, use somente o contrato público constrained
+        // high-speed e a resolução exata pedida; se a combinação não for anunciada,
+        // falhe explicitamente em vez de gravar um HFR falso.
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
+'''
+assert capture.count(old_selection) == 1, "high-FPS selection block not found exactly once"
+capture = capture.replace(old_selection, new_selection)
+
+old_resolver = '''    private fun resolveFpsRange(
+        characteristics: CameraCharacteristics,
+        size: Size,
+        targetFps: Int,
+        highSpeed: Boolean
+    ): Range<Int>? {
+        if (!highSpeed) {
+            if (targetFps >= CaptureModeStore.FPS_120) {
+                return resolveRegularHighFpsRange(characteristics, size, targetFps)
+            }
+            return resolveStandardFpsRange(characteristics, targetFps)
+        }
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: return null
+        val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }
+            .getOrDefault(emptyList())
+        return selectTargetFpsRange(ranges, targetFps)
+    }
+'''
+new_resolver = '''    private fun resolveFpsRange(
+        characteristics: CameraCharacteristics,
+        size: Size,
+        targetFps: Int,
+        highSpeed: Boolean
+    ): Range<Int>? {
+        if (!highSpeed) {
+            // HFR regular é rejeitado de propósito: metadados [120,120]/[240,240]
+            // não garantem que a HAL entregue essa cadência no arquivo final.
+            if (targetFps >= CaptureModeStore.FPS_120) return null
+            return resolveStandardFpsRange(characteristics, targetFps)
+        }
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: return null
+        val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }
+            .getOrDefault(emptyList())
+        return selectTargetFpsRange(ranges, targetFps)
+    }
+'''
+assert capture.count(old_resolver) == 1, "FPS resolver block not found exactly once"
+capture = capture.replace(old_resolver, new_resolver)
+
+old_regular_resolver = '''    private fun resolveRegularHighFpsRange(
+        characteristics: CameraCharacteristics,
+        size: Size,
+        targetFps: Int
+    ): Range<Int>? {
+        if (targetFps < CaptureModeStore.FPS_120) return Range(targetFps, targetFps)
+        val exact = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+            ?.firstOrNull { StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper) }
+            ?: return null
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
+        val minFrameNs = encoderSurfaceMinFrameDurationNs(map, size, preferMediaRecorder = true)
+        val targetFrameNs = frameDurationNs(targetFps)
+        if (minFrameNs > 0L && minFrameNs > targetFrameNs + HIGH_FPS_FRAME_TOLERANCE_NS) return null
+        return exact
+    }
+
+'''
+assert capture.count(old_regular_resolver) == 1, "regular HFR resolver not found exactly once"
+capture = capture.replace(old_regular_resolver, "")
+
+old_encoder_guard = "        if (profile.hdrHlg10 && exact == null) return null\n"
+new_encoder_guard = '''        // Para 120/240 o perfil OEM HFR exato faz parte do contrato. Sem ele,
+        // não reconstrua MediaRecorder manualmente: é melhor recusar a combinação
+        // do que produzir um arquivo nominalmente HFR com cadência de ~60 FPS.
+        if ((profile.hdrHlg10 || profile.targetFps >= CaptureModeStore.FPS_120) && exact == null) return null
+'''
+assert capture.count(old_encoder_guard) == 1, "encoder guard not found exactly once"
+capture = capture.replace(old_encoder_guard, new_encoder_guard)
+
+old_revision = 'private const val CAPTURE_PIPELINE_REVISION = "direct_mediarecorder_v7_button_faststart"'
+new_revision = 'private const val CAPTURE_PIPELINE_REVISION = "direct_mediarecorder_v8_constrained_hfr"'
+assert capture.count(old_revision) == 1, "capture pipeline revision not found exactly once"
+capture = capture.replace(old_revision, new_revision)
+capture_path.write_text(capture)
+
+recorder_path = Path("app/src/main/java/com/steadyvault/camera/capture/recorder/DirectMediaRecorderBackend.kt")
+recorder = recorder_path.read_text()
+
+old_quality_call = "            val quality = qualityFor(width, height) ?: return null"
+new_quality_call = "            val quality = qualityFor(width, height, fps) ?: return null"
+assert recorder.count(old_quality_call) == 1, "qualityFor call not found exactly once"
+recorder = recorder.replace(old_quality_call, new_quality_call)
+
+old_quality = '''        private fun qualityFor(width: Int, height: Int): Int? = when {
+            width == 7680 && height == 4320 -> null
+            width == 3840 && height == 2160 -> CamcorderProfile.QUALITY_2160P
+            width == 1920 && height == 1080 -> CamcorderProfile.QUALITY_1080P
+            width == 1280 && height == 720 -> CamcorderProfile.QUALITY_720P
+            else -> null
+        }
+'''
+new_quality = '''        private fun qualityFor(width: Int, height: Int, fps: Int): Int? =
+            if (fps >= 120) {
+                // EncoderProfiles HFR vivem na família QUALITY_HIGH_SPEED_*.
+                // Consultar QUALITY_2160P/1080P pode devolver um perfil regular com
+                // o mesmo tamanho/FPS nominal, mas sem o pacing esperado pela sessão
+                // CameraConstrainedHighSpeedCaptureSession.
+                when {
+                    width == 3840 && height == 2160 -> CamcorderProfile.QUALITY_HIGH_SPEED_2160P
+                    width == 1920 && height == 1080 -> CamcorderProfile.QUALITY_HIGH_SPEED_1080P
+                    width == 1280 && height == 720 -> CamcorderProfile.QUALITY_HIGH_SPEED_720P
+                    else -> null
+                }
+            } else {
+                when {
+                    width == 7680 && height == 4320 -> null
+                    width == 3840 && height == 2160 -> CamcorderProfile.QUALITY_2160P
+                    width == 1920 && height == 1080 -> CamcorderProfile.QUALITY_1080P
+                    width == 1280 && height == 720 -> CamcorderProfile.QUALITY_720P
+                    else -> null
+                }
+            }
+'''
+assert recorder.count(old_quality) == 1, "qualityFor function not found exactly once"
+recorder = recorder.replace(old_quality, new_quality)
+
+old_missing_profile = '''        if (hdrHlg10 && selectedProfile == null) {
+            throw IllegalStateException(
+                "HLG10 direto exige perfil OEM compatível exatamente com " +
+                    "${width}x${height} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
+            )
+        }
+'''
+new_missing_profile = '''        if ((hdrHlg10 || targetFps >= 120) && selectedProfile == null) {
+            val mode = if (targetFps >= 120) "high-speed" else "HLG10"
+            throw IllegalStateException(
+                "$mode direto exige perfil OEM compatível exatamente com " +
+                    "${width}x${height} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
+            )
+        }
+'''
+assert recorder.count(old_missing_profile) == 1, "missing OEM profile guard not found exactly once"
+recorder = recorder.replace(old_missing_profile, new_missing_profile)
+recorder_path.write_text(recorder)
+
+assert "Preferimos esse caminho" not in capture
+assert "resolveRegularHighFpsRange" not in capture
+assert "if (targetFps >= CaptureModeStore.FPS_120) return null" in capture
+assert "profile.targetFps >= CaptureModeStore.FPS_120" in capture
+assert "direct_mediarecorder_v8_constrained_hfr" in capture
+assert "QUALITY_HIGH_SPEED_2160P" in recorder
+assert "QUALITY_HIGH_SPEED_1080P" in recorder
+assert "QUALITY_HIGH_SPEED_720P" in recorder
+assert "(hdrHlg10 || targetFps >= 120) && selectedProfile == null" in recorder
+print("HFR source contract patched")
