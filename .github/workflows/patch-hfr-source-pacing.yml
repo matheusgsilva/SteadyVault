@@ -28,7 +28,9 @@ jobs:
           java-version: '17'
 
       - name: Patch HFR source
-        run: python3 tools/patch_hfr_source_pacing.py
+        run: |
+          sed -i 's/direct_mediarecorder_v7_button_faststart/ios-like-ae-clean-1.8.257/g' tools/patch_hfr_source_pacing.py
+          python3 tools/patch_hfr_source_pacing.py
 
       - name: Compile and assemble
         run: |
