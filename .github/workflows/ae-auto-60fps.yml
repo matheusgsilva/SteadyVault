@@ -27,7 +27,7 @@ jobs:
           java-version: '17'
 
       - name: Apply AE auto patch
-        run: git apply tools/ae_auto_60fps.patch
+        run: python3 tools/ae_auto_60fps.py
 
       - name: Verify capture contract
         run: |
@@ -43,7 +43,7 @@ jobs:
 
       - name: Commit validated change
         run: |
-          rm -f .github/workflows/ae-auto-60fps.yml tools/ae_auto_60fps.patch
+          rm -f .github/workflows/ae-auto-60fps.yml tools/ae_auto_60fps.py tools/ae_auto_60fps.patch
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
