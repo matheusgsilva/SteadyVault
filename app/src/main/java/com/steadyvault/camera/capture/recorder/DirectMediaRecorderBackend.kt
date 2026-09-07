@@ -41,7 +41,7 @@ class DirectMediaRecorderBackend(
     private var selectedProfile: Selection? = null
 
     private val usesExactOemProfile: Boolean
-        get() = selectedProfile != null && (hdrHlg10 || targetFps >= 120)
+        get() = selectedProfile != null && (hdrHlg10 || targetFps >= 60)
 
     val profileDescription: String
         get() = buildString {
@@ -68,10 +68,9 @@ class DirectMediaRecorderBackend(
             requestedBitrate = videoBitrate
         )
 
-        if ((hdrHlg10 || targetFps >= 120) && selectedProfile == null) {
-            val mode = if (targetFps >= 120) "high-speed" else "HLG10"
+        if (hdrHlg10 && selectedProfile == null) {
             throw IllegalStateException(
-                "$mode direto exige perfil OEM compatível exatamente com " +
+                "HLG10 direto exige perfil OEM compatível exatamente com " +
                     "${width}x${height} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
             )
         }
@@ -85,7 +84,7 @@ class DirectMediaRecorderBackend(
                 setVideoSource(MediaRecorder.VideoSource.SURFACE)
 
                 val oemProfile = selectedProfile
-                val useOemProfile = oemProfile != null && (hdrHlg10 || targetFps >= 120)
+                val useOemProfile = oemProfile != null && (hdrHlg10 || targetFps >= 60)
                 if (useOemProfile) {
                     check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         "Perfil OEM direto exige Android 12 ou superior"
@@ -187,7 +186,7 @@ class DirectMediaRecorderBackend(
             requestedBitrate: Int
         ): Selection? {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
-            val quality = qualityFor(width, height, fps) ?: return null
+            val quality = qualityFor(width, height) ?: return null
             val profiles = runCatching { CamcorderProfile.getAll(cameraId, quality) }.getOrNull() ?: return null
             val exact = profiles.videoProfiles
                 .filter {
@@ -203,27 +202,13 @@ class DirectMediaRecorderBackend(
             return Selection(exact, profiles.recommendedFileFormat)
         }
 
-        private fun qualityFor(width: Int, height: Int, fps: Int): Int? =
-            if (fps >= 120) {
-                // EncoderProfiles HFR vivem na família QUALITY_HIGH_SPEED_*.
-                // Consultar QUALITY_2160P/1080P pode devolver um perfil regular com
-                // o mesmo tamanho/FPS nominal, mas sem o pacing esperado pela sessão
-                // CameraConstrainedHighSpeedCaptureSession.
-                when {
-                    width == 3840 && height == 2160 -> CamcorderProfile.QUALITY_HIGH_SPEED_2160P
-                    width == 1920 && height == 1080 -> CamcorderProfile.QUALITY_HIGH_SPEED_1080P
-                    width == 1280 && height == 720 -> CamcorderProfile.QUALITY_HIGH_SPEED_720P
-                    else -> null
-                }
-            } else {
-                when {
-                    width == 7680 && height == 4320 -> null
-                    width == 3840 && height == 2160 -> CamcorderProfile.QUALITY_2160P
-                    width == 1920 && height == 1080 -> CamcorderProfile.QUALITY_1080P
-                    width == 1280 && height == 720 -> CamcorderProfile.QUALITY_720P
-                    else -> null
-                }
-            }
+        private fun qualityFor(width: Int, height: Int): Int? = when {
+            width == 7680 && height == 4320 -> null
+            width == 3840 && height == 2160 -> CamcorderProfile.QUALITY_2160P
+            width == 1920 && height == 1080 -> CamcorderProfile.QUALITY_1080P
+            width == 1280 && height == 720 -> CamcorderProfile.QUALITY_720P
+            else -> null
+        }
 
         @TargetApi(Build.VERSION_CODES.S)
         private fun hdrMatches(profile: EncoderProfiles.VideoProfile, hdrHlg10: Boolean): Boolean {

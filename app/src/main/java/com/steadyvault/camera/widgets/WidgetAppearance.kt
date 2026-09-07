@@ -82,7 +82,7 @@ object WidgetAppearance {
 
         val cornerPx = min(
             sizePx / 2f,
-            AppearanceStore.cornerRadiusDp(context) * 0.60f * density
+            AppearanceStore.cornerRadiusDp(context) * density
         )
         val borderPx = AppearanceStore.borderWidthDp(context) * density
         val inset = borderPx / 2f
