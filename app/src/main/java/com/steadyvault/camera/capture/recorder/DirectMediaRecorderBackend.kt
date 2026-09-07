@@ -41,7 +41,7 @@ class DirectMediaRecorderBackend(
     private var selectedProfile: Selection? = null
 
     private val usesExactOemProfile: Boolean
-        get() = selectedProfile != null && (hdrHlg10 || targetFps >= 60)
+        get() = selectedProfile != null && (hdrHlg10 || targetFps >= 120)
 
     val profileDescription: String
         get() = buildString {
@@ -84,7 +84,7 @@ class DirectMediaRecorderBackend(
                 setVideoSource(MediaRecorder.VideoSource.SURFACE)
 
                 val oemProfile = selectedProfile
-                val useOemProfile = oemProfile != null && (hdrHlg10 || targetFps >= 60)
+                val useOemProfile = oemProfile != null && (hdrHlg10 || targetFps >= 120)
                 if (useOemProfile) {
                     check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         "Perfil OEM direto exige Android 12 ou superior"

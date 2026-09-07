@@ -2841,7 +2841,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "ios-like-ae-clean-1.8.258-oem60"
+        private const val CAPTURE_PIPELINE_REVISION = "ios-like-ae-clean-1.8.259"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
