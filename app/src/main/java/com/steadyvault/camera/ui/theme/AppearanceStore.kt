@@ -185,17 +185,10 @@ object AppearanceStore {
         else -> 20f
     }
 
-    fun borderWidthDp(context: Context): Float {
-        val selected = when (borders(context)) {
-            BORDERS_NONE -> 0f
-            BORDERS_STRONG -> 2f
-            else -> 1f
-        }
-        return when (contrast(context)) {
-            CONTRAST_MAXIMUM -> if (selected == 0f) 0f else selected + 0.75f
-            CONTRAST_STRONG -> if (selected == 0f) 0f else selected + 0.25f
-            else -> selected
-        }
+    fun borderWidthDp(context: Context): Float = when (borders(context)) {
+        BORDERS_NONE -> 0f
+        BORDERS_STRONG -> 2f
+        else -> 1f
     }
 
     fun controlHeightDp(context: Context): Int = when (density(context)) {
