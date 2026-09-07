@@ -515,7 +515,7 @@ object CaptureCapabilityMatrix {
             edge = edge,
             antibanding = antibanding,
             whiteBalance = whiteBalance,
-            hdrHlg10 = hdrSupport(characteristics, hdrEncoderSupport),
+            hdrHlg10 = hdrSupport(characteristics, physicalCharacteristics, hdrEncoderSupport),
             awbLock = awbLock,
             manualPostProcessing = manualPostProcessing,
             minimumExposureCompensation = exposureRange.lower,
@@ -579,25 +579,50 @@ object CaptureCapabilityMatrix {
 
     private fun hdrSupport(
         characteristics: CameraCharacteristics,
+        physicalCharacteristics: List<CameraCharacteristics>,
         encoderSupport: Support
     ): Support {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return Support.UNSUPPORTED
-        val capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
-            ?: intArrayOf()
-        val tenBitAdvertised = capabilities.contains(
+
+        val logicalSupport = cameraHlg10MetadataSupport(characteristics)
+        val physicalSupport = physicalCharacteristics.map(::cameraHlg10MetadataSupport)
+        val cameraSupport = when {
+            logicalSupport == Support.SUPPORTED -> Support.SUPPORTED
+            physicalSupport.any { it == Support.SUPPORTED } -> Support.UNVERIFIED
+            logicalSupport == Support.UNVERIFIED || physicalSupport.any { it == Support.UNVERIFIED } ->
+                Support.UNVERIFIED
+            else -> Support.UNSUPPORTED
+        }
+        return combineSupport(cameraSupport, encoderSupport)
+    }
+
+    /**
+     * Samsung e outros fabricantes podem omitir parte dos metadados 10-bit na câmera
+     * lógica mesmo quando uma lente física/encoder consegue HLG10. Ausência de um bloco
+     * de metadados não é prova de incompatibilidade: nesses casos o modo fica UNVERIFIED
+     * e pode ser validado quando usado. Só marcamos UNSUPPORTED quando os metadados
+     * presentes realmente excluem HLG10.
+     */
+    private fun cameraHlg10MetadataSupport(characteristics: CameraCharacteristics): Support {
+        val capabilities = runCatching {
+            characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
+        }.getOrNull()
+        val tenBitAdvertised = capabilities?.contains(
             CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_DYNAMIC_RANGE_TEN_BIT
-        )
+        ) == true
         val profiles = runCatching {
             characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES)
                 ?.supportedProfiles
         }.getOrNull()
-        val cameraSupport = when {
+
+        return when {
             profiles?.contains(DynamicRangeProfiles.HLG10) == true -> Support.SUPPORTED
+            profiles != null && tenBitAdvertised -> Support.UNVERIFIED
             profiles != null -> Support.UNSUPPORTED
             tenBitAdvertised -> Support.UNVERIFIED
+            capabilities == null -> Support.UNVERIFIED
             else -> Support.UNSUPPORTED
         }
-        return combineSupport(cameraSupport, encoderSupport)
     }
 
     private fun combineSupport(first: Support, second: Support): Support = when {
@@ -851,5 +876,5 @@ object CaptureCapabilityMatrix {
 
     private const val CACHE_PREFS = "steadyvault_hardware_capabilities"
     private const val CACHE_KEY = "matrix_json"
-    private const val CACHE_SCHEMA = 9
+    private const val CACHE_SCHEMA = 10
 }
