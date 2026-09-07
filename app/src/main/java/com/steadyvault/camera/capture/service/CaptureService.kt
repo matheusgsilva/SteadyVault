@@ -790,29 +790,12 @@ class CaptureService : Service() {
 
         val requestedSize = recordingSettings.exactPreferredSize() ?: return null
 
-        // A API permite high-FPS em sessão regular quando a câmera publica a faixa
-        // exata em CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES. Preferimos esse caminho
-        // quando também há cadence pública suficiente, pois ele evita o batching do
-        // constrained high-speed observado no S25 (rajadas + buracos em 120 FPS).
-        val regularRange = resolveRegularHighFpsRange(characteristics, requestedSize, targetFps)
-        if (regularRange != null) {
-            val regularProfile = createCameraProfile(
-                cameraId = cameraId,
-                characteristics = characteristics,
-                videoSize = requestedSize,
-                targetFps = targetFps,
-                fpsRange = regularRange,
-                highSpeed = false,
-                dynamicRangeProfile = dynamicRange
-            )
-            if (matchesRequestedMode(regularProfile, targetFps)) {
-                val encoder = selectDirectRecorderEncoder(regularProfile)
-                if (encoder != null) return regularProfile to encoder
-            }
-        }
-
-        // Se a câmera não confirma sessão regular, use constrained high-speed com
-        // request mínimo e somente uma Surface de gravação.
+        // 120/240 FPS nunca usam SESSION_REGULAR. No S25 Ultra a HAL pode publicar
+        // [120,120] e aceitar a sessão regular, mas entregar na prática ~60 FPS com
+        // quadros ausentes. Isso cria um arquivo rotulado como HFR que exige reparo
+        // pesado depois. Para HFR, use somente o contrato público constrained
+        // high-speed e a resolução exata pedida; se a combinação não for anunciada,
+        // falhe explicitamente em vez de gravar um HFR falso.
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val highSpeedSizes = runCatching { map.highSpeedVideoSizes?.toSet().orEmpty() }
             .getOrDefault(emptySet())
@@ -843,9 +826,9 @@ class CaptureService : Service() {
         highSpeed: Boolean
     ): Range<Int>? {
         if (!highSpeed) {
-            if (targetFps >= CaptureModeStore.FPS_120) {
-                return resolveRegularHighFpsRange(characteristics, size, targetFps)
-            }
+            // HFR regular é rejeitado de propósito: metadados [120,120]/[240,240]
+            // não garantem que a HAL entregue essa cadência no arquivo final.
+            if (targetFps >= CaptureModeStore.FPS_120) return null
             return resolveStandardFpsRange(characteristics, targetFps)
         }
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
@@ -873,22 +856,6 @@ class CaptureService : Service() {
             .orEmpty()
         // Prefere a menor variação possível (ex.: 30-60 em vez de 15-60).
         return ranges.maxByOrNull { it.lower } ?: exact
-    }
-
-    private fun resolveRegularHighFpsRange(
-        characteristics: CameraCharacteristics,
-        size: Size,
-        targetFps: Int
-    ): Range<Int>? {
-        if (targetFps < CaptureModeStore.FPS_120) return Range(targetFps, targetFps)
-        val exact = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            ?.firstOrNull { StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper) }
-            ?: return null
-        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
-        val minFrameNs = encoderSurfaceMinFrameDurationNs(map, size, preferMediaRecorder = true)
-        val targetFrameNs = frameDurationNs(targetFps)
-        if (minFrameNs > 0L && minFrameNs > targetFrameNs + HIGH_FPS_FRAME_TOLERANCE_NS) return null
-        return exact
     }
 
     /**
@@ -1122,7 +1089,10 @@ class CaptureService : Service() {
                 requestedBitrate = configuredVideoBitrate()
             )
         } else null
-        if (profile.hdrHlg10 && exact == null) return null
+        // Para 120/240 o perfil OEM HFR exato faz parte do contrato. Sem ele,
+        // não reconstrua MediaRecorder manualmente: é melhor recusar a combinação
+        // do que produzir um arquivo nominalmente HFR com cadência de ~60 FPS.
+        if ((profile.hdrHlg10 || profile.targetFps >= CaptureModeStore.FPS_120) && exact == null) return null
         return EncoderProfile(
             codecName = if (exact != null) "MediaRecorder direto (perfil OEM compatível)" else "MediaRecorder direto",
             mime = mime,
@@ -2841,7 +2811,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "ios-like-ae-clean-1.8.257"
+        private const val CAPTURE_PIPELINE_REVISION = "direct_mediarecorder_v8_constrained_hfr"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
