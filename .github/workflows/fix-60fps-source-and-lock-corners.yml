@@ -26,84 +26,30 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Revert mistaken HFR interpretation and patch 60 FPS source
+      - name: Restore 60 FPS baseline and patch source pacing
         shell: bash
         run: |
           set -euo pipefail
-
-          # The previous HFR patch was based on a wrong interpretation of a 60 FPS
-          # source whose irregular MP4 timestamps made r_frame_rate look like 120.
-          # Restore only the two capture files touched by that patch. Processing /
-          # interpolation code is intentionally not restored or modified.
-          git checkout 1f00b49d9875d21a5438192b81669a3957d64a62 -- \
-            app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt \
-            app/src/main/java/com/steadyvault/camera/capture/recorder/DirectMediaRecorderBackend.kt
-
+          git checkout 1f00b49d9875d21a5438192b81669a3957d64a62 -- app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt app/src/main/java/com/steadyvault/camera/capture/recorder/DirectMediaRecorderBackend.kt
           python3 - <<'PY'
           from pathlib import Path
-
           recorder_path = Path('app/src/main/java/com/steadyvault/camera/capture/recorder/DirectMediaRecorderBackend.kt')
           recorder = recorder_path.read_text()
-
-          old = '''    private val usesExactOemProfile: Boolean
-        get() = selectedProfile != null && (hdrHlg10 || targetFps >= 120)
-'''
-          new = '''    private val usesExactOemProfile: Boolean
-        get() = selectedProfile != null && (hdrHlg10 || targetFps >= 60)
-'''
-          assert recorder.count(old) == 1, 'usesExactOemProfile baseline not found'
-          recorder = recorder.replace(old, new)
-
-          old = '''                val useOemProfile = oemProfile != null && (hdrHlg10 || targetFps >= 120)
-'''
-          new = '''                val useOemProfile = oemProfile != null && (hdrHlg10 || targetFps >= 60)
-'''
-          assert recorder.count(old) == 1, 'useOemProfile baseline not found'
-          recorder = recorder.replace(old, new)
-
-          old = '''                    // Em constrained high-speed, deixar o MediaRecorder reconstruir
-                    // manualmente codec/fps/bitrate pode quebrar o pacing da HAL Samsung.
-                    // Use o VideoProfile OEM inteiro para 120/240 FPS e não sobrescreva
-                    // seus parâmetros depois de setVideoProfile().
-'''
-          new = '''                    // Para 60 FPS ou mais, prefira o VideoProfile OEM exato quando
-                    // a câmera Samsung o publica. Isso mantém os parâmetros de pacing/
-                    // encoder que o fabricante validou para aquela resolução + FPS e
-                    // reduz a chance de frames omitidos no arquivo bruto. Se não houver
-                    // perfil exato em 60 FPS, o caminho manual continua disponível.
-'''
-          assert recorder.count(old) == 1, 'OEM comment baseline not found'
-          recorder = recorder.replace(old, new)
+          assert recorder.count('selectedProfile != null && (hdrHlg10 || targetFps >= 120)') == 1
+          recorder = recorder.replace('selectedProfile != null && (hdrHlg10 || targetFps >= 120)', 'selectedProfile != null && (hdrHlg10 || targetFps >= 60)')
+          assert recorder.count('oemProfile != null && (hdrHlg10 || targetFps >= 120)') == 1
+          recorder = recorder.replace('oemProfile != null && (hdrHlg10 || targetFps >= 120)', 'oemProfile != null && (hdrHlg10 || targetFps >= 60)')
           recorder_path.write_text(recorder)
-
           capture_path = Path('app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt')
           capture = capture_path.read_text()
-          old_revision = 'private const val CAPTURE_PIPELINE_REVISION = "ios-like-ae-clean-1.8.257"'
-          new_revision = 'private const val CAPTURE_PIPELINE_REVISION = "ios-like-ae-clean-1.8.258-oem60"'
-          assert capture.count(old_revision) == 1, 'capture revision baseline not found'
-          capture = capture.replace(old_revision, new_revision)
+          assert capture.count('ios-like-ae-clean-1.8.257') == 1
+          capture = capture.replace('ios-like-ae-clean-1.8.257', 'ios-like-ae-clean-1.8.258-oem60')
           capture_path.write_text(capture)
-
           widget_path = Path('app/src/main/java/com/steadyvault/camera/widgets/WidgetAppearance.kt')
           widget = widget_path.read_text()
-          old_corner = '''        val cornerPx = min(
-            sizePx / 2f,
-            AppearanceStore.cornerRadiusDp(context) * 0.60f * density
-        )
-'''
-          new_corner = '''        // O widget da tela de bloqueio deve usar exatamente o mesmo raio
-        // configurado no app. Antes havia um fator 0.60 que deixava todos os tiles
-        // visualmente mais quadrados que a preferência selecionada.
-        val cornerPx = min(
-            sizePx / 2f,
-            AppearanceStore.cornerRadiusDp(context) * density
-        )
-'''
-          assert widget.count(old_corner) == 1, 'lock corner scaling baseline not found'
-          widget = widget.replace(old_corner, new_corner)
+          assert widget.count('AppearanceStore.cornerRadiusDp(context) * 0.60f * density') == 1
+          widget = widget.replace('AppearanceStore.cornerRadiusDp(context) * 0.60f * density', 'AppearanceStore.cornerRadiusDp(context) * density')
           widget_path.write_text(widget)
-
-          # VideoAnalysis must keep effective cadence as the FPS source of truth.
           analysis = Path('app/src/main/java/com/steadyvault/camera/processing/analysis/VideoAnalysis.kt').read_text()
           assert '(frameCount - 1L) * 1_000_000.0 / spanUs.toDouble()' in analysis
           assert 'sem promover 60 -> 120' in analysis
@@ -117,7 +63,6 @@ jobs:
           echo "$changed"
           unexpected=$(echo "$changed" | grep '^app/' | grep -Ev '^(app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt|app/src/main/java/com/steadyvault/camera/capture/recorder/DirectMediaRecorderBackend.kt|app/src/main/java/com/steadyvault/camera/widgets/WidgetAppearance.kt)$' || true)
           if [ -n "$unexpected" ]; then
-            echo "Unexpected app files changed:"
             echo "$unexpected"
             exit 1
           fi
