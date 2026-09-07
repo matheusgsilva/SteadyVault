@@ -31,6 +31,13 @@ object VaultStartupCoordinator {
 
     fun resumeAfterCapture(owner: Any) {
         captureOwners -= owner
+        // Um load de miniatura que já estava em voo quando a câmera assumiu prioridade
+        // pode ter devolvido o placeholder deliberado e a grade pode tê-lo colocado no
+        // próprio LRU. Ao terminar a última captura, invalide somente a memória/warm-ups;
+        // o cache de miniaturas em disco permanece intacto e a grade recarrega a imagem real.
+        if (captureOwners.isEmpty()) {
+            MediaThumbnailRepository.prepareForCapture()
+        }
     }
 
     fun runAsync(context: Context) {
