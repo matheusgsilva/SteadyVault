@@ -75,6 +75,13 @@ class PrivateBrowserActivity : ComponentActivity() {
         val hasInternalStream: Boolean
     )
 
+    private data class InstagramSessionContext(
+        val shortcode: String = "",
+        val csrfToken: String = "",
+        val fbDtsg: String = "",
+        val docId: String = ""
+    )
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         BrowserWebViewConfigurator.resetPrivateProfile()
@@ -529,6 +536,11 @@ class PrivateBrowserActivity : ComponentActivity() {
 
 
     private fun scanPageMediaForDownload(directOnly: Boolean = false) {
+        val requestedPageUrl = currentExtractorPageUrl()
+        if (!directOnly && InstagramPublicAccess.isInstagramUrl(requestedPageUrl) && !InstagramPublicAccess.isStoryUrl(requestedPageUrl)) {
+            resolveInstagramSessionMediaForDownload(requestedPageUrl) { scanPageMediaForDownload(directOnly = true) }
+            return
+        }
         webView.evaluateJavascript(MEDIA_SCAN_SCRIPT) { raw ->
             val scan = parseMediaScanResult(raw)
             val detected = synchronized(detectedMediaUrls) { detectedMediaUrls.toList() }
@@ -556,6 +568,58 @@ class PrivateBrowserActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun resolveInstagramSessionMediaForDownload(pageUrl: String, onFailure: () -> Unit) {
+        val progressDialog = OneUiDialog.progress(
+            activity = this,
+            title = "Procurando mídia",
+            message = "Obtendo o arquivo pela sua sessão do Instagram…",
+            cancelable = false
+        )
+        val userAgent = webView.settings.userAgentString.orEmpty()
+        webView.evaluateJavascript(INSTAGRAM_SESSION_CONTEXT_SCRIPT) { raw ->
+            val context = parseInstagramSessionContext(raw)
+            val cookie = browserCookie(pageUrl)
+            val shortcode = context.shortcode.ifBlank { InstagramPublicAccess.mediaShortcode(pageUrl).orEmpty() }
+            if (shortcode.isBlank() || !InstagramPublicAccess.hasAuthenticatedSession(cookie)) {
+                progressDialog.dismiss()
+                onFailure()
+                return@evaluateJavascript
+            }
+            downloadExecutor.execute {
+                val media = runCatching {
+                    InstagramSessionMediaResolver.resolve(
+                        pageUrl = pageUrl,
+                        shortcodeHint = shortcode,
+                        cookie = cookie,
+                        userAgent = userAgent,
+                        csrfToken = context.csrfToken,
+                        fbDtsg = context.fbDtsg,
+                        docId = context.docId
+                    )
+                }
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    media.onSuccess {
+                        download(it.url, userAgent, "", it.mimeType, pageUrl)
+                    }.onFailure {
+                        onFailure()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun parseInstagramSessionContext(raw: String?): InstagramSessionContext = runCatching {
+        val json = JSONObject(raw?.takeIf { it.isNotBlank() && it != "null" } ?: "{}")
+        InstagramSessionContext(
+            shortcode = json.optString("shortcode"),
+            csrfToken = json.optString("csrfToken"),
+            fbDtsg = json.optString("fbDtsg"),
+            docId = json.optString("docId")
+        )
+    }.getOrDefault(InstagramSessionContext())
 
     private fun currentExtractorPageUrl(): String {
         val current = webView.url.orEmpty()
@@ -1026,6 +1090,56 @@ class PrivateBrowserActivity : ComponentActivity() {
     companion object {
         private const val MAX_MEDIA_CHOICES = 40
         private const val MAX_IMAGE_ALTERNATIVES = 8
+        private val INSTAGRAM_SESSION_CONTEXT_SCRIPT = """
+            (function() {
+                const KEY = '__steady_instagram_ctx';
+                try {
+                    sessionStorage.removeItem(KEY);
+                    const bridge = document.createElement('script');
+                    bridge.textContent = `(function(){
+                        try {
+                            let fb = '';
+                            let doc = '';
+                            try { fb = (typeof fb_dtsg !== 'undefined' && fb_dtsg) ? String(fb_dtsg) : ''; } catch (e) {}
+                            try { doc = String(require('PolarisPostRootQuery').params.id || ''); } catch (e) {}
+                            sessionStorage.setItem('__steady_instagram_ctx', JSON.stringify({fbDtsg: fb, docId: doc}));
+                        } catch (e) {
+                            sessionStorage.setItem('__steady_instagram_ctx', '{}');
+                        }
+                    })();`;
+                    (document.documentElement || document.head || document.body).appendChild(bridge);
+                    bridge.remove();
+                } catch (e) {}
+                let ctx = {};
+                try { ctx = JSON.parse(sessionStorage.getItem(KEY) || '{}'); } catch (e) {}
+                try { sessionStorage.removeItem(KEY); } catch (e) {}
+                const csrf = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
+                ctx.csrfToken = csrf ? decodeURIComponent(csrf[1]) : '';
+                const parts = location.pathname.split('/').filter(Boolean);
+                const mediaIndex = parts.findIndex(p => /^(reel|reels|p|tv)$/i.test(p));
+                let shortcode = mediaIndex >= 0 ? (parts[mediaIndex + 1] || '') : '';
+                if (!shortcode || /^audio$/i.test(shortcode)) {
+                    let best = null;
+                    document.querySelectorAll('video').forEach(function(video) {
+                        const r = video.getBoundingClientRect();
+                        if (r.width < 80 || r.height < 80 || r.bottom <= 0 || r.right <= 0 || r.top >= innerHeight || r.left >= innerWidth) return;
+                        const area = Math.min(r.width, innerWidth) * Math.min(r.height, innerHeight);
+                        if (!best || area > best.area) best = {node: video, area: area};
+                    });
+                    const scope = best && best.node.closest('article') ? best.node.closest('article') : document;
+                    const link = scope.querySelector('a[href*="/reel/"],a[href*="/reels/"]');
+                    if (link) {
+                        try {
+                            const p = new URL(link.href, location.href).pathname.split('/').filter(Boolean);
+                            const i = p.findIndex(v => /^(reel|reels)$/i.test(v));
+                            shortcode = i >= 0 ? (p[i + 1] || '') : shortcode;
+                        } catch (e) {}
+                    }
+                }
+                ctx.shortcode = shortcode || '';
+                return ctx;
+            })();
+        """.trimIndent()
         private val STORY_MEDIA_SCAN_SCRIPT = """
             (function() {
                 let best = null;

@@ -15,6 +15,20 @@ internal object InstagramPublicAccess {
         parts.firstOrNull()?.equals("stories", ignoreCase = true) == true && parts.size >= 2
     }.getOrDefault(false)
 
+    fun mediaShortcode(value: String): String? = runCatching {
+        if (!isInstagramUrl(value)) return@runCatching null
+        val parts = URI(value.trim()).path.orEmpty().split('/').filter(String::isNotBlank)
+        val index = parts.indexOfFirst { it.lowercase(Locale.US) in POST_TYPES }
+        parts.getOrNull(index + 1)?.takeIf { index >= 0 && it.isNotBlank() && !it.equals("audio", true) }
+    }.getOrNull()
+
+    fun isReelUrl(value: String): Boolean = runCatching {
+        if (!isInstagramUrl(value)) return@runCatching false
+        val parts = URI(value.trim()).path.orEmpty().split('/').filter(String::isNotBlank)
+        val index = parts.indexOfFirst { it.equals("reel", true) || it.equals("reels", true) }
+        index >= 0 && parts.getOrNull(index + 1)?.isNotBlank() == true
+    }.getOrDefault(false)
+
     fun normalize(value: String): String {
         val trimmed = value.trim()
         if (!isInstagramUrl(trimmed)) return trimmed
