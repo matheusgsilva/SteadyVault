@@ -1,0 +1,49 @@
+name: Fix Instagram authenticated reel
+
+on:
+  push:
+    branches:
+      - test-1.8.131-motion-gap-repair
+    paths:
+      - .github/workflows/fix-instagram-session-reel.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch_and_build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: test-1.8.131-motion-gap-repair
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Apply fix
+        run: python3 tools/fix_instagram_session_reel.py
+
+      - name: Verify scope
+        run: |
+          grep -F 'InstagramSessionMediaResolver.resolve' app/src/main/java/com/steadyvault/camera/ui/browser/PrivateBrowserActivity.kt
+          grep -F 'PolarisPostRootQuery' app/src/main/java/com/steadyvault/camera/ui/browser/PrivateBrowserActivity.kt
+          grep -F 'xdt_api__v1__media__shortcode__web_info' app/src/main/java/com/steadyvault/camera/ui/browser/InstagramSessionMediaResolver.kt
+          test -z "$(git diff --name-only -- app/src/main/java/com/steadyvault/camera/capture app/src/main/java/com/steadyvault/camera/processing)"
+
+      - name: Compile and assemble
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:compileDebugKotlin :app:assembleDebug --no-daemon
+
+      - name: Commit validated fix
+        run: |
+          rm -f .github/workflows/fix-instagram-session-reel.yml tools/fix_instagram_session_reel.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'baixa reels pela sessao autenticada do Instagram'
+          git push origin HEAD:test-1.8.131-motion-gap-repair
