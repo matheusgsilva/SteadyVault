@@ -884,6 +884,13 @@ class CaptureService : Service() {
         val exact = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
             ?.firstOrNull { StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper) }
             ?: return null
+
+        // No S25 Ultra, 120 FPS constrained chega ao MediaRecorder em lotes de
+        // 4 quadros (~4/4/4/21 ms). Se a própria câmera publica [120,120] para uma
+        // sessão normal, deixe a HAL validar a combinação real em vez de descartá-la
+        // pelo minFrameDuration público, que é conservador em alguns Samsung.
+        if (targetFps == CaptureModeStore.FPS_120) return exact
+
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val minFrameNs = encoderSurfaceMinFrameDurationNs(map, size, preferMediaRecorder = true)
         val targetFrameNs = frameDurationNs(targetFps)
@@ -2837,7 +2844,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "ios-like-ae-auto60-1.8.260"
+        private const val CAPTURE_PIPELINE_REVISION = "ios-like-ae-auto60-1.8.261-regular120"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
