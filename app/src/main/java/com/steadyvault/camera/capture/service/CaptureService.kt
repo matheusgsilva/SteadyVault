@@ -1915,6 +1915,21 @@ class CaptureService : Service() {
         setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
         setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
         setSafely(builder, CaptureRequest.CONTROL_AE_LOCK, false)
+
+        // Constrained high-speed não herdava o anti-banding do request regular.
+        // Em 240 FPS isso deixa LEDs ligados em rede aparecerem como quadros/faixas
+        // alternadamente escuras. Preserve a preferência existente (AUTO/50/60/OFF)
+        // também na sessão high-speed para a HAL sincronizar a exposição quando puder.
+        val antibandingModes = profile.characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES) ?: intArrayOf()
+        val requestedAntibanding = when (recordingSettings.antibanding) {
+            CaptureSettings.ANTIBANDING_50HZ -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_50HZ
+            CaptureSettings.ANTIBANDING_60HZ -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_60HZ
+            CaptureSettings.ANTIBANDING_OFF -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_OFF
+            else -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_AUTO
+        }
+        if (antibandingModes.contains(requestedAntibanding)) {
+            setSafely(builder, CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, requestedAntibanding)
+        }
         setSafely(builder, CaptureRequest.CONTROL_CAPTURE_INTENT, CameraMetadata.CONTROL_CAPTURE_INTENT_VIDEO_RECORD)
 
         val afModes = profile.characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()

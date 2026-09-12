@@ -30,7 +30,8 @@ class DirectMediaRecorderBackend(
 ) : RecordingBackend {
 
     override val backendName: String = "MediaRecorder direto"
-    override val videoBitrateBps: Long get() = selectedProfile?.videoProfile?.bitrate?.toLong() ?: videoBitrate.toLong()
+    override val videoBitrateBps: Long
+        get() = if (usesExactOemProfile) selectedProfile!!.videoProfile.bitrate.toLong() else videoBitrate.toLong()
     override val audioBitrateBps: Long get() = if (integratedAudio) audioBitrate.toLong() else 0L
 
     private var recorder: MediaRecorder? = null
@@ -41,14 +42,14 @@ class DirectMediaRecorderBackend(
     private var selectedProfile: Selection? = null
 
     private val usesExactOemProfile: Boolean
-        get() = selectedProfile != null && (hdrHlg10 || targetFps >= 120)
+        get() = selectedProfile != null && (hdrHlg10 || targetFps >= 240)
 
     val profileDescription: String
         get() = buildString {
             append(width).append('x').append(height).append(' ')
             append(targetFps).append(" FPS ")
             append(videoMime.substringAfter('/').uppercase()).append(' ')
-            append((selectedProfile?.videoProfile?.bitrate ?: videoBitrate) / 1_000_000).append(" Mbps")
+            append((if (usesExactOemProfile) selectedProfile!!.videoProfile.bitrate else videoBitrate) / 1_000_000).append(" Mbps")
             if (hdrHlg10) append(" HLG10")
             if (usesExactOemProfile) append(" • perfil OEM exato") else append(" • configuração exata")
         }
@@ -84,16 +85,16 @@ class DirectMediaRecorderBackend(
                 setVideoSource(MediaRecorder.VideoSource.SURFACE)
 
                 val oemProfile = selectedProfile
-                val useOemProfile = oemProfile != null && (hdrHlg10 || targetFps >= 120)
-                if (useOemProfile) {
+                if (usesExactOemProfile) {
                     check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         "Perfil OEM direto exige Android 12 ou superior"
                     }
-                    // Em constrained high-speed, deixar o MediaRecorder reconstruir
-                    // manualmente codec/fps/bitrate pode quebrar o pacing da HAL Samsung.
-                    // Use o VideoProfile OEM inteiro para 120/240 FPS e não sobrescreva
-                    // seus parâmetros depois de setVideoProfile().
-                    setOutputFormat(oemProfile.outputFormat)
+                    // 240 FPS preserva o VideoProfile OEM: no S25 Ultra ele mantém
+                    // a cadência temporal correta. Em 120 FPS SDR, porém, o perfil
+                    // OEM gerou timestamps em blocos (~4/4/4/21 ms) apesar da câmera
+                    // estar em [120,120]. Nesse modo configure o MediaRecorder
+                    // explicitamente para que o muxer receba 120 FPS reais.
+                    setOutputFormat(oemProfile!!.outputFormat)
                     setVideoProfile(oemProfile.videoProfile)
                 } else {
                     setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
