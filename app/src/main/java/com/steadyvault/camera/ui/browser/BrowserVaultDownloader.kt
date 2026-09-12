@@ -266,7 +266,7 @@ internal object BrowserVaultDownloader {
 
     fun isInstagramCdnUrl(url: String?): Boolean {
         val lower = url?.lowercase(Locale.US).orEmpty()
-        return lower.startsWith("http://") || lower.startsWith("https://") &&
+        return (lower.startsWith("http://") || lower.startsWith("https://")) &&
             (lower.contains("cdninstagram.com") || lower.contains("fbcdn.net"))
     }
 
