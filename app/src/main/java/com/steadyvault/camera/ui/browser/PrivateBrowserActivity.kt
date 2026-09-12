@@ -11,7 +11,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
-import android.webkit.CookieManager
 import android.webkit.URLUtil
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -51,12 +50,15 @@ class PrivateBrowserActivity : ComponentActivity() {
     private lateinit var subtitle: TextView
     private lateinit var progress: ProgressBar
     private lateinit var customContainer: FrameLayout
+    private lateinit var storyDownload: TextView
     private var customView: View? = null
     private var customCallback: WebChromeClient.CustomViewCallback? = null
     private var defaultUserAgent = ""
     private val blockedCount = AtomicInteger(0)
     private var pageLoading = false
     private var lastRequestedPageUrl = BrowserBlocker.HOME_URL
+    private var currentStoryUrl = ""
+    private var webProfileName = BrowserWebViewConfigurator.PROFILE_PRIVATE
     private val detectedMediaUrls = Collections.synchronizedSet(LinkedHashSet<String>())
     private val downloadExecutor = Executors.newSingleThreadExecutor { task ->
         Thread({
@@ -75,6 +77,7 @@ class PrivateBrowserActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        BrowserWebViewConfigurator.resetPrivateProfile()
         setContentView(R.layout.activity_private_browser)
         SystemBarInsets.applyTop(findViewById(R.id.browserRoot))
         BottomNavigation.bind(this, BottomNavigation.TAB_BROWSER)
@@ -105,7 +108,8 @@ class PrivateBrowserActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         applySecurityFlag()
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, PrivateBrowserStore.thirdPartyCookiesEnabled(this))
+        BrowserWebViewConfigurator.cookieManager(webView)
+            .setAcceptThirdPartyCookies(webView, PrivateBrowserStore.thirdPartyCookiesEnabled(this))
         webView.onResume()
     }
 
@@ -119,9 +123,10 @@ class PrivateBrowserActivity : ComponentActivity() {
         SocialMediaDownloader.cancelActiveDownloads()
         runCatching {
             webView.stopLoading()
-            clearPrivateSession()
+            if (!BrowserWebViewConfigurator.supportsProfiles()) clearPrivateSession()
             webView.destroy()
         }
+        BrowserWebViewConfigurator.resetPrivateProfile()
         downloadExecutor.shutdownNow()
         super.onDestroy()
     }
@@ -133,6 +138,116 @@ class PrivateBrowserActivity : ComponentActivity() {
         subtitle = findViewById(R.id.browserSubtitle)
         progress = findViewById(R.id.browserProgress)
         customContainer = findViewById(R.id.browserFullscreenContainer)
+        storyDownload = findViewById(R.id.browserStoryDownload)
+    }
+
+    private fun browserCookie(url: String): String =
+        BrowserWebViewConfigurator.cookieManager(webView).getCookie(url).orEmpty()
+
+    private fun loadIsolatedUrl(url: String) {
+        if (url.isBlank()) return
+        val targetProfile = BrowserWebViewConfigurator.profileForUrl(url)
+        if (BrowserWebViewConfigurator.supportsProfiles() && targetProfile != webProfileName) {
+            switchWebViewProfile(targetProfile, url)
+            return
+        }
+        rememberRequestedPage(url, allowLoginWall = true)
+        webView.loadUrl(url)
+    }
+
+    private fun switchWebViewProfile(targetProfile: String, url: String) {
+        if (customView != null) hideCustomView()
+        val oldWebView = webView
+        val parent = oldWebView.parent as? ViewGroup ?: return
+        val index = parent.indexOfChild(oldWebView).coerceAtLeast(0)
+        val params = oldWebView.layoutParams
+        val oldProfile = webProfileName
+        oldWebView.stopLoading()
+        parent.removeView(oldWebView)
+        runCatching { oldWebView.destroy() }
+        if (oldProfile == BrowserWebViewConfigurator.PROFILE_PRIVATE || targetProfile == BrowserWebViewConfigurator.PROFILE_PRIVATE) {
+            BrowserWebViewConfigurator.resetPrivateProfile()
+        }
+        webProfileName = targetProfile
+        webView = WebView(this).apply {
+            id = R.id.browserWebView
+            layoutParams = params
+        }
+        parent.addView(webView, index)
+        detectedMediaUrls.clear()
+        configureWebView()
+        applySecurityFlag()
+        rememberRequestedPage(url, allowLoginWall = true)
+        webView.loadUrl(url)
+    }
+
+    private fun updateStoryDownload(url: String) {
+        val storyUrl = url.takeIf(InstagramPublicAccess::isStoryUrl).orEmpty()
+        if (storyUrl.isNotBlank() && storyUrl != currentStoryUrl) {
+            currentStoryUrl = storyUrl
+            detectedMediaUrls.clear()
+        } else if (storyUrl.isBlank()) {
+            currentStoryUrl = ""
+        }
+        storyDownload.visibility = if (storyUrl.isNotBlank()) View.VISIBLE else View.GONE
+    }
+
+    private fun downloadCurrentInstagramStory() {
+        val storyUrl = sequenceOf(webView.url.orEmpty(), currentStoryUrl, lastRequestedPageUrl)
+            .firstOrNull(InstagramPublicAccess::isStoryUrl)
+            .orEmpty()
+        if (storyUrl.isBlank()) {
+            Toast.makeText(this, "Abra um Story antes de baixar", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val capturedStoryUrl = storyUrl
+        webView.evaluateJavascript(STORY_MEDIA_SCAN_SCRIPT) { raw ->
+            val result = runCatching { JSONObject(raw.orEmpty()) }.getOrNull()
+            val directUrl = result?.optString("url").orEmpty()
+            val mimeType = result?.optString("mimeType").orEmpty()
+            if (directUrl.startsWith("http://", true) || directUrl.startsWith("https://", true)) {
+                downloadStoryDirect(directUrl, mimeType, capturedStoryUrl)
+            } else {
+                resolveInstagramStoryForDownload(capturedStoryUrl)
+            }
+        }
+    }
+
+    private fun downloadStoryDirect(url: String, mimeType: String, storyUrl: String) {
+        val userAgent = webView.settings.userAgentString.orEmpty()
+        val effectiveMime = mimeType.ifBlank { BrowserVaultDownloader.mimeHintForUrl(url) }
+        val fileName = URLUtil.guessFileName(url, "", effectiveMime).ifBlank { "Instagram_Story" }
+        val destination = PrivateBrowserStore.downloadDestination(this)
+        if (destination == PrivateBrowserStore.DESTINATION_DOWNLOADS) {
+            downloadToAndroidDownloads(url, userAgent, "", effectiveMime, fileName, storyUrl)
+        } else {
+            downloadToVault(url, userAgent, "", effectiveMime, destination, storyUrl)
+        }
+    }
+
+    private fun resolveInstagramStoryForDownload(storyUrl: String) {
+        val cookie = browserCookie(storyUrl)
+        Toast.makeText(this, "Preparando Story para download…", Toast.LENGTH_SHORT).show()
+        downloadExecutor.execute {
+            val media = runCatching { SocialMediaDownloader.analyze(this, storyUrl, cookie) }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                media.onSuccess { analyzed ->
+                    val format = analyzed.formats.firstOrNull()
+                    if (format == null) {
+                        Toast.makeText(this, "Nenhuma mídia disponível nesse Story", Toast.LENGTH_LONG).show()
+                        return@onSuccess
+                    }
+                    val stored = PrivateBrowserStore.downloadDestination(this)
+                    val destination = if (stored == PrivateBrowserStore.DESTINATION_DOWNLOADS) {
+                        PrivateBrowserStore.DESTINATION_PRIMARY
+                    } else stored
+                    downloadSocialMedia(analyzed, format, destination)
+                }.onFailure {
+                    Toast.makeText(this, it.message ?: "Não foi possível baixar esse Story", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     private fun recoverWebViewAfterRendererGone(deadWebView: WebView, restoreUrl: String) {
@@ -142,6 +257,8 @@ class PrivateBrowserActivity : ComponentActivity() {
         val params = deadWebView.layoutParams
         parent.removeView(deadWebView)
         runCatching { deadWebView.destroy() }
+        webProfileName = BrowserWebViewConfigurator.profileForUrl(restoreUrl)
+        if (webProfileName == BrowserWebViewConfigurator.PROFILE_PRIVATE) BrowserWebViewConfigurator.resetPrivateProfile()
         webView = WebView(this).apply {
             id = R.id.browserWebView
             layoutParams = params
@@ -156,7 +273,8 @@ class PrivateBrowserActivity : ComponentActivity() {
         val environment = BrowserWebViewConfigurator.configure(
             webView = webView,
             mixedContentCompatibility = PrivateBrowserStore.mixedContentCompatibility(this),
-            thirdPartyCookies = PrivateBrowserStore.thirdPartyCookiesEnabled(this)
+            thirdPartyCookies = PrivateBrowserStore.thirdPartyCookiesEnabled(this),
+            profileName = webProfileName
         )
         defaultUserAgent = environment.defaultUserAgent
         applyDesktopMode()
@@ -167,6 +285,11 @@ class PrivateBrowserActivity : ComponentActivity() {
                 rememberRequestedPage(url)
                 if (BrowserBlocker.shouldOpenOutside(url)) {
                     runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                    return true
+                }
+                val targetProfile = BrowserWebViewConfigurator.profileForUrl(url)
+                if (BrowserWebViewConfigurator.supportsProfiles() && targetProfile != webProfileName) {
+                    loadIsolatedUrl(url)
                     return true
                 }
                 return false
@@ -191,14 +314,23 @@ class PrivateBrowserActivity : ComponentActivity() {
                 progress.visibility = View.VISIBLE
                 progress.progress = 8
                 address.setText(url.orEmpty())
+                updateStoryDownload(url.orEmpty())
                 subtitle.text = "Carregando…"
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
                 pageLoading = false
                 address.setText(url.orEmpty())
+                updateStoryDownload(url.orEmpty())
                 updatePageLabels()
                 progress.visibility = View.GONE
+            }
+
+            override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+                val current = url.orEmpty()
+                rememberRequestedPage(current, allowLoginWall = false)
+                address.setText(current)
+                updateStoryDownload(current)
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -274,14 +406,14 @@ class PrivateBrowserActivity : ComponentActivity() {
         findViewById<View>(R.id.browserBack).setOnClickListener { if (webView.canGoBack()) webView.goBack() }
         findViewById<View>(R.id.browserForward).setOnClickListener { if (webView.canGoForward()) webView.goForward() }
         findViewById<View>(R.id.browserRefresh).setOnClickListener { if (pageLoading) webView.stopLoading() else webView.reload() }
-        findViewById<View>(R.id.browserHome).setOnClickListener { webView.loadUrl(BrowserBlocker.HOME_URL) }
+        findViewById<View>(R.id.browserHome).setOnClickListener { loadIsolatedUrl(BrowserBlocker.HOME_URL) }
         findViewById<View>(R.id.browserMenu).setOnClickListener { showBrowserMenu() }
+        storyDownload.setOnClickListener { downloadCurrentInstagramStory() }
     }
 
     private fun loadAddress() {
         val normalized = BrowserBlocker.normalizeAddress(address.text?.toString().orEmpty())
-        rememberRequestedPage(normalized, allowLoginWall = true)
-        webView.loadUrl(normalized)
+        loadIsolatedUrl(normalized)
         address.clearFocus()
         getSystemService(InputMethodManager::class.java)
             ?.hideSoftInputFromWindow(address.windowToken, 0)
@@ -297,8 +429,7 @@ class PrivateBrowserActivity : ComponentActivity() {
         if (customView != null) hideCustomView()
         webView.stopLoading()
         address.setText(url)
-        rememberRequestedPage(url, allowLoginWall = true)
-        webView.loadUrl(url)
+        loadIsolatedUrl(url)
         return true
     }
 
@@ -344,7 +475,7 @@ class PrivateBrowserActivity : ComponentActivity() {
                 2 -> showFavorites()
                 3 -> {
                     PrivateBrowserStore.setThirdPartyCookiesEnabled(this, !cookies)
-                    CookieManager.getInstance().setAcceptThirdPartyCookies(webView, !cookies)
+                    BrowserWebViewConfigurator.cookieManager(webView).setAcceptThirdPartyCookies(webView, !cookies)
                     Toast.makeText(this, if (!cookies) "Cookies completos ligados" else "Cookies completos desligados", Toast.LENGTH_SHORT).show()
                     webView.reload()
                 }
@@ -393,7 +524,7 @@ class PrivateBrowserActivity : ComponentActivity() {
             activity = this,
             title = "Favoritos",
             choices = favorites.map { OneUiDialog.Choice(it.title, it.url) }
-        ) { index -> webView.loadUrl(favorites[index].url) }
+        ) { index -> loadIsolatedUrl(favorites[index].url) }
     }
 
 
@@ -427,8 +558,10 @@ class PrivateBrowserActivity : ComponentActivity() {
     private fun currentExtractorPageUrl(): String {
         val current = webView.url.orEmpty()
         return when {
-            BrowserMediaExtractor.isExtractorPage(lastRequestedPageUrl) -> lastRequestedPageUrl
+            InstagramPublicAccess.isStoryUrl(current) -> current
+            InstagramPublicAccess.isStoryUrl(lastRequestedPageUrl) -> lastRequestedPageUrl
             BrowserMediaExtractor.isExtractorPage(current) -> current
+            BrowserMediaExtractor.isExtractorPage(lastRequestedPageUrl) -> lastRequestedPageUrl
             else -> current.ifBlank { lastRequestedPageUrl }
         }
     }
@@ -440,8 +573,9 @@ class PrivateBrowserActivity : ComponentActivity() {
             message = "Analisando formatos disponíveis…",
             cancelable = false
         )
+        val cookie = browserCookie(pageUrl)
         downloadExecutor.execute {
-            val media = runCatching { SocialMediaDownloader.analyze(this, pageUrl) }
+            val media = runCatching { SocialMediaDownloader.analyze(this, pageUrl, cookie) }
             runOnUiThread {
                 progressDialog.dismiss()
                 if (isFinishing || isDestroyed) return@runOnUiThread
@@ -461,7 +595,7 @@ class PrivateBrowserActivity : ComponentActivity() {
         val loader = media.thumbnailUrl.takeIf(String::isNotBlank)?.let {
             BrowserMediaThumbnailLoader(
                 userAgent = webView.settings.userAgentString.orEmpty(),
-                cookie = CookieManager.getInstance().getCookie(it).orEmpty(),
+                cookie = browserCookie(it),
                 referrer = media.sourceUrl
             )
         }
@@ -550,7 +684,7 @@ class PrivateBrowserActivity : ComponentActivity() {
             cancelable = false
         )
         val userAgent = webView.settings.userAgentString.orEmpty()
-        val cookie = CookieManager.getInstance().getCookie(pageUrl).orEmpty()
+        val cookie = browserCookie(pageUrl)
         val quality = PrivateBrowserStore.mediaQuality(this)
         val resolution = PrivateBrowserStore.mediaResolution(this)
         val referrer = webView.url.orEmpty()
@@ -791,7 +925,7 @@ class PrivateBrowserActivity : ComponentActivity() {
                 .setDescription("Download pelo SteadyVault")
                 .setMimeType(mimeType)
                 .addRequestHeader("User-Agent", userAgent)
-                .addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url).orEmpty())
+                .addRequestHeader("Cookie", browserCookie(url))
                 .addRequestHeader("Referer", referrer.ifBlank { webView.url.orEmpty() })
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
@@ -815,7 +949,7 @@ class PrivateBrowserActivity : ComponentActivity() {
         )
         val quality = PrivateBrowserStore.mediaQuality(this)
         val resolution = PrivateBrowserStore.mediaResolution(this)
-        val cookie = CookieManager.getInstance().getCookie(url).orEmpty()
+        val cookie = browserCookie(url)
         val effectiveReferrer = referrer.ifBlank { webView.url.orEmpty() }
         downloadExecutor.execute {
             val result = runCatching {
@@ -867,6 +1001,24 @@ class PrivateBrowserActivity : ComponentActivity() {
     companion object {
         private const val MAX_MEDIA_CHOICES = 40
         private const val MAX_IMAGE_ALTERNATIVES = 8
+        private val STORY_MEDIA_SCAN_SCRIPT = """
+            (function() {
+                let best = null;
+                document.querySelectorAll('video,img').forEach(function(node) {
+                    const rect = node.getBoundingClientRect();
+                    const style = window.getComputedStyle(node);
+                    if (rect.width < 80 || rect.height < 80 || rect.bottom <= 0 || rect.right <= 0 ||
+                        rect.top >= window.innerHeight || rect.left >= window.innerWidth ||
+                        style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) <= 0) return;
+                    const isVideo = node.tagName.toLowerCase() === 'video';
+                    const url = isVideo ? (node.currentSrc || node.src || '') : (node.currentSrc || node.src || '');
+                    if (!url) return;
+                    const area = Math.min(rect.width, window.innerWidth) * Math.min(rect.height, window.innerHeight);
+                    if (!best || area > best.area) best = { url: url, mimeType: isVideo ? 'video/*' : 'image/*', area: area };
+                });
+                return best ? { url: best.url, mimeType: best.mimeType } : { url: '', mimeType: '' };
+            })();
+        """.trimIndent()
         private val MEDIA_SCAN_SCRIPT = """
             (function() {
                 const urls = new Set();

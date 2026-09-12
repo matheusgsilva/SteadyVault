@@ -3,11 +3,16 @@ package com.steadyvault.camera.ui.browser
 import java.net.URI
 import java.util.Locale
 
-/** Regras de acesso público do Instagram, sem depender de uma sessão do WebView. */
 internal object InstagramPublicAccess {
     fun isInstagramUrl(value: String): Boolean = runCatching {
         val host = URI(value.trim()).host.orEmpty().lowercase(Locale.US)
         host == "instagram.com" || host.endsWith(".instagram.com")
+    }.getOrDefault(false)
+
+    fun isStoryUrl(value: String): Boolean = runCatching {
+        if (!isInstagramUrl(value)) return false
+        val parts = URI(value.trim()).path.orEmpty().split('/').filter(String::isNotBlank)
+        parts.firstOrNull()?.equals("stories", ignoreCase = true) == true && parts.size >= 2
     }.getOrDefault(false)
 
     fun normalize(value: String): String {
@@ -16,12 +21,12 @@ internal object InstagramPublicAccess {
         return runCatching {
             val uri = URI(trimmed)
             val path = uri.path.orEmpty().ifBlank { "/" }
-            URI("https", "www.instagram.com", path, null).toASCIIString()
+            URI("https", "www.instagram.com", path, uri.rawQuery, null).toASCIIString()
         }.getOrDefault(trimmed)
     }
 
     fun fallbackUrls(value: String): List<String> = runCatching {
-        if (!isInstagramUrl(value)) return emptyList()
+        if (!isInstagramUrl(value) || isStoryUrl(value)) return emptyList()
         val parts = URI(value).path.orEmpty().split('/').filter(String::isNotBlank)
         val typeIndex = parts.indexOfFirst { it.lowercase(Locale.US) in POST_TYPES }
         val shortcode = parts.getOrNull(typeIndex + 1)?.takeIf(String::isNotBlank) ?: return emptyList()
@@ -36,6 +41,7 @@ internal object InstagramPublicAccess {
 
     fun publicPageUrls(value: String): List<String> {
         val normalized = normalize(value)
+        if (isStoryUrl(normalized)) return listOf(normalized)
         val fallbacks = fallbackUrls(normalized)
         return (fallbacks.filter(::isEmbedUrl) + normalized + fallbacks.filterNot(::isEmbedUrl)).distinct()
     }

@@ -45,7 +45,8 @@ internal object SocialMediaDownloader {
         val extractor: String,
         val formats: List<FormatChoice>,
         val useBrowserSession: Boolean = true,
-        val thumbnailUrl: String = ""
+        val thumbnailUrl: String = "",
+        val browserCookieHeader: String = ""
     )
 
     data class DownloadResult(
@@ -61,23 +62,34 @@ internal object SocialMediaDownloader {
         return SOCIAL_HOST_HINTS.any { host == it || host.endsWith(".$it") }
     }
 
-    fun analyze(context: Context, rawUrl: String): AnalyzedMedia {
+    fun analyze(context: Context, rawUrl: String, browserCookieHeader: String = ""): AnalyzedMedia {
         val url = InstagramPublicAccess.normalize(rawUrl)
         require(isValidHttpUrl(url)) { "Informe um link http/https válido" }
         SteadyVaultApplication.ensureMediaEngine(context.applicationContext as Application, refreshExtractor = true)
-        if (InstagramPublicAccess.isInstagramUrl(url)) return analyzeInstagram(context, url)
+        if (InstagramPublicAccess.isInstagramUrl(url)) return analyzeInstagram(context, url, browserCookieHeader)
         return try {
-            analyzeOnce(context, url, useBrowserSession = true)
+            analyzeOnce(context, url, useBrowserSession = true, browserCookieHeader = browserCookieHeader)
         } catch (error: Throwable) {
             throw IllegalStateException(cleanError(error), error)
         }
     }
 
-    private fun analyzeInstagram(context: Context, url: String): AnalyzedMedia {
-        var lastError = try {
+    private fun analyzeInstagram(context: Context, url: String, browserCookieHeader: String): AnalyzedMedia {
+        var lastError: Throwable = IllegalStateException("O Instagram não disponibilizou a mídia")
+        val authenticated = InstagramPublicAccess.hasAuthenticatedSession(browserCookieHeader)
+
+        if (InstagramPublicAccess.isStoryUrl(url) && authenticated) {
+            try {
+                return analyzeOnce(context, url, useBrowserSession = true, browserCookieHeader = browserCookieHeader)
+            } catch (error: Throwable) {
+                lastError = error
+            }
+        }
+
+        try {
             return analyzeOnce(context, url, useBrowserSession = false)
         } catch (error: Throwable) {
-            error
+            lastError = error
         }
 
         val application = context.applicationContext as Application
@@ -99,10 +111,10 @@ internal object SocialMediaDownloader {
 
         analyzeInstagramPublicPage(context, url)?.let { return it }
 
-        if (hasInstagramSession(url)) {
+        if (authenticated) {
             for (candidate in listOf(url) + InstagramPublicAccess.fallbackUrls(url)) {
                 try {
-                    return analyzeOnce(context, candidate, useBrowserSession = true)
+                    return analyzeOnce(context, candidate, useBrowserSession = true, browserCookieHeader = browserCookieHeader)
                 } catch (error: Throwable) {
                     lastError = error
                 }
@@ -151,7 +163,7 @@ internal object SocialMediaDownloader {
         var cookieFile: File? = null
         try {
             check(!cancelled()) { "Download cancelado" }
-            cookieFile = if (media.useBrowserSession) buildCookiesFile(app, media.sourceUrl) else null
+            cookieFile = if (media.useBrowserSession) buildCookiesFile(app, media.sourceUrl, media.browserCookieHeader) else null
             val outputTemplate = File(workDir, "%(title).140B [%(id)s].%(ext)s").absolutePath
             val request = YoutubeDLRequest(media.sourceUrl).apply {
                 addOption("-f", format.selector)
@@ -233,9 +245,14 @@ internal object SocialMediaDownloader {
         }
     }
 
-    private fun analyzeOnce(context: Context, url: String, useBrowserSession: Boolean): AnalyzedMedia {
+    private fun analyzeOnce(
+        context: Context,
+        url: String,
+        useBrowserSession: Boolean,
+        browserCookieHeader: String = ""
+    ): AnalyzedMedia {
         val app = context.applicationContext
-        val cookieFile = if (useBrowserSession) buildCookiesFile(app, url) else null
+        val cookieFile = if (useBrowserSession) buildCookiesFile(app, url, browserCookieHeader) else null
         try {
             val request = YoutubeDLRequest(url).apply {
                 addOption("--no-warnings")
@@ -261,7 +278,8 @@ internal object SocialMediaDownloader {
                 extractor = extractor,
                 formats = formats,
                 useBrowserSession = useBrowserSession,
-                thumbnailUrl = thumbnailUrlFromInfo(info)
+                thumbnailUrl = thumbnailUrlFromInfo(info),
+                browserCookieHeader = if (useBrowserSession) browserCookieHeader else ""
             )
         } finally {
             runCatching { cookieFile?.delete() }
@@ -415,8 +433,8 @@ internal object SocialMediaDownloader {
         }
     }
 
-    private fun buildCookiesFile(context: Context, url: String): File? {
-        val cookieHeader = CookieManager.getInstance().getCookie(url).orEmpty()
+    private fun buildCookiesFile(context: Context, url: String, browserCookieHeader: String = ""): File? {
+        val cookieHeader = browserCookieHeader.ifBlank { CookieManager.getInstance().getCookie(url).orEmpty() }
         if (cookieHeader.isBlank()) return null
         val host = runCatching { URI(url).host.orEmpty().trim('.') }.getOrDefault("").ifBlank { return null }
         val file = File(context.cacheDir, "sv_cookies_${System.currentTimeMillis()}.txt")
@@ -438,10 +456,6 @@ internal object SocialMediaDownloader {
             throw error
         }
     }
-
-    private fun hasInstagramSession(url: String): Boolean = InstagramPublicAccess.hasAuthenticatedSession(
-        CookieManager.getInstance().getCookie(url).orEmpty()
-    )
 
     private fun moveToDestination(context: Context, source: File, destination: String): File {
         val directory = when (destination) {
