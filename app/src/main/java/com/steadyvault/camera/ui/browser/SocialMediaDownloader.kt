@@ -78,7 +78,7 @@ internal object SocialMediaDownloader {
         var lastError: Throwable = IllegalStateException("O Instagram não disponibilizou a mídia")
         val authenticated = InstagramPublicAccess.hasAuthenticatedSession(browserCookieHeader)
 
-        if (InstagramPublicAccess.isStoryUrl(url) && authenticated) {
+        if (authenticated) {
             try {
                 return analyzeOnce(context, url, useBrowserSession = true, browserCookieHeader = browserCookieHeader)
             } catch (error: Throwable) {
@@ -112,7 +112,7 @@ internal object SocialMediaDownloader {
         analyzeInstagramPublicPage(context, url)?.let { return it }
 
         if (authenticated) {
-            for (candidate in listOf(url) + InstagramPublicAccess.fallbackUrls(url)) {
+            for (candidate in InstagramPublicAccess.fallbackUrls(url)) {
                 try {
                     return analyzeOnce(context, candidate, useBrowserSession = true, browserCookieHeader = browserCookieHeader)
                 } catch (error: Throwable) {

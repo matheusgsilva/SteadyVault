@@ -542,15 +542,13 @@ class PrivateBrowserActivity : ComponentActivity() {
             val pageUrl = currentExtractorPageUrl()
             val embeddedExtractor = scan.extractorUrl.takeIf(SocialMediaDownloader::canHandle).orEmpty()
             val internalStream = scan.hasInternalStream || detected.any(BrowserVaultDownloader::isLikelyStreamUrl)
+            val directFallback = { resolvePageMediaForDownload(pageUrl, direct, internalStream, scan.thumbnailUrl) }
             when {
-                embeddedExtractor.isNotBlank() -> resolveSocialMediaForDownload(embeddedExtractor)
-                SocialMediaDownloader.canHandle(pageUrl) -> resolveSocialMediaForDownload(pageUrl)
-                (scan.hasVideoPlayer || internalStream) && direct.none(BrowserVaultDownloader::isLikelyVideoUrl) -> {
-                    resolveSocialMediaForDownload(pageUrl) {
-                        resolvePageMediaForDownload(pageUrl, direct, internalStream, scan.thumbnailUrl)
-                    }
-                }
-                else -> resolvePageMediaForDownload(pageUrl, direct, internalStream, scan.thumbnailUrl)
+                embeddedExtractor.isNotBlank() -> resolveSocialMediaForDownload(embeddedExtractor, directFallback)
+                SocialMediaDownloader.canHandle(pageUrl) -> resolveSocialMediaForDownload(pageUrl, directFallback)
+                (scan.hasVideoPlayer || internalStream) && direct.none(BrowserVaultDownloader::isLikelyVideoUrl) ->
+                    resolveSocialMediaForDownload(pageUrl, directFallback)
+                else -> directFallback()
             }
         }
     }

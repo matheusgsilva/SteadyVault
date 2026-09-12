@@ -21,7 +21,8 @@ internal object InstagramPublicAccess {
         return runCatching {
             val uri = URI(trimmed)
             val path = uri.path.orEmpty().ifBlank { "/" }
-            URI("https", "www.instagram.com", path, uri.rawQuery, null).toASCIIString()
+            val query = if (isStoryUrl(trimmed)) uri.rawQuery else null
+            URI("https", "www.instagram.com", path, query, null).toASCIIString()
         }.getOrDefault(trimmed)
     }
 
