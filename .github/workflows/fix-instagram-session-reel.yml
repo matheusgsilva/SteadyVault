@@ -31,7 +31,7 @@ jobs:
         run: |
           grep -F 'InstagramSessionMediaResolver.resolve' app/src/main/java/com/steadyvault/camera/ui/browser/PrivateBrowserActivity.kt
           grep -F 'PolarisPostRootQuery' app/src/main/java/com/steadyvault/camera/ui/browser/PrivateBrowserActivity.kt
-          grep -F 'xdt_api__v1__media__shortcode__web_info' app/src/main/java/com/steadyvault/camera/ui/browser/InstagramSessionMediaResolver.kt
+          grep -F 'FALLBACK_DOC_ID' app/src/main/java/com/steadyvault/camera/ui/browser/InstagramSessionMediaResolver.kt
           test -z "$(git diff --name-only -- app/src/main/java/com/steadyvault/camera/capture app/src/main/java/com/steadyvault/camera/processing)"
 
       - name: Compile and assemble
