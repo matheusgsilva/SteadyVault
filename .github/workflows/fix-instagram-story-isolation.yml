@@ -27,7 +27,14 @@ jobs:
           java-version: '17'
 
       - name: Apply fix
-        run: python3 tools/fix_instagram_story_isolation.py
+        run: |
+          python3 tools/fix_instagram_story_isolation.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/steadyvault/camera/ui/browser/BrowserWebViewConfigurator.kt')
+          text = p.read_text().replace('Regex("\\s{2,}")', 'Regex("\\\\s{2,}")')
+          p.write_text(text)
+          PY
 
       - name: Verify scope
         run: |
@@ -35,6 +42,7 @@ jobs:
           grep -F 'fun isStoryUrl' app/src/main/java/com/steadyvault/camera/ui/browser/InstagramPublicAccess.kt
           grep -F 'browserStoryDownload' app/src/main/res/layout/activity_private_browser.xml
           grep -F 'downloadCurrentInstagramStory' app/src/main/java/com/steadyvault/camera/ui/browser/PrivateBrowserActivity.kt
+          grep -F 'Regex("\\s{2,}")' app/src/main/java/com/steadyvault/camera/ui/browser/BrowserWebViewConfigurator.kt
           test -z "$(git diff --name-only -- app/src/main/java/com/steadyvault/camera/capture app/src/main/java/com/steadyvault/camera/processing)"
 
       - name: Compile and assemble
