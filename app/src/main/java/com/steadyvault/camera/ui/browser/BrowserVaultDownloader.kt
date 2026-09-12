@@ -155,7 +155,7 @@ internal object BrowserVaultDownloader {
         val normalizedMime = mimeType.substringBefore(';').trim().lowercase(Locale.US)
         if (normalizedMime in NON_MEDIA_MIME_TYPES || normalizedMime.startsWith("text/") || normalizedMime.contains("javascript")) return false
         if (mimeType.startsWith("image/", true) || mimeType.startsWith("video/", true)) return true
-        if (isInstagramVideoCdnUrl(lower)) return true
+        if (isInstagramCdnUrl(lower)) return true
         val clean = lower.substringBefore('#').substringBefore('?')
         val extension = clean.substringAfterLast('.', missingDelimiterValue = "")
         if (extension in NON_MEDIA_EXTENSIONS) return false
@@ -205,7 +205,13 @@ internal object BrowserVaultDownloader {
         .orEmpty()
         .ifBlank { url.take(80) }
 
-    private fun openConnection(url: String, userAgent: String, cookie: String, referrer: String): HttpURLConnection {
+    private fun openConnection(
+        url: String,
+        userAgent: String,
+        cookie: String,
+        referrer: String,
+        rangeProbe: Boolean = false
+    ): HttpURLConnection {
         var current = URL(url)
         repeat(MAX_REDIRECTS + 1) { index ->
             val connection = (current.openConnection() as HttpURLConnection).apply {
@@ -216,6 +222,7 @@ internal object BrowserVaultDownloader {
                 setRequestProperty("User-Agent", userAgent)
                 setRequestProperty("Accept", "video/*,image/*,*/*;q=0.8")
                 setRequestProperty("Accept-Language", Locale.getDefault().toLanguageTag())
+                if (rangeProbe) setRequestProperty("Range", "bytes=0-0")
                 if (referrer.isNotBlank()) setRequestProperty("Referer", referrer)
                 if (cookie.isNotBlank()) setRequestProperty("Cookie", cookie)
             }
@@ -255,6 +262,29 @@ internal object BrowserVaultDownloader {
         val mb = bytes / (1024.0 * 1024.0)
         return if (mb >= 1024.0) String.format(Locale.getDefault(), "%.2f GB", mb / 1024.0)
         else String.format(Locale.getDefault(), "%.1f MB", mb)
+    }
+
+    fun isInstagramCdnUrl(url: String?): Boolean {
+        val lower = url?.lowercase(Locale.US).orEmpty()
+        return lower.startsWith("http://") || lower.startsWith("https://") &&
+            (lower.contains("cdninstagram.com") || lower.contains("fbcdn.net"))
+    }
+
+    fun probeMediaMimeType(url: String, userAgent: String, cookie: String, referrer: String): String {
+        if (!isInstagramCdnUrl(url)) return mimeHintForUrl(url)
+        val connection = openConnection(url, userAgent, cookie, referrer, rangeProbe = true)
+        return try {
+            val code = connection.responseCode
+            if (code !in 200..299) return ""
+            val mime = connection.contentType?.substringBefore(';')?.trim().orEmpty()
+            when {
+                mime.startsWith("video/", true) || mime.startsWith("image/", true) -> mime
+                isInstagramVideoCdnUrl(connection.url.toString()) -> "video/mp4"
+                else -> mimeHintForUrl(connection.url.toString())
+            }
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun isInstagramVideoCdnUrl(url: String): Boolean {

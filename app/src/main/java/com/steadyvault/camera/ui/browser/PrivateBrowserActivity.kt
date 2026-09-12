@@ -532,19 +532,21 @@ class PrivateBrowserActivity : ComponentActivity() {
         webView.evaluateJavascript(MEDIA_SCAN_SCRIPT) { raw ->
             val scan = parseMediaScanResult(raw)
             val detected = synchronized(detectedMediaUrls) { detectedMediaUrls.toList() }
-            val direct = (scan.urls + detected)
+            val pageUrl = currentExtractorPageUrl()
+            val intercepted = if (InstagramPublicAccess.isInstagramUrl(pageUrl)) detected.asReversed() else detected
+            val direct = (scan.urls + intercepted)
                 .map { it.trim() }
                 .filter { it.startsWith("http://", true) || it.startsWith("https://", true) }
                 .filter { BrowserVaultDownloader.isLikelyMediaUrl(it) }
                 .distinct()
                 .sortedByDescending(BrowserVaultDownloader::isLikelyVideoUrl)
                 .take(MAX_MEDIA_CHOICES)
-            val pageUrl = currentExtractorPageUrl()
             val embeddedExtractor = scan.extractorUrl.takeIf(SocialMediaDownloader::canHandle).orEmpty()
             val internalStream = scan.hasInternalStream || detected.any(BrowserVaultDownloader::isLikelyStreamUrl)
             val directFallback = { resolvePageMediaForDownload(pageUrl, direct, internalStream, scan.thumbnailUrl) }
             when {
                 directOnly -> directFallback()
+                InstagramPublicAccess.isInstagramUrl(pageUrl) && direct.any(BrowserVaultDownloader::isInstagramCdnUrl) -> directFallback()
                 InstagramPublicAccess.isInstagramUrl(pageUrl) && direct.any(BrowserVaultDownloader::isLikelyVideoUrl) -> directFallback()
                 embeddedExtractor.isNotBlank() -> resolveSocialMediaForDownload(embeddedExtractor, directFallback)
                 SocialMediaDownloader.canHandle(pageUrl) -> resolveSocialMediaForDownload(pageUrl, directFallback)
@@ -703,18 +705,25 @@ class PrivateBrowserActivity : ComponentActivity() {
                     resolution = resolution
                 ) { status -> progressDialog.update(-1, status) }
             }.getOrElse { emptyList() }
-            val directCandidates = direct.map { url ->
-                val mimeHint = BrowserVaultDownloader.mimeHintForUrl(url)
+            val instagramPage = InstagramPublicAccess.isInstagramUrl(pageUrl)
+            val directCandidates = direct.mapNotNull { url ->
+                val hint = BrowserVaultDownloader.mimeHintForUrl(url)
+                val mime = if (instagramPage && BrowserVaultDownloader.isInstagramCdnUrl(url) && hint.isBlank()) {
+                    runCatching {
+                        BrowserVaultDownloader.probeMediaMimeType(url, userAgent, browserCookie(url), referrer)
+                    }.getOrDefault("")
+                } else hint
+                if (instagramPage && BrowserVaultDownloader.isInstagramCdnUrl(url) && mime.isBlank()) return@mapNotNull null
                 BrowserMediaExtractor.Candidate(
                     url = url,
                     title = BrowserVaultDownloader.displayNameForUrl(url),
                     subtitle = BrowserVaultDownloader.hostForUrl(url),
-                    mimeType = mimeHint,
+                    mimeType = mime,
                     referrer = referrer,
-                    thumbnailUrl = if (mimeHint.startsWith("image/")) url else pageThumbnailUrl
+                    thumbnailUrl = if (mime.startsWith("image/")) url else pageThumbnailUrl
                 )
             }
-            val merged = (extracted + directCandidates)
+            val merged = (if (instagramPage) directCandidates + extracted else extracted + directCandidates)
                 .distinctBy { it.url.substringBefore("#") }
                 .map { candidate ->
                     if (candidate.thumbnailUrl.isBlank() &&
@@ -731,6 +740,16 @@ class PrivateBrowserActivity : ComponentActivity() {
                 )
             val videoCandidates = merged.filter {
                 BrowserVaultDownloader.isLikelyVideoUrl(it.url) || it.mimeType.startsWith("video/", true)
+            }
+            if (instagramPage && videoCandidates.isNotEmpty()) {
+                val candidate = videoCandidates.first()
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    if (!isFinishing && !isDestroyed) {
+                        download(candidate.url, userAgent, "", candidate.mimeType, candidate.referrer.ifBlank { pageUrl })
+                    }
+                }
+                return@execute
             }
             val candidates = if (videoCandidates.isNotEmpty()) {
                 (videoCandidates + merged.filterNot(videoCandidates::contains).take(MAX_IMAGE_ALTERNATIVES))
@@ -1061,6 +1080,12 @@ class PrivateBrowserActivity : ComponentActivity() {
                         if (/\.(mp4|m4v|mov|webm|mkv|3gp|jpg|jpeg|png|webp|gif|heic|heif)$/i.test(url.pathname)) add(url.href);
                     } catch (e) {}
                 });
+                try {
+                    performance.getEntriesByType('resource').slice(-160).reverse().forEach(function(entry) {
+                        const candidate = String(entry.name || '');
+                        if (/(cdninstagram\.com|fbcdn\.net)/i.test(candidate) || /\.(mp4|m4v|mov|webm|m3u8|mpd)(?:$|[?#])/i.test(candidate)) add(candidate);
+                    });
+                } catch (e) {}
                 let extractorUrl = '';
                 document.querySelectorAll('iframe[src]').forEach(function(frame) {
                     if (extractorUrl) return;
