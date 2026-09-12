@@ -528,7 +528,7 @@ class PrivateBrowserActivity : ComponentActivity() {
     }
 
 
-    private fun scanPageMediaForDownload() {
+    private fun scanPageMediaForDownload(directOnly: Boolean = false) {
         webView.evaluateJavascript(MEDIA_SCAN_SCRIPT) { raw ->
             val scan = parseMediaScanResult(raw)
             val detected = synchronized(detectedMediaUrls) { detectedMediaUrls.toList() }
@@ -544,6 +544,8 @@ class PrivateBrowserActivity : ComponentActivity() {
             val internalStream = scan.hasInternalStream || detected.any(BrowserVaultDownloader::isLikelyStreamUrl)
             val directFallback = { resolvePageMediaForDownload(pageUrl, direct, internalStream, scan.thumbnailUrl) }
             when {
+                directOnly -> directFallback()
+                InstagramPublicAccess.isInstagramUrl(pageUrl) && direct.any(BrowserVaultDownloader::isLikelyVideoUrl) -> directFallback()
                 embeddedExtractor.isNotBlank() -> resolveSocialMediaForDownload(embeddedExtractor, directFallback)
                 SocialMediaDownloader.canHandle(pageUrl) -> resolveSocialMediaForDownload(pageUrl, directFallback)
                 (scan.hasVideoPlayer || internalStream) && direct.none(BrowserVaultDownloader::isLikelyVideoUrl) ->
@@ -663,7 +665,12 @@ class PrivateBrowserActivity : ComponentActivity() {
                 result.onSuccess {
                     Toast.makeText(this, "Salvo em ${it.destinationLabel}: ${it.file.name}", Toast.LENGTH_LONG).show()
                 }.onFailure {
-                    Toast.makeText(this, it.message ?: "Falha ao baixar vídeo", Toast.LENGTH_LONG).show()
+                    if (InstagramPublicAccess.isInstagramUrl(media.sourceUrl)) {
+                        Toast.makeText(this, "Tentando o vídeo já carregado no navegador…", Toast.LENGTH_SHORT).show()
+                        scanPageMediaForDownload(directOnly = true)
+                    } else {
+                        Toast.makeText(this, it.message ?: "Falha ao baixar vídeo", Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
@@ -886,7 +893,8 @@ class PrivateBrowserActivity : ComponentActivity() {
             return
         }
         if (!BrowserVaultDownloader.isLikelyMediaUrl(url, mimeType) && BrowserMediaExtractor.isExtractorPage(url)) {
-            if (SocialMediaDownloader.canHandle(url)) resolveSocialMediaForDownload(url)
+            if (InstagramPublicAccess.isInstagramUrl(url)) scanPageMediaForDownload()
+            else if (SocialMediaDownloader.canHandle(url)) resolveSocialMediaForDownload(url)
             else resolvePageMediaForDownload(url, emptyList(), sawInternalStream = false)
             return
         }

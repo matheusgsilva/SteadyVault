@@ -155,6 +155,7 @@ internal object BrowserVaultDownloader {
         val normalizedMime = mimeType.substringBefore(';').trim().lowercase(Locale.US)
         if (normalizedMime in NON_MEDIA_MIME_TYPES || normalizedMime.startsWith("text/") || normalizedMime.contains("javascript")) return false
         if (mimeType.startsWith("image/", true) || mimeType.startsWith("video/", true)) return true
+        if (isInstagramVideoCdnUrl(lower)) return true
         val clean = lower.substringBefore('#').substringBefore('?')
         val extension = clean.substringAfterLast('.', missingDelimiterValue = "")
         if (extension in NON_MEDIA_EXTENSIONS) return false
@@ -168,6 +169,7 @@ internal object BrowserVaultDownloader {
         val extension = clean.substringAfterLast('.', missingDelimiterValue = "")
         return when {
             extension in VIDEO_EXTENSIONS ||
+                isInstagramVideoCdnUrl(lower) ||
                 lower.contains("googlevideo.com/videoplayback") ||
                 lower.contains("mime=video") ||
                 lower.contains("mime%3dvideo") -> "video/*"
@@ -253,6 +255,17 @@ internal object BrowserVaultDownloader {
         val mb = bytes / (1024.0 * 1024.0)
         return if (mb >= 1024.0) String.format(Locale.getDefault(), "%.2f GB", mb / 1024.0)
         else String.format(Locale.getDefault(), "%.1f MB", mb)
+    }
+
+    private fun isInstagramVideoCdnUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.US)
+        if (!lower.contains("cdninstagram.com") && !lower.contains("fbcdn.net")) return false
+        return lower.contains("/o1/v/t16/") ||
+            lower.contains("/o1/v/t2/") ||
+            lower.contains("/v/t16.") ||
+            lower.contains("/v/t2.") ||
+            lower.contains("mime=video") ||
+            lower.contains("mime%3dvideo")
     }
 
     private fun isLikelyVideoHost(url: String): Boolean {
