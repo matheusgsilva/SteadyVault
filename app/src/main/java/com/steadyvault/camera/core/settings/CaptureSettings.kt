@@ -113,15 +113,20 @@ object CaptureSettings {
 
     fun snapshot(context: Context): Snapshot {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val fps = prefs.getInt("fps", 60).takeIf { it in SUPPORTED_FPS } ?: 60
+        val storedFps = prefs.getInt("fps", 60)
+        val fps = storedFps.takeIf { it in SUPPORTED_FPS } ?: 60
         val resolution = resolutionForFps(context, fps)
         val storedCodec = prefs.getString("codec", CODEC_HEVC)
         val codec = storedCodec?.takeIf { it in SUPPORTED_CODECS } ?: CODEC_HEVC
         val storedStabilization = prefs.getString("stabilization", STABILIZATION_OFF)
         val stabilization = storedStabilization?.takeIf { it in SUPPORTED_STABILIZATIONS } ?: STABILIZATION_OFF
 
-        if (storedCodec != codec || storedStabilization != stabilization) {
-            prefs.edit().putString("codec", codec).putString("stabilization", stabilization).apply()
+        if (storedFps != fps || storedCodec != codec || storedStabilization != stabilization) {
+            prefs.edit()
+                .putInt("fps", fps)
+                .putString("codec", codec)
+                .putString("stabilization", stabilization)
+                .apply()
         }
 
         val defaultBitrate = defaultBitrateMbps(resolution, fps, codec)
@@ -165,6 +170,7 @@ object CaptureSettings {
     fun save(context: Context, snapshot: Snapshot) {
         val normalized = snapshot.copy(
             resolution = snapshot.resolution.takeIf { it in SUPPORTED_RESOLUTIONS } ?: RESOLUTION_4K,
+            fps = snapshot.fps.takeIf { it in SUPPORTED_FPS } ?: 60,
             codec = snapshot.codec.takeIf { it in SUPPORTED_CODECS } ?: CODEC_HEVC,
             stabilization = snapshot.stabilization.takeIf { it in SUPPORTED_STABILIZATIONS } ?: STABILIZATION_OFF
         )
@@ -239,11 +245,11 @@ object CaptureSettings {
 
     fun defaultBitrateMbps(resolution: String, fps: Int, codec: String): Int {
         val recommended = when (resolution) {
-            RESOLUTION_8K -> when (fps) { 240 -> 220; 120 -> 220; 60 -> 180; else -> 100 }
-            RESOLUTION_720P -> when (fps) { 240 -> 60; 120 -> 28; 60 -> 15; else -> 10 }
-            RESOLUTION_1080P -> when (fps) { 240 -> 100; 120 -> 50; 60 -> 28; else -> 20 }
-            RESOLUTION_4K -> when (fps) { 240 -> 170; 120 -> 135; 60 -> 60; else -> 48 }
-            else -> when (fps) { 240 -> 170; 120 -> 135; 60 -> 60; else -> 48 }
+            RESOLUTION_8K -> if (fps == 60) 180 else 100
+            RESOLUTION_720P -> if (fps == 60) 15 else 10
+            RESOLUTION_1080P -> if (fps == 60) 28 else 20
+            RESOLUTION_4K -> if (fps == 60) 60 else 48
+            else -> if (fps == 60) 60 else 48
         }
         return if (codec == CODEC_AVC) (recommended * 1.25).toInt().coerceAtMost(220) else recommended
     }
@@ -287,5 +293,5 @@ object CaptureSettings {
     private val SUPPORTED_RESOLUTIONS = linkedSetOf(RESOLUTION_8K, RESOLUTION_4K, RESOLUTION_1080P, RESOLUTION_720P)
     private val SUPPORTED_CODECS = linkedSetOf(CODEC_HEVC, CODEC_AVC)
     private val SUPPORTED_STABILIZATIONS = linkedSetOf(STABILIZATION_AUTO, STABILIZATION_PREVIEW, STABILIZATION_EIS, STABILIZATION_OIS, STABILIZATION_OFF)
-    private val SUPPORTED_FPS = linkedSetOf(30, 60, 120, 240)
+    private val SUPPORTED_FPS = linkedSetOf(30, 60)
 }

@@ -111,8 +111,6 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var modeInfoText: TextView
     private lateinit var fps30Button: TextView
     private lateinit var fps60Button: TextView
-    private lateinit var fps120Button: TextView
-    private lateinit var fps240Button: TextView
     private lateinit var batteryStatusText: TextView
     private lateinit var startButton: View
     private lateinit var stopButton: View
@@ -157,8 +155,6 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var previewLastMediaPlay: ImageView
     private lateinit var previewFps30Button: TextView
     private lateinit var previewFps60Button: TextView
-    private lateinit var previewFps120Button: TextView
-    private lateinit var previewFps240Button: TextView
     private lateinit var previewZoom06Button: TextView
     private lateinit var previewZoom1Button: TextView
     private lateinit var previewZoom3Button: TextView
@@ -385,8 +381,6 @@ class CaptureActivity : ComponentActivity() {
         modeInfoText = findViewById(R.id.modeInfoText)
         fps30Button = findViewById(R.id.fps30Button)
         fps60Button = findViewById(R.id.fps60Button)
-        fps120Button = findViewById(R.id.fps120Button)
-        fps240Button = findViewById(R.id.fps240Button)
         batteryStatusText = findViewById(R.id.batteryStatusText)
         startButton = findViewById(R.id.startButton)
         stopButton = findViewById(R.id.stopButton)
@@ -427,8 +421,6 @@ class CaptureActivity : ComponentActivity() {
         previewLastMediaPlay = findViewById(R.id.previewLastMediaPlay)
         previewFps30Button = findViewById(R.id.previewFps30Button)
         previewFps60Button = findViewById(R.id.previewFps60Button)
-        previewFps120Button = findViewById(R.id.previewFps120Button)
-        previewFps240Button = findViewById(R.id.previewFps240Button)
         previewZoom06Button = findViewById(R.id.previewZoom06Button)
         previewZoom1Button = findViewById(R.id.previewZoom1Button)
         previewZoom3Button = findViewById(R.id.previewZoom3Button)
@@ -622,8 +614,6 @@ class CaptureActivity : ComponentActivity() {
         }
         previewFps30Button.setOnClickListener { selectPreviewRecordingMode(CaptureModeStore.FPS_30) }
         previewFps60Button.setOnClickListener { selectPreviewRecordingMode(CaptureModeStore.FPS_60) }
-        previewFps120Button.setOnClickListener { selectPreviewRecordingMode(CaptureModeStore.FPS_120) }
-        previewFps240Button.setOnClickListener { selectPreviewRecordingMode(CaptureModeStore.FPS_240) }
         previewZoom06Button.setOnClickListener { selectPreviewLensShortcut(0.6f) }
         previewZoom1Button.setOnClickListener { selectPreviewLensShortcut(1f) }
         previewZoom3Button.setOnClickListener { selectPreviewLensShortcut(3f) }
@@ -646,17 +636,6 @@ class CaptureActivity : ComponentActivity() {
             )
         }
 
-        fps120Button.setOnClickListener {
-            if (!fps120Button.isEnabled) return@setOnClickListener
-            Haptics.tap(this)
-            selectRecordingMode(CaptureModeStore.FPS_120)
-        }
-
-        fps240Button.setOnClickListener {
-            if (!fps240Button.isEnabled) return@setOnClickListener
-            Haptics.tap(this)
-            selectRecordingMode(CaptureModeStore.FPS_240)
-        }
 
         renderRecordingMode(
             busy = CaptureStateStore.isBusy(this)
@@ -1016,13 +995,12 @@ class CaptureActivity : ComponentActivity() {
     private fun currentPreviewBufferSize(): Pair<Int, Int> {
         val settings = CaptureSettings.snapshot(this)
         val selectedCameraId = settings.selectedCameraId ?: idlePreview.currentCameraId()
-        val highSpeed = !previewPhotoMode && settings.fps >= CaptureModeStore.FPS_120
         CameraLensCatalog.previewSize(
             context = this,
             cameraId = selectedCameraId,
             resolution = settings.resolution,
             photoMode = previewPhotoMode,
-            highSpeed = highSpeed
+            highSpeed = false
         )?.let { size ->
             val width = size.width.coerceAtLeast(1)
             val height = size.height.coerceAtLeast(1)
@@ -1030,9 +1008,8 @@ class CaptureActivity : ComponentActivity() {
             val aspect = maxOf(width, height).toFloat() / minOf(width, height).toFloat()
             if (aspect in 1.70f..1.90f) return width to height
         }
-        if (previewPhotoMode) return PHOTO_PREVIEW_BUFFER_WIDTH to PHOTO_PREVIEW_BUFFER_HEIGHT
-        return if (highSpeed) {
-            HIGH_SPEED_VIDEO_PREVIEW_BUFFER_WIDTH to HIGH_SPEED_VIDEO_PREVIEW_BUFFER_HEIGHT
+        return if (previewPhotoMode) {
+            PHOTO_PREVIEW_BUFFER_WIDTH to PHOTO_PREVIEW_BUFFER_HEIGHT
         } else {
             STANDARD_VIDEO_PREVIEW_BUFFER_WIDTH to STANDARD_VIDEO_PREVIEW_BUFFER_HEIGHT
         }
@@ -1267,34 +1244,17 @@ class CaptureActivity : ComponentActivity() {
         settings: CaptureSettings.Snapshot,
         features: CaptureCapabilityMatrix.CameraFeatures?,
         value: String
-    ): Support = if (
-        !previewPhotoMode &&
-        settings.fps >= CaptureModeStore.FPS_120 &&
-        value != CaptureSettings.FOCUS_CONTINUOUS_VIDEO &&
-        value != CaptureSettings.FOCUS_OFF
-    ) {
-        Support.UNSUPPORTED
-    } else {
-        features?.focusSupport(value) ?: Support.UNVERIFIED
-    }
+    ): Support = features?.focusSupport(value) ?: Support.UNVERIFIED
 
     private fun processingSupport(
         settings: CaptureSettings.Snapshot,
         features: CaptureCapabilityMatrix.CameraFeatures?,
         value: String,
         noise: Boolean
-    ): Support {
-        if (
-            !previewPhotoMode &&
-            settings.fps >= CaptureModeStore.FPS_120
-        ) {
-            return if (value == CaptureSettings.PROCESSING_AUTO) Support.SUPPORTED else Support.UNSUPPORTED
-        }
-        return if (noise) {
-            features?.noiseReductionSupport(value) ?: Support.UNVERIFIED
-        } else {
-            features?.edgeSupport(value) ?: Support.UNVERIFIED
-        }
+    ): Support = if (noise) {
+        features?.noiseReductionSupport(value) ?: Support.UNVERIFIED
+    } else {
+        features?.edgeSupport(value) ?: Support.UNVERIFIED
     }
 
     private fun yellowReductionSupport(
@@ -1330,8 +1290,7 @@ class CaptureActivity : ComponentActivity() {
         actions.add(OneUiDialog.Choice("Resolução", CaptureSettings.resolutionLabel(settings.resolution)) to ::showLiveResolutionChoices)
         actions.add(OneUiDialog.Choice("Taxa de quadros", "${settings.fps} FPS") to ::showLiveFpsChoices)
         val hdrSupport = features?.hdrHlg10 ?: Support.UNVERIFIED
-        val hdrAvailable = settings.fps < CaptureModeStore.FPS_120 &&
-            settings.codec != CaptureSettings.CODEC_AVC &&
+        val hdrAvailable = settings.codec != CaptureSettings.CODEC_AVC &&
             HardwareSupportPolicy.shouldExpose(hdrSupport)
         if (hdrAvailable) {
             actions.add(OneUiDialog.Choice("HDR HLG10", if (settings.hdrHlg10) "Ativado" else "Desativado") to ::showLiveHdrChoices)
@@ -1467,8 +1426,7 @@ class CaptureActivity : ComponentActivity() {
     private fun showLiveHdrChoices() {
         val settings = CaptureSettings.snapshot(this)
         val support = selectedCameraFeatures()?.hdrHlg10 ?: Support.UNVERIFIED
-        val hdrAllowed = settings.fps < CaptureModeStore.FPS_120 &&
-            featureSelectable(support)
+        val hdrAllowed = featureSelectable(support)
         OneUiDialog.choices(
             activity = this,
             title = "HDR HLG10",
@@ -1637,9 +1595,7 @@ class CaptureActivity : ComponentActivity() {
         OneUiDialog.choices(
             activity = this,
             title = if (noise) "Redução de ruído" else "Nitidez da câmera",
-            message = if (!previewPhotoMode && settings.fps >= CaptureModeStore.FPS_120) {
-                "Em sessão high-speed o processamento fica sob controle da HAL para preservar a cadência."
-            } else if (settings.fps >= CaptureModeStore.FPS_60) {
+            message = if (settings.fps >= CaptureModeStore.FPS_60) {
                 "Em FPS alto a câmera pode substituir o modo escolhido por uma opção mais leve."
             } else {
                 null
@@ -1755,10 +1711,6 @@ class CaptureActivity : ComponentActivity() {
         val normalized = snapshot.copy(previewMode = CaptureSettings.PREVIEW_OFF)
         if (normalized.hdrHlg10 && normalized.codec != CaptureSettings.CODEC_HEVC) {
             Toast.makeText(this, "HLG10 exige HEVC. Escolha HEVC ou desligue o HDR.", Toast.LENGTH_LONG).show()
-            return
-        }
-        if (normalized.hdrHlg10 && normalized.fps >= CaptureModeStore.FPS_120) {
-            Toast.makeText(this, "HLG10 não está disponível neste modo de alta taxa.", Toast.LENGTH_LONG).show()
             return
         }
         if (normalized == before) {
@@ -2373,7 +2325,6 @@ class CaptureActivity : ComponentActivity() {
         addPreviewSettingsAction("Taxa de quadros", "${settings.fps} FPS") { showLiveFpsChoices() }
         val hdrSupport = features?.hdrHlg10 ?: Support.UNVERIFIED
         if (
-            settings.fps < CaptureModeStore.FPS_120 &&
             settings.codec != CaptureSettings.CODEC_AVC &&
             HardwareSupportPolicy.shouldExpose(hdrSupport)
         ) {
@@ -2790,9 +2741,7 @@ class CaptureActivity : ComponentActivity() {
         val stopping = UiBehaviorRules.isRecordingFinalizing(CaptureStateStore.currentState(this))
         val fpsButtons = listOf(
             CaptureModeStore.FPS_30 to previewFps30Button,
-            CaptureModeStore.FPS_60 to previewFps60Button,
-            CaptureModeStore.FPS_120 to previewFps120Button,
-            CaptureModeStore.FPS_240 to previewFps240Button
+            CaptureModeStore.FPS_60 to previewFps60Button
         )
         fpsButtons.forEach { (fps, button) ->
             val selected = settings.fps == fps
@@ -3350,10 +3299,7 @@ class CaptureActivity : ComponentActivity() {
 
         configureButton(fps30Button, CaptureModeStore.FPS_30)
         configureButton(fps60Button, CaptureModeStore.FPS_60)
-        configureButton(fps120Button, CaptureModeStore.FPS_120)
-        configureButton(fps240Button, CaptureModeStore.FPS_240)
         (fps30Button.parent as? View)?.visibility = if (fps30Button.visibility == View.VISIBLE || fps60Button.visibility == View.VISIBLE) View.VISIBLE else View.GONE
-        (fps120Button.parent as? View)?.visibility = if (fps120Button.visibility == View.VISIBLE || fps240Button.visibility == View.VISIBLE) View.VISIBLE else View.GONE
 
         val selectedProfile = configuredProfile(settings.fps, settings.resolution)
         val displayedResolution = effectiveMode?.resolutionLabel

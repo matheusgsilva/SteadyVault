@@ -540,11 +540,6 @@ class CaptureService : Service() {
         else failSelectedConfigurationFromWorker(token, reason)
     }
 
-    /**
-     * O widget pode ser usado antes de a análise completa de hardware existir.
-     * Para 120/240, consulta diretamente os metadados constrained high-speed e
-     * escolhe a maior resolução que publica a faixa fixa exata solicitada.
-     */
     private fun resolveCaptureResolutionForFps(
         cameraId: String?,
         targetFps: Int,
@@ -552,91 +547,12 @@ class CaptureService : Service() {
     ): String {
         if (cameraId.isNullOrBlank()) return storedResolution
         val cachedMatrix = CaptureCapabilityMatrix.cached(this)?.forCamera(cameraId)
-        val catalogResolution = CaptureModeCatalog.preferredResolution(
+        return CaptureModeCatalog.preferredResolution(
             context = this,
             fps = targetFps,
             requestedResolution = storedResolution,
             matrix = cachedMatrix
         )
-        if (targetFps < CaptureModeStore.FPS_120) return catalogResolution
-
-        val characteristics = runCatching {
-            getSystemService(CameraManager::class.java).getCameraCharacteristics(cameraId)
-        }.getOrNull() ?: return catalogResolution
-        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?: return catalogResolution
-        val highSpeedSizes = runCatching { map.highSpeedVideoSizes?.toSet().orEmpty() }
-            .getOrDefault(emptySet())
-        val mime = recordingSettings.codecMimes(false).singleOrNull() ?: return catalogResolution
-        val candidates = listOf(
-            CaptureSettings.RESOLUTION_8K to CaptureSettings.EIGHT_K_SIZE,
-            CaptureSettings.RESOLUTION_4K to CaptureSettings.UHD_SIZE,
-            CaptureSettings.RESOLUTION_1080P to CaptureSettings.FHD_SIZE,
-            CaptureSettings.RESOLUTION_720P to CaptureSettings.HD_SIZE
-        )
-        val cameraCandidates = candidates.filter { (_, size) ->
-            size in highSpeedSizes && runCatching {
-                map.getHighSpeedVideoFpsRangesFor(size)?.any { range ->
-                    StrictCaptureModePolicy.acceptsFpsRange(targetFps, range.lower, range.upper)
-                } == true
-            }.getOrDefault(false)
-        }
-        if (cameraCandidates.isEmpty()) return catalogResolution
-
-        // Não confie só no metadata da câmera: 240 pode existir no sensor e não na
-        // combinação HEVC/resolução do encoder. Prioriza taxa confirmada pelo codec.
-        cameraCandidates.firstOrNull { (_, size) ->
-            highSpeedEncoderSupportLevel(size, targetFps, mime) >= 2
-        }?.let { return it.first }
-
-        val sizeSupported = cameraCandidates.filter { (_, size) ->
-            highSpeedEncoderSupportLevel(size, targetFps, mime) >= 1
-        }
-        if (sizeSupported.isNotEmpty()) {
-            // Em 240, metadata de rate ausente é tratada de forma conservadora:
-            // usa a menor resolução high-speed comum para maximizar chance de 240 real.
-            return if (targetFps >= CaptureModeStore.FPS_240) {
-                sizeSupported.last().first
-            } else {
-                sizeSupported.first().first
-            }
-        }
-        return catalogResolution
-    }
-
-    private fun highSpeedEncoderSupportLevel(size: Size, fps: Int, mime: String): Int {
-        var sizeSupported = false
-        val codecInfos = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
-        for (info in codecInfos) {
-            if (!info.isEncoder || info.isSoftwareOnly) continue
-            if (info.supportedTypes.none { it.equals(mime, ignoreCase = true) }) continue
-            val caps = runCatching { info.getCapabilitiesForType(mime) }.getOrNull() ?: continue
-            if (!caps.colorFormats.contains(MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)) continue
-            val videoCaps = caps.videoCapabilities ?: continue
-            if (!runCatching { videoCaps.isSizeSupported(size.width, size.height) }.getOrDefault(false)) continue
-            sizeSupported = true
-            if (runCatching {
-                    videoCaps.areSizeAndRateSupported(size.width, size.height, fps.toDouble())
-                }.getOrDefault(false)) {
-                return 2
-            }
-        }
-        // EncoderProfiles OEM com FPS exato também vale como confirmação forte.
-        val oemExact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            runCatching {
-                DirectMediaRecorderBackend.findExactSelection(
-                    cameraId = preferredCameraId.orEmpty(),
-                    width = size.width,
-                    height = size.height,
-                    fps = fps,
-                    mime = mime,
-                    hdrHlg10 = false,
-                    requestedBitrate = configuredVideoBitrate()
-                )
-            }.getOrNull()
-        } else null
-        if (oemExact != null) return 2
-        return if (sizeSupported) 1 else 0
     }
 
     private fun selectBestCaptureConfiguration(
@@ -682,7 +598,7 @@ class CaptureService : Service() {
             .putInt(CONFIG_WIDTH, camera.videoSize.width)
             .putInt(CONFIG_HEIGHT, camera.videoSize.height)
             .putInt(CONFIG_FPS, camera.targetFps)
-            .putBoolean(CONFIG_HIGH_SPEED, camera.highSpeed)
+            .remove(CONFIG_HIGH_SPEED)
             .putLong(CONFIG_DYNAMIC_RANGE, camera.dynamicRangeProfile)
             .putString(CONFIG_MIME, encoder.mime)
             .apply()
@@ -695,14 +611,14 @@ class CaptureService : Service() {
     ): Pair<CameraProfile, EncoderProfile>? {
         val prefs = getSharedPreferences(CONFIG_CACHE_PREFS, MODE_PRIVATE)
         if (prefs.getString(CONFIG_SIGNATURE, null) != signature) return null
+        if (prefs.getBoolean(CONFIG_HIGH_SPEED, false)) return null
         val cameraId = prefs.getString(CONFIG_CAMERA_ID, null) ?: return null
         val width = prefs.getInt(CONFIG_WIDTH, 0)
         val height = prefs.getInt(CONFIG_HEIGHT, 0)
         val fps = prefs.getInt(CONFIG_FPS, 0)
-        val highSpeed = prefs.getBoolean(CONFIG_HIGH_SPEED, false)
         val storedDynamicRange = prefs.getLong(CONFIG_DYNAMIC_RANGE, standardDynamicRangeProfile())
         val mime = prefs.getString(CONFIG_MIME, null) ?: return null
-        if (width <= 0 || height <= 0 || fps <= 0 || mime !in recordingSettings.codecMimes(allowHdr)) return null
+        if (width <= 0 || height <= 0 || fps <= 0 || fps !in CaptureSettings.supportedFpsValues || mime !in recordingSettings.codecMimes(allowHdr)) return null
         val rememberedSize = Size(width, height)
         if (fps != targetFps || recordingSettings.exactPreferredSize()?.let { it != rememberedSize } == true) {
             getSharedPreferences(CONFIG_CACHE_PREFS, MODE_PRIVATE).edit().clear().apply()
@@ -712,8 +628,7 @@ class CaptureService : Service() {
         val characteristics = runCatching {
             getSystemService(CameraManager::class.java).getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return null
-        val size = rememberedSize
-        val fpsRange = resolveFpsRange(characteristics, size, fps, highSpeed) ?: return null
+        val fpsRange = resolveFpsRange(characteristics, rememberedSize, fps, false) ?: return null
         val dynamicRange = when {
             allowHdr && supportsHlg10(characteristics) -> storedDynamicRange
             allowHdr -> return null
@@ -722,10 +637,10 @@ class CaptureService : Service() {
         val profile = createCameraProfile(
             cameraId = cameraId,
             characteristics = characteristics,
-            videoSize = size,
+            videoSize = rememberedSize,
             targetFps = fps,
             fpsRange = fpsRange,
-            highSpeed = highSpeed,
+            highSpeed = false,
             dynamicRangeProfile = dynamicRange
         )
         if (mime !in recordingSettings.codecMimes(profile.hdrHlg10)) return null
@@ -766,74 +681,20 @@ class CaptureService : Service() {
             allowHdr -> return null
             else -> standardDynamicRangeProfile()
         }
-
-        // 30/60 FPS: não bloqueie o Start usando metadados públicos de cadence/minFrame.
-        // Em aparelhos Samsung a HAL pode aceitar 4K60 mesmo quando esses metadados
-        // são conservadores. Monte exatamente o modo pedido e deixe createCaptureSession()
-        // ser a fonte de verdade. Se a HAL recusar, a tentativa falha de forma explícita.
-        if (targetFps < CaptureModeStore.FPS_120) {
-            val size = recordingSettings.exactPreferredSize() ?: return null
-            val profile = createCameraProfile(
-                cameraId = cameraId,
-                characteristics = characteristics,
-                videoSize = size,
-                targetFps = targetFps,
-                fpsRange = resolveStandardFpsRange(characteristics, targetFps),
-                highSpeed = false,
-                dynamicRangeProfile = dynamicRange
-            )
-            if (!matchesRequestedMode(profile, targetFps)) return null
-            if (!profileSatisfiesExplicitStabilization(profile)) return null
-            val encoder = selectDirectRecorderEncoder(profile) ?: return null
-            return profile to encoder
-        }
-
-        val requestedSize = recordingSettings.exactPreferredSize() ?: return null
-
-        // A API permite high-FPS em sessão regular quando a câmera publica a faixa
-        // exata em CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES. Preferimos esse caminho
-        // quando também há cadence pública suficiente, pois ele evita o batching do
-        // constrained high-speed observado no S25 (rajadas + buracos em 120 FPS).
-        val regularRange = resolveRegularHighFpsRange(characteristics, requestedSize, targetFps)
-        if (regularRange != null) {
-            val regularProfile = createCameraProfile(
-                cameraId = cameraId,
-                characteristics = characteristics,
-                videoSize = requestedSize,
-                targetFps = targetFps,
-                fpsRange = regularRange,
-                highSpeed = false,
-                dynamicRangeProfile = dynamicRange
-            )
-            if (matchesRequestedMode(regularProfile, targetFps)) {
-                val encoder = selectDirectRecorderEncoder(regularProfile)
-                if (encoder != null) return regularProfile to encoder
-            }
-        }
-
-        // Se a câmera não confirma sessão regular, use constrained high-speed com
-        // request mínimo e somente uma Surface de gravação.
-        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
-        val highSpeedSizes = runCatching { map.highSpeedVideoSizes?.toSet().orEmpty() }
-            .getOrDefault(emptySet())
-
-        for ((size, fps) in configurationRequestOrder(targetFps)) {
-            if (fps != targetFps || size !in highSpeedSizes) continue
-            val fpsRange = resolveFpsRange(characteristics, size, fps, highSpeed = true) ?: continue
-            val profile = createCameraProfile(
-                cameraId = cameraId,
-                characteristics = characteristics,
-                videoSize = size,
-                targetFps = fps,
-                fpsRange = fpsRange,
-                highSpeed = true,
-                dynamicRangeProfile = dynamicRange
-            )
-            if (!matchesRequestedMode(profile, targetFps)) continue
-            val encoder = selectDirectRecorderEncoder(profile) ?: continue
-            if (profile.hasExactFpsRange()) return profile to encoder
-        }
-        return null
+        val size = recordingSettings.exactPreferredSize() ?: return null
+        val profile = createCameraProfile(
+            cameraId = cameraId,
+            characteristics = characteristics,
+            videoSize = size,
+            targetFps = targetFps,
+            fpsRange = resolveStandardFpsRange(characteristics, targetFps),
+            highSpeed = false,
+            dynamicRangeProfile = dynamicRange
+        )
+        if (!matchesRequestedMode(profile, targetFps)) return null
+        if (!profileSatisfiesExplicitStabilization(profile)) return null
+        val encoder = selectDirectRecorderEncoder(profile) ?: return null
+        return profile to encoder
     }
 
     private fun resolveFpsRange(
@@ -842,23 +703,14 @@ class CaptureService : Service() {
         targetFps: Int,
         highSpeed: Boolean
     ): Range<Int>? {
-        if (!highSpeed) {
-            if (targetFps >= CaptureModeStore.FPS_120) {
-                return resolveRegularHighFpsRange(characteristics, size, targetFps)
-            }
-            return resolveStandardFpsRange(characteristics, targetFps)
-        }
-        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            ?: return null
-        val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }
-            .getOrDefault(emptyList())
-        return selectTargetFpsRange(ranges, targetFps)
+        if (highSpeed) return null
+        return resolveStandardFpsRange(characteristics, targetFps)
     }
 
     /**
      * Equivalente Android do Auto FPS do iPhone: permanece desligado por padrão.
      * Quando habilitado, 30/60 usam apenas uma faixa variável que a própria HAL
-     * publica e cujo teto é exatamente o FPS escolhido. Nunca se aplica a 120/240.
+     * publica e cujo teto é exatamente o FPS escolhido. Nunca se aplica a alta taxa.
      */
     private fun resolveStandardFpsRange(
         characteristics: CameraCharacteristics,
@@ -875,32 +727,9 @@ class CaptureService : Service() {
         return ranges.maxByOrNull { it.lower } ?: exact
     }
 
-    private fun resolveRegularHighFpsRange(
-        characteristics: CameraCharacteristics,
-        size: Size,
-        targetFps: Int
-    ): Range<Int>? {
-        if (targetFps < CaptureModeStore.FPS_120) return Range(targetFps, targetFps)
-        val exact = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            ?.firstOrNull { StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper) }
-            ?: return null
-
-        // No S25 Ultra, 120 FPS constrained chega ao MediaRecorder em lotes de
-        // 4 quadros (~4/4/4/21 ms). Se a própria câmera publica [120,120] para uma
-        // sessão normal, deixe a HAL validar a combinação real em vez de descartá-la
-        // pelo minFrameDuration público, que é conservador em alguns Samsung.
-        if (targetFps == CaptureModeStore.FPS_120) return exact
-
-        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
-        val minFrameNs = encoderSurfaceMinFrameDurationNs(map, size, preferMediaRecorder = true)
-        val targetFrameNs = frameDurationNs(targetFps)
-        if (minFrameNs > 0L && minFrameNs > targetFrameNs + HIGH_FPS_FRAME_TOLERANCE_NS) return null
-        return exact
-    }
-
     /**
      * FPS selecionado é contrato exato. Nenhuma faixa variável é aceita: 30 usa
-     * [30,30], 60 usa [60,60], 120 usa [120,120] e 240 usa [240,240].
+     * [30,30] e 60 usa [60,60].
      */
     private fun selectTargetFpsRange(
         ranges: List<Range<Int>>,
@@ -935,14 +764,14 @@ class CaptureService : Service() {
     ): Pair<CameraProfile, EncoderProfile> =
         selectBestCaptureConfiguration(
             targetFps = targetFps,
-            allowHdr = allowHdr && targetFps < CaptureModeStore.FPS_120
+            allowHdr = allowHdr
         )
 
     private fun CameraProfile.hasExactFpsRange(): Boolean =
         fpsRange.lower == targetFps && fpsRange.upper == targetFps
 
     private fun CameraProfile.matchesRequestedFpsContract(): Boolean = when {
-        highSpeed || targetFps >= CaptureModeStore.FPS_120 -> hasExactFpsRange()
+        highSpeed -> false
         !recordingSettings.autoFpsLowLight -> hasExactFpsRange()
         else -> fpsRange.upper == targetFps && fpsRange.lower <= targetFps
     }
@@ -1924,7 +1753,7 @@ class CaptureService : Service() {
         setSafely(builder, CaptureRequest.CONTROL_AE_LOCK, false)
 
         // Constrained high-speed não herdava o anti-banding do request regular.
-        // Em 240 FPS isso deixa LEDs ligados em rede aparecerem como quadros/faixas
+        // Em alta taxa isso deixa LEDs ligados em rede aparecerem como quadros/faixas
         // alternadamente escuras. Preserve a preferência existente (AUTO/50/60/OFF)
         // também na sessão high-speed para a HAL sincronizar a exposição quando puder.
         val antibandingModes = profile.characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES) ?: intArrayOf()
@@ -1950,7 +1779,7 @@ class CaptureService : Service() {
         setSafely(builder, CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
 
         // High-speed prioriza cadence. EIS/Preview stabilization/OIS ficam fora do
-        // request constrained e podem ser testados depois de 120/240 estabilizarem.
+        // request constrained e podem ser testados depois de alta taxa estabilizarem.
         setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
         OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
         CameraZoom.apply(builder, profile.characteristics, recordingSettings.zoomRatio)
@@ -2194,13 +2023,6 @@ class CaptureService : Service() {
             return
         }
 
-        val finalizedFps = selectedCamera?.targetFps ?: requestedTargetFps
-        if (finalizedFps == CaptureModeStore.FPS_120) {
-            val normalized = com.steadyvault.camera.capture.recorder.HighSpeedTimestampNormalizer.normalize120IfBatched(finalFile)
-            if (normalized) {
-                AppLogRepository.info(this, "recording_fps", "120 FPS: timestamps em lote normalizados para CFR antes do reparo")
-            }
-        }
 
         com.steadyvault.camera.storage.vault.VaultMediaIndex.invalidate()
         if (!stopHapticAcknowledged && recordingSettings.vibrateStartStop) Haptics.stop(this)

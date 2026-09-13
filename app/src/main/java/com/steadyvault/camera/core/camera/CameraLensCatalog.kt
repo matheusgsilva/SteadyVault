@@ -204,7 +204,7 @@ object CameraLensCatalog {
         // mas o fluxo visual fica em 16:9 para não comprimir a imagem lateralmente
         // durante a troca de função.
         val target = when {
-            highSpeed -> Size(1280, 720)      // 16:9 para 120/240 FPS
+            highSpeed -> Size(1280, 720)      // 16:9 para modo de alta cadência legado
             photoMode -> Size(1920, 1080)     // 16:9 estável no modo FOTO
             else -> Size(1920, 1080)          // 16:9 para vídeo normal
         }

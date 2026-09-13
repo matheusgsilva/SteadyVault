@@ -61,19 +61,6 @@ object CapabilityReport {
                 .sortedByDescending { it.upper }
                 .joinToString { "${it.lower}-${it.upper}" }
 
-            val highSpeedSizes: Array<Size> = runCatching {
-                streamMap.highSpeedVideoSizes
-            }.getOrNull() ?: emptyArray()
-
-            val highSpeed = highSpeedSizes.joinToString { size ->
-                val ranges: Array<Range<Int>> = runCatching {
-                    streamMap.getHighSpeedVideoFpsRangesFor(size)
-                }.getOrNull() ?: emptyArray()
-
-                val rangeText = ranges.joinToString { "${it.lower}-${it.upper}" }
-                "${size.width}×${size.height} (${rangeText.ifBlank { "sem faixa anunciada" }})"
-            }
-
             val stabilizationModes: IntArray =
                 characteristics.get(
                     CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES
@@ -123,7 +110,6 @@ object CapabilityReport {
             lines += "Câmera $cameraId"
             lines += "Resoluções 16:9: ${sizes.ifBlank { "não anunciadas" }}"
             lines += "FPS normais: ${fps.ifBlank { "não anunciados" }}"
-            lines += "High-speed: ${highSpeed.ifBlank { "não anunciado" }}"
             lines += "Estabilização: ${stabilization.ifBlank { "Off" }} • OIS: $ois"
             lines += "HDR 10-bit: $hdr"
             lines += ""
@@ -138,8 +124,7 @@ object CapabilityReport {
                 val cameraMatrix = matrix.forCamera(cameraId)
                 val summaries = CaptureSettings.supportedFpsValues.mapNotNull { fps ->
                     cameraMatrix.maximumMode(fps)?.let { mode ->
-                        val session = if (mode.highSpeed) "high-speed" else "regular"
-                        "${CaptureSettings.resolutionLabel(mode.resolution)} ${mode.fps} FPS ${mode.encoderMime.substringAfterLast('/').uppercase(Locale.US)} ($session)"
+                        "${CaptureSettings.resolutionLabel(mode.resolution)} ${mode.fps} FPS ${mode.encoderMime.substringAfterLast('/').uppercase(Locale.US)}"
                     }
                 }
                 if (summaries.isNotEmpty()) lines += "Câmera $cameraId: ${summaries.joinToString(" • ")}"

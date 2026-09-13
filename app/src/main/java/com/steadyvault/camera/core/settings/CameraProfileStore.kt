@@ -7,7 +7,7 @@ import android.util.Base64
  * Perfis por câmera e por modo real de uso.
  *
  * Foto continua separada de vídeo e, dentro de vídeo, cada FPS mantém um
- * perfil próprio. Assim 30/60/120/240 FPS não se sobrescrevem entre si.
+ * perfil próprio. Assim 30 e 60 FPS não se sobrescrevem entre si.
  */
 object CameraProfileStore {
     enum class FunctionMode { PHOTO, VIDEO }

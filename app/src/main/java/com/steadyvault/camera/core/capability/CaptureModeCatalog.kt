@@ -1,7 +1,6 @@
 package com.steadyvault.camera.core.capability
 
 import android.content.Context
-import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.state.CaptureStateStore
 
@@ -12,8 +11,7 @@ object CaptureModeCatalog {
         val fps: Int,
         val resolutionValue: String?,
         val resolutionLabel: String,
-        val source: Source,
-        val highSpeed: Boolean = false
+        val source: Source
     ) {
         val selectable: Boolean get() = source != Source.UNAVAILABLE
         val available: Boolean get() = source != Source.UNAVAILABLE
@@ -30,7 +28,7 @@ object CaptureModeCatalog {
         }
         val capabilityDescription: String get() = when (source) {
             Source.VALIDATED -> "Validado em uma gravação real neste aparelho."
-            Source.DETECTED -> if (highSpeed) "Detectado pela câmera e pelo encoder em sessão high-speed; uma captura real ainda é a validação definitiva." else "Detectado pela câmera e pelo encoder; uma captura real ainda é a validação definitiva."
+            Source.DETECTED -> "Detectado pela câmera e pelo encoder; uma captura real ainda é a validação definitiva."
             Source.CACHED -> "Detectado na última análise deste aparelho."
             Source.ANALYZING -> "Ainda não confirmado neste aparelho; você pode selecionar e a sessão real fará a validação."
             Source.UNVERIFIED -> "Ainda não confirmado neste aparelho; você pode selecionar e a sessão real fará a validação."
@@ -39,11 +37,11 @@ object CaptureModeCatalog {
     }
 
     data class Catalog(val profiles: List<Profile>) {
-        fun profile(fps: Int): Profile = profiles.firstOrNull { it.fps == fps } ?: CaptureModeCatalog.unavailable(fps)
+        fun profile(fps: Int): Profile = profiles.firstOrNull { it.fps == fps } ?: unavailable(fps)
         fun summary(): String = profiles.joinToString("\n") { profile ->
             val suffix = when (profile.source) {
                 Source.VALIDATED -> "validado na prática"
-                Source.DETECTED -> if (profile.highSpeed) "detectado • high-speed" else "detectado"
+                Source.DETECTED -> "detectado"
                 Source.CACHED -> "detectado anteriormente"
                 Source.ANALYZING -> "ainda não confirmado"
                 Source.UNVERIFIED -> "validação ao iniciar"
@@ -61,14 +59,13 @@ object CaptureModeCatalog {
         val profiles = fpsValues.map { fps ->
             val validated = CaptureStateStore.effectiveModeForFps(context, fps)
                 ?.takeIf { it.resolutionValue in CaptureSettings.supportedResolutionValues }
-                ?.let { Profile(fps, it.resolutionValue, it.resolutionLabel, Source.VALIDATED, fps >= CaptureModeStore.FPS_120) }
+                ?.let { Profile(fps, it.resolutionValue, it.resolutionLabel, Source.VALIDATED) }
             val detected = matrix?.maximumMode(fps)?.toProfile(Source.DETECTED)
             val cached = cachedProfile(context, fps)
             when {
-                detected != null -> if (validated != null && validated.resolutionValue == detected.resolutionValue) validated.copy(highSpeed = detected.highSpeed) else detected
+                detected != null -> if (validated != null && validated.resolutionValue == detected.resolutionValue) validated else detected
                 validated != null -> validated
                 cached != null -> cached
-                matrix != null && fps >= CaptureModeStore.FPS_120 -> unavailable(fps)
                 matrix != null -> Profile(fps, null, "Não confirmado", Source.UNVERIFIED)
                 scanInProgress -> Profile(fps, null, "Analisando", Source.ANALYZING)
                 else -> Profile(fps, null, "Não confirmado", Source.UNVERIFIED)
@@ -86,18 +83,17 @@ object CaptureModeCatalog {
     ): Profile {
         val safeResolution = resolution.takeIf { it in CaptureSettings.supportedResolutionValues } ?: CaptureSettings.RESOLUTION_4K
         val validated = CaptureStateStore.effectiveModeForFps(context, fps)?.takeIf { it.resolutionValue == safeResolution }
-        matrix?.bestMode(safeResolution, fps)?.let { current ->
-            return if (validated != null) Profile(fps, safeResolution, validated.resolutionLabel, Source.VALIDATED, current.highSpeed) else current.toProfile(Source.DETECTED)
+        matrix?.bestMode(safeResolution, fps)?.let {
+            return if (validated != null) Profile(fps, safeResolution, validated.resolutionLabel, Source.VALIDATED)
+            else it.toProfile(Source.DETECTED)
         }
-        if (validated != null) return Profile(fps, safeResolution, validated.resolutionLabel, Source.VALIDATED, fps >= CaptureModeStore.FPS_120)
+        if (validated != null) return Profile(fps, safeResolution, validated.resolutionLabel, Source.VALIDATED)
         cachedProfile(context, fps)?.takeIf { it.resolutionValue == safeResolution }?.let { return it }
-        if (matrix != null && fps >= CaptureModeStore.FPS_120) return unavailable(fps)
         return Profile(
             fps,
             safeResolution,
             CaptureSettings.resolutionLabel(safeResolution),
-            if (scanInProgress) Source.ANALYZING else Source.UNVERIFIED,
-            highSpeed = false
+            if (scanInProgress) Source.ANALYZING else Source.UNVERIFIED
         )
     }
 
@@ -111,9 +107,6 @@ object CaptureModeCatalog {
         val safeRequested = requestedResolution.takeIf { it in CaptureSettings.supportedResolutionValues }
             ?: CaptureSettings.RESOLUTION_4K
         if (matrix?.bestMode(safeRequested, fps) != null) return safeRequested
-        if (fps >= CaptureModeStore.FPS_120) {
-            matrix?.maximumMode(fps)?.let { detected -> return detected.resolution }
-        }
         return resolveSelection(context, fps, safeRequested, matrix, scanInProgress).resolutionValue ?: safeRequested
     }
 
@@ -121,23 +114,20 @@ object CaptureModeCatalog {
         val editor = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(KEY_SCAN_TIME, System.currentTimeMillis())
         fpsValues.forEach { fps ->
             val mode = matrix.maximumMode(fps)
-            if (mode == null) {
-                editor.remove(resolutionKey(fps)); editor.remove(highSpeedKey(fps))
-            } else {
-                editor.putString(resolutionKey(fps), mode.resolution); editor.putBoolean(highSpeedKey(fps), mode.highSpeed)
-            }
+            if (mode == null) editor.remove(resolutionKey(fps)) else editor.putString(resolutionKey(fps), mode.resolution)
         }
-        editor.apply()
+        editor.remove("resolution_120").remove("resolution_240")
+            .remove("high_speed_30").remove("high_speed_60").remove("high_speed_120").remove("high_speed_240")
+            .apply()
     }
 
     private fun cachedProfile(context: Context, fps: Int): Profile? {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val resolution = prefs.getString(resolutionKey(fps), null)?.takeIf { it in CaptureSettings.supportedResolutionValues } ?: return null
-        return Profile(fps, resolution, CaptureSettings.resolutionLabel(resolution), Source.CACHED, prefs.getBoolean(highSpeedKey(fps), false))
+        return Profile(fps, resolution, CaptureSettings.resolutionLabel(resolution), Source.CACHED)
     }
 
-    private fun CaptureCapabilityMatrix.Mode.toProfile(source: Source) = Profile(fps, resolution, CaptureSettings.resolutionLabel(resolution), source, highSpeed)
+    private fun CaptureCapabilityMatrix.Mode.toProfile(source: Source) = Profile(fps, resolution, CaptureSettings.resolutionLabel(resolution), source)
     private fun unavailable(fps: Int) = Profile(fps, null, "Indisponível", Source.UNAVAILABLE)
     private fun resolutionKey(fps: Int) = "resolution_$fps"
-    private fun highSpeedKey(fps: Int) = "high_speed_$fps"
 }

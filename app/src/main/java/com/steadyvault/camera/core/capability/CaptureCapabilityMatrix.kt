@@ -98,22 +98,11 @@ object CaptureCapabilityMatrix {
             return bestCandidate(candidates, fps)
         }
 
-        private fun bestCandidate(candidates: List<Mode>, fps: Int): Mode? {
-            return candidates.maxWithOrNull(
+        private fun bestCandidate(candidates: List<Mode>, fps: Int): Mode? =
+            candidates.maxWithOrNull(
                 compareBy<Mode> { resolutionScore(it.resolution) }
-                    .thenBy { if (it.highSpeed && fps >= 120) 1 else 0 }
-                    .thenBy { mode ->
-                        if (fps >= 120) {
-                            modes.asSequence()
-                                .filter { it.cameraId == mode.cameraId && it.resolution == mode.resolution && it.encoderMime == mode.encoderMime }
-                                .maxOfOrNull { it.fps } ?: fps
-                        } else {
-                            fps
-                        }
-                    }
                     .thenBy { if (it.encoderMime == MediaFormat.MIMETYPE_VIDEO_HEVC) 1 else 0 }
             )
-        }
 
         fun featuresFor(cameraId: String?): CameraFeatures? {
             if (cameraId != null) return cameras.firstOrNull { it.cameraId == cameraId }
@@ -234,7 +223,7 @@ object CaptureCapabilityMatrix {
 
             for ((resolution, size) in knownSizes()) {
                 if (size !in regularSizes) continue
-                for (fps in CaptureSettings.supportedFpsValues.filter { it < CaptureModeStore.FPS_120 }) {
+                for (fps in CaptureSettings.supportedFpsValues) {
                     // A sessão é testada com a faixa fixa exata; faixa variável nunca confirma um modo.
                     val encoders = encoderCache.getOrPut(Triple(size, fps, false)) {
                         findHardwareEncoders(size, fps, allowRateMetadataFallback = false)
@@ -266,47 +255,13 @@ object CaptureCapabilityMatrix {
                 }
             }
 
-            val capabilities = characteristics.get(
-                CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES
-            ) ?: intArrayOf()
-
-            if (
-                capabilities.contains(
-                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_CONSTRAINED_HIGH_SPEED_VIDEO
-                )
-            ) {
-                val highSpeedSizes: Array<Size> = try {
-                    streamMap.highSpeedVideoSizes ?: emptyArray()
-                } catch (_: Throwable) {
-                    emptyArray()
-                }
-
-                for ((resolution, size) in knownSizes()) {
-                    if (size !in highSpeedSizes) continue
-                    val highSpeedRanges: Array<Range<Int>> = try {
-                        streamMap.getHighSpeedVideoFpsRangesFor(size) ?: emptyArray()
-                    } catch (_: Throwable) {
-                        emptyArray()
-                    }
-                    for (fps in CaptureSettings.supportedFpsValues.filter { it >= 60 }) {
-                        if (highSpeedRanges.none { StrictCaptureModePolicy.acceptsFpsRange(fps, it.lower, it.upper) }) continue
-                        val encoders = encoderCache.getOrPut(Triple(size, fps, true)) {
-                            findHardwareEncoders(size, fps, allowRateMetadataFallback = true)
-                        }
-                        encoders.forEach { mime ->
-                            modes += Mode(cameraId, resolution, size, fps, highSpeed = true, encoderMime = mime)
-                        }
-                    }
-                }
-            }
         }
 
         val unique = modes
-            .distinctBy { listOf(it.cameraId, it.resolution, it.fps, it.highSpeed, it.encoderMime) }
+            .distinctBy { listOf(it.cameraId, it.resolution, it.fps, it.encoderMime) }
             .sortedWith(
                 compareByDescending<Mode> { it.fps }
                     .thenByDescending { resolutionScore(it.resolution) }
-                    .thenByDescending { it.highSpeed }
             )
 
         if (unique.isEmpty()) diagnostics += "Nenhuma combinação câmera + encoder foi confirmada"
@@ -814,13 +769,16 @@ object CaptureCapabilityMatrix {
         if (root.optString("fingerprint") != Build.FINGERPRINT) return null
         if (root.optLong("appVersionCode", -1L) != appVersionCode(context)) return null
 
-        val modes = root.getJSONArray("modes").jsonObjects().map { item ->
+        val modes = root.getJSONArray("modes").jsonObjects().mapNotNull { item ->
+            val fps = item.getInt("fps")
+            val highSpeed = item.optBoolean("highSpeed", false)
+            if (fps !in CaptureSettings.supportedFpsValues || highSpeed) return@mapNotNull null
             Mode(
                 cameraId = item.getString("cameraId"),
                 resolution = item.getString("resolution"),
                 size = Size(item.getInt("width"), item.getInt("height")),
-                fps = item.getInt("fps"),
-                highSpeed = item.getBoolean("highSpeed"),
+                fps = fps,
+                highSpeed = false,
                 encoderMime = item.getString("encoderMime")
             )
         }

@@ -216,7 +216,7 @@ class IdleCameraPreviewController(
 
             val sessionSettings = previewSessionSettings(settings, photoMode)
             val highSpeedRange = highSpeedRange(characteristics, sessionSettings.fps)
-            val useHighSpeed = !photoMode && sessionSettings.fps >= CaptureModeStore.FPS_120 && highSpeedRange != null
+            val useHighSpeed = !photoMode && sessionSettings.fps >= Int.MAX_VALUE && highSpeedRange != null
             activeSettings = settings
             activePhotoMode = photoMode
             runCatching {
@@ -245,8 +245,8 @@ class IdleCameraPreviewController(
     ): Boolean {
         val previousEffective = previewSessionSettings(previous, previousPhotoMode)
         val nextEffective = previewSessionSettings(next, nextPhotoMode)
-        val previousHighSpeed = previousEffective.fps >= CaptureModeStore.FPS_120
-        val nextHighSpeed = nextEffective.fps >= CaptureModeStore.FPS_120
+        val previousHighSpeed = previousEffective.fps >= Int.MAX_VALUE
+        val nextHighSpeed = nextEffective.fps >= Int.MAX_VALUE
         val canReuseAcrossPhotoVideo =
             previousPhotoMode != nextPhotoMode &&
                 photoReader?.surface?.isValid == true &&
@@ -892,7 +892,7 @@ class IdleCameraPreviewController(
     ) {
         val sessionSettings = previewSessionSettings(settings, photoMode)
         val highSpeedRange = highSpeedRange(characteristics, sessionSettings.fps)
-        val useHighSpeed = !photoMode && sessionSettings.fps >= CaptureModeStore.FPS_120 && highSpeedRange != null
+        val useHighSpeed = !photoMode && sessionSettings.fps >= Int.MAX_VALUE && highSpeedRange != null
         val previewOutput = OutputConfiguration(surface).apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 if (sessionSettings.hdrHlg10) {
@@ -974,7 +974,7 @@ class IdleCameraPreviewController(
                         return
                     }
                     fail(
-                        if (sessionSettings.fps >= CaptureModeStore.FPS_120) {
+                        if (sessionSettings.fps >= Int.MAX_VALUE) {
                             "A câmera não aceitou o preview em ${sessionSettings.fps} FPS; a gravação ainda será testada normalmente"
                         } else if (photoMode) {
                             "A câmera não aceitou foto e preview na mesma sessão"
@@ -1177,8 +1177,8 @@ class IdleCameraPreviewController(
         }
 
         // Em sessão constrained high-speed, EIS/OIS pode introduzir cadência irregular,
-        // especialmente em 120 FPS. O preview HFR usa o caminho mínimo da HAL.
-        if (settings.fps >= CaptureModeStore.FPS_120) {
+        // O preview usa somente a sessão regular da HAL.
+        if (settings.fps >= Int.MAX_VALUE) {
             off()
             return
         }
@@ -1197,7 +1197,7 @@ class IdleCameraPreviewController(
         settings: CaptureSettings.Snapshot,
         characteristics: CameraCharacteristics
     ) {
-        val highSpeedProcessing = settings.fps >= CaptureModeStore.FPS_120
+        val highSpeedProcessing = settings.fps >= Int.MAX_VALUE
         val noiseModes = characteristics.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES) ?: intArrayOf()
         val noise = when {
             highSpeedProcessing -> CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL
@@ -1224,7 +1224,7 @@ class IdleCameraPreviewController(
         settings: CaptureSettings.Snapshot,
         characteristics: CameraCharacteristics
     ) {
-        if (settings.hdrHlg10 || settings.fps >= CaptureModeStore.FPS_120) return
+        if (settings.hdrHlg10 || settings.fps >= Int.MAX_VALUE) return
         val modes = characteristics.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES) ?: intArrayOf()
         val wantsCurve = settings.colorProfile == CaptureSettings.COLOR_SOFT || settings.colorProfile == CaptureSettings.COLOR_FLAT
         if (wantsCurve && modes.contains(CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)) {
@@ -1266,15 +1266,14 @@ class IdleCameraPreviewController(
     }
 
     private fun highSpeedRange(characteristics: CameraCharacteristics, targetFps: Int): Range<Int>? {
-        if (targetFps < CaptureModeStore.FPS_120) return null
+        if (targetFps < Int.MAX_VALUE) return null
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val size = Size(PREVIEW_WIDTH, PREVIEW_HEIGHT)
         val sizes = runCatching { map.highSpeedVideoSizes.toList() }.getOrDefault(emptyList())
         if (size !in sizes) return null
         val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size).toList() }.getOrDefault(emptyList())
 
-        // Preview HFR segue o mesmo contrato do arquivo: usa somente a faixa fixa
-        // solicitada e nunca substitui 120 por 240 ou por uma faixa variável.
+        // Caminho legado mantido inacessível; os modos ativos são somente 30/60.
         return ranges.firstOrNull { StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper) }
     }
 

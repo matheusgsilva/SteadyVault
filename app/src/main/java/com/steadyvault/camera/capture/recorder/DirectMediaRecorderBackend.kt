@@ -42,7 +42,7 @@ class DirectMediaRecorderBackend(
     private var selectedProfile: Selection? = null
 
     private val usesExactOemProfile: Boolean
-        get() = selectedProfile != null && (hdrHlg10 || targetFps >= 240)
+        get() = selectedProfile != null && hdrHlg10
 
     val profileDescription: String
         get() = buildString {
@@ -89,11 +89,6 @@ class DirectMediaRecorderBackend(
                     check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         "Perfil OEM direto exige Android 12 ou superior"
                     }
-                    // 240 FPS preserva o VideoProfile OEM: no S25 Ultra ele mantém
-                    // a cadência temporal correta. Em 120 FPS SDR, porém, o perfil
-                    // OEM gerou timestamps em blocos (~4/4/4/21 ms) apesar da câmera
-                    // estar em [120,120]. Nesse modo configure o MediaRecorder
-                    // explicitamente para que o muxer receba 120 FPS reais.
                     setOutputFormat(oemProfile!!.outputFormat)
                     setVideoProfile(oemProfile.videoProfile)
                 } else {

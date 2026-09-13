@@ -375,7 +375,7 @@ class SettingsActivity : FragmentActivity() {
         )
         autoFpsLowLight = addSwitch(
             "FPS automático em pouca luz",
-            "Fica desligado por padrão. Em 30/60 FPS, se a câmera publicar uma faixa variável compatível, permite reduzir temporariamente o FPS para ganhar exposição em pouca luz. 120/240 permanecem fixos.",
+            "Fica desligado por padrão. Em 30/60 FPS, se a câmera publicar uma faixa variável compatível, permite reduzir temporariamente o FPS para ganhar exposição em pouca luz.",
             snapshot.autoFpsLowLight
         )
         modeCapabilitiesText = addCapabilitiesCard()
@@ -482,7 +482,7 @@ class SettingsActivity : FragmentActivity() {
             exposureOptions(snapshot.exposureCompensation),
             snapshot.exposureCompensation.toString()
         )
-        addInfo("Com FPS automático desligado, 30/60 usam faixa fixa e 120/240 exigem suporte real do formato. Com FPS automático ligado, somente 30/60 podem usar uma faixa variável publicada pela câmera; o app nunca inventa quadros.")
+        addInfo("Com FPS automático desligado, 30/60 usam faixa fixa. Com FPS automático ligado, podem usar uma faixa variável publicada pela câmera; o app nunca inventa quadros.")
         thermal = addSwitch(
             "Proteção contra temperatura crítica",
             "Antes de iniciar, verifica a condição térmica do aparelho para evitar começar uma captura quando o sistema já está em estado crítico.",
@@ -1485,9 +1485,7 @@ class SettingsActivity : FragmentActivity() {
 
     private fun enforceHdrCompatibility() {
         if (!hdr.isChecked) return
-        val activeFps = selected(fps).toIntOrNull() ?: editingFps
         val incompatible = selected(codec) == CaptureSettings.CODEC_AVC ||
-                activeFps >= 120 ||
                 selectedCameraFeatures()?.hdrHlg10 == Support.UNSUPPORTED
         if (incompatible) {
             hdr.isChecked = false
@@ -1497,14 +1495,11 @@ class SettingsActivity : FragmentActivity() {
 
     private fun refreshDependentControls() {
         if (!::hdr.isInitialized) return
-        val highSpeed = (selected(fps).toIntOrNull() ?: editingFps) >= 120
         val hdrSupport = selectedCameraFeatures()?.hdrHlg10 ?: Support.UNVERIFIED
         val hdrHardwareSelectable = HardwareSupportPolicy.isSelectable(hdrSupport)
-        hdr.isEnabled = !highSpeed && selected(codec) != CaptureSettings.CODEC_AVC && hdrHardwareSelectable
+        hdr.isEnabled = selected(codec) != CaptureSettings.CODEC_AVC && hdrHardwareSelectable
         hdr.alpha = if (hdr.isEnabled) 1f else 0.45f
-        // 60 FPS pode usar TONEMAP_CONTRAST_CURVE quando a câmera publicar a
-        // chave. As opções individuais do spinner já carregam o suporte real.
-        colorProfile.isEnabled = !hdr.isChecked && !highSpeed
+        colorProfile.isEnabled = !hdr.isChecked
         colorProfile.alpha = if (colorProfile.isEnabled) 1f else 0.45f
     }
 
@@ -2481,7 +2476,7 @@ class SettingsActivity : FragmentActivity() {
     }
 
     private fun customColorProfileSupport(settings: CaptureSettings.Snapshot): Support {
-        if (settings.hdrHlg10 || settings.fps >= CaptureModeStore.FPS_120) return Support.UNSUPPORTED
+        if (settings.hdrHlg10) return Support.UNSUPPORTED
         val cameraId = (
             settings.selectedCameraId
                 ?: CameraLensCatalog.resolveCameraId(this, null, settings.resolution)

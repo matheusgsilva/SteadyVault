@@ -305,7 +305,7 @@ class VideoOptimizationActivity : Activity() {
         bind(codec, "Formato do novo arquivo", listOf("Manter o formato original quando possível", "HEVC / H.265: menor arquivo", "AVC / H.264: maior compatibilidade"))
         bind(rateMode, "Prioridade entre qualidade e tamanho", listOf("Automático (recomendado)", "Priorizar qualidade visual", "Equilibrar qualidade e tamanho (VBR)", "Manter fluxo de dados constante (CBR)"))
         bind(resolution, "Tamanho da imagem final", listOf("Manter o tamanho original", "Limitar a 4K UHD", "Limitar a 1080p", "Limitar a 720p"))
-        bind(fps, "Fluidez final (FPS)", listOf("Manter o FPS original", "24 FPS", "30 FPS", "60 FPS", "120 FPS"))
+        bind(fps, "Fluidez final (FPS)", listOf("Manter o FPS original", "24 FPS", "30 FPS", "60 FPS"))
         val strengths = listOf("Desligado", "Leve", "Médio", "Forte")
         bind(denoise, "Suavizar granulação / ruído", strengths)
         bind(deblock, "Disfarçar blocos de compressão", strengths)
@@ -818,7 +818,6 @@ class VideoOptimizationActivity : Activity() {
         label.contains("tamanho original", true) -> "Mantém as dimensões do vídeo de origem."
         label.contains("Limitar a") -> "Só reduz quando o vídeo original ultrapassa esse tamanho."
         label.contains("FPS original", true) -> "Mantém a fluidez nominal detectada no arquivo."
-        label.contains("120 FPS") -> "Aumenta bastante a carga térmica e exige encoder compatível."
         label.contains("Forte") -> "Aplicação intensa; revise o resultado antes de substituir o original."
         label.contains("Médio") -> "Aplicação moderada do filtro."
         label.contains("Leve") -> "Ajuste discreto para preservar detalhes."
