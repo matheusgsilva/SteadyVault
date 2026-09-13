@@ -2194,6 +2194,14 @@ class CaptureService : Service() {
             return
         }
 
+        val finalizedFps = selectedCamera?.targetFps ?: requestedTargetFps
+        if (finalizedFps == CaptureModeStore.FPS_120) {
+            val normalized = com.steadyvault.camera.capture.recorder.HighSpeedTimestampNormalizer.normalize120IfBatched(finalFile)
+            if (normalized) {
+                AppLogRepository.info(this, "recording_fps", "120 FPS: timestamps em lote normalizados para CFR antes do reparo")
+            }
+        }
+
         com.steadyvault.camera.storage.vault.VaultMediaIndex.invalidate()
         if (!stopHapticAcknowledged && recordingSettings.vibrateStartStop) Haptics.stop(this)
 

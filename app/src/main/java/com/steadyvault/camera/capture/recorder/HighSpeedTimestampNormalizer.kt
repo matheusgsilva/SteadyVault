@@ -1,29 +1,4 @@
-from pathlib import Path
-
-service = Path("app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt")
-text = service.read_text()
-old = '''        com.steadyvault.camera.storage.vault.VaultMediaIndex.invalidate()
-        if (!stopHapticAcknowledged && recordingSettings.vibrateStartStop) Haptics.stop(this)
-'''
-new = '''        val finalizedFps = selectedCamera?.targetFps ?: requestedTargetFps
-        if (finalizedFps == CaptureModeStore.FPS_120) {
-            val normalized = com.steadyvault.camera.capture.recorder.HighSpeedTimestampNormalizer.normalize120IfBatched(finalFile)
-            if (normalized) {
-                AppLogRepository.info(this, "recording_fps", "120 FPS: timestamps em lote normalizados para CFR antes do reparo")
-            }
-        }
-
-        com.steadyvault.camera.storage.vault.VaultMediaIndex.invalidate()
-        if (!stopHapticAcknowledged && recordingSettings.vibrateStartStop) Haptics.stop(this)
-'''
-if text.count(old) != 1:
-    raise SystemExit(f"finalize insertion: expected 1 match, found {text.count(old)}")
-service.write_text(text.replace(old, new, 1))
-
-helper = Path("app/src/main/java/com/steadyvault/camera/capture/recorder/HighSpeedTimestampNormalizer.kt")
-if helper.exists():
-    raise SystemExit("HighSpeedTimestampNormalizer.kt already exists")
-helper.write_text(r'''package com.steadyvault.camera.capture.recorder
+package com.steadyvault.camera.capture.recorder
 
 import android.media.MediaCodec
 import android.media.MediaExtractor
@@ -204,4 +179,3 @@ object HighSpeedTimestampNormalizer {
         return replaced
     }
 }
-''')
