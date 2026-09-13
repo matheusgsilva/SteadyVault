@@ -34,6 +34,7 @@ jobs:
           grep -F 'normalize120IfBatched(finalFile)' app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt
           grep -F 'object HighSpeedTimestampNormalizer' app/src/main/java/com/steadyvault/camera/capture/recorder/HighSpeedTimestampNormalizer.kt
           test -z "$(git diff --name-only -- app/src/main/java/com/steadyvault/camera/processing)"
+          git add -N app/src/main/java/com/steadyvault/camera/capture/recorder/HighSpeedTimestampNormalizer.kt
           changed="$(git diff --name-only | sort)"
           expected="$(printf '%s\n' app/src/main/java/com/steadyvault/camera/capture/recorder/HighSpeedTimestampNormalizer.kt app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt | sort)"
           test "$changed" = "$expected"
