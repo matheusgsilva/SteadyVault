@@ -37,6 +37,8 @@ def delete_files():
         "app/src/main/java/com/steadyvault/camera/ui/browser/PrivateBrowserActivity.kt",
         "app/src/main/java/com/steadyvault/camera/ui/browser/PrivateBrowserStore.kt",
         "app/src/main/java/com/steadyvault/camera/ui/browser/SocialMediaDownloader.kt",
+        "app/src/test/java/com/steadyvault/camera/ui/browser/BrowserSharedLinkParserTest.kt",
+        "app/src/test/java/com/steadyvault/camera/ui/browser/InstagramPublicAccessTest.kt",
         "app/src/main/res/layout/activity_private_browser.xml",
         "app/src/main/res/layout/activity_protected_apps.xml",
         "app/src/main/res/layout/item_protected_app.xml",
@@ -75,6 +77,13 @@ def patch_settings():
     forbidden = ["PrivateBrowserStore", "ProtectedAppsActivity", "ProtectedAppsStore", "AppVaultLock", "VaultScreenCaptureService", "protectedCapture", "chooseBrowser", "Apps protegidos", "Navegador e downloads", "MediaProjectionManager"]
     leftovers = [token for token in forbidden if token in s]
     if leftovers: raise RuntimeError(f"Settings ainda contém referências removidas: {leftovers}")
+    write(rel, s)
+
+def patch_capture_service():
+    rel = "app/src/main/java/com/steadyvault/camera/capture/service/CaptureService.kt"
+    s = read(rel)
+    s = replace_once(s, "import com.steadyvault.camera.ui.apps.VaultScreenCaptureService\n", "", "CaptureService import captura protegida")
+    s = replace_once(s, "        VaultScreenCaptureService.yieldToCameraCapture(this)\n", "", "CaptureService yield captura protegida")
     write(rel, s)
 
 def patch_bottom_navigation():
@@ -203,6 +212,7 @@ def verify_source():
 
 def main():
     patch_settings()
+    patch_capture_service()
     patch_bottom_navigation()
     patch_manifest()
     patch_nav_layout_and_strings()
