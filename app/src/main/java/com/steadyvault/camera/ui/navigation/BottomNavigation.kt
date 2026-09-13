@@ -14,8 +14,6 @@ import com.steadyvault.camera.R
 import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import com.steadyvault.camera.ui.theme.AppearanceStore
 import com.steadyvault.camera.ui.capture.CaptureActivity
-import com.steadyvault.camera.ui.apps.ProtectedAppsActivity
-import com.steadyvault.camera.ui.browser.PrivateBrowserActivity
 import com.steadyvault.camera.ui.settings.SettingsActivity
 import com.steadyvault.camera.ui.vault.PrimaryVaultActivity
 import androidx.core.view.ViewCompat
@@ -24,23 +22,17 @@ import androidx.core.view.WindowInsetsCompat
 object BottomNavigation {
     const val TAB_RECORD = 0
     const val TAB_LIBRARY = 1
-    const val TAB_BROWSER = 2
-    const val TAB_APPS = 3
-    const val TAB_SETTINGS = 4
+    const val TAB_SETTINGS = 2
 
     fun bind(activity: Activity, currentTab: Int, onBeforeNavigate: (() -> Unit)? = null) {
         val root = activity.findViewById<View>(R.id.bottomNavigationRoot) ?: return
         val record = activity.findViewById<TextView>(R.id.navRecord) ?: return
         val library = activity.findViewById<TextView>(R.id.navLibrary) ?: return
-        val browser = activity.findViewById<TextView>(R.id.navBrowser) ?: return
-        val apps = activity.findViewById<TextView>(R.id.navApps) ?: return
         val settings = activity.findViewById<TextView>(R.id.navSettings) ?: return
 
         val items = listOf(
             Triple(record, R.drawable.ic_nav_record, currentTab == TAB_RECORD),
             Triple(library, R.drawable.ic_nav_vault, currentTab == TAB_LIBRARY),
-            Triple(browser, R.drawable.ic_nav_browser, currentTab == TAB_BROWSER),
-            Triple(apps, R.drawable.ic_nav_apps, currentTab == TAB_APPS),
             Triple(settings, R.drawable.ic_nav_settings, currentTab == TAB_SETTINGS)
         )
         items.forEach { (view, icon, selected) ->
@@ -62,12 +54,6 @@ object BottomNavigation {
         }
         library.setOnClickListener {
             open(activity, PrimaryVaultActivity::class.java, currentTab == TAB_LIBRARY, onBeforeNavigate)
-        }
-        browser.setOnClickListener {
-            open(activity, PrivateBrowserActivity::class.java, currentTab == TAB_BROWSER, onBeforeNavigate)
-        }
-        apps.setOnClickListener {
-            open(activity, ProtectedAppsActivity::class.java, currentTab == TAB_APPS, onBeforeNavigate)
         }
         settings.setOnClickListener {
             open(activity, SettingsActivity::class.java, currentTab == TAB_SETTINGS, onBeforeNavigate)

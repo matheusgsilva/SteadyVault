@@ -1,7 +1,6 @@
 package com.steadyvault.camera.storage.vault
 
 import android.content.Context
-import android.os.Environment
 import com.steadyvault.camera.core.state.CaptureStateStore
 import java.io.File
 import java.util.Collections
@@ -142,7 +141,6 @@ object VaultCleanupRepository {
     fun runStartupCleanup(context: Context) {
         val app = context.applicationContext
         val cutoff = System.currentTimeMillis() - STARTUP_STALE_WORK_MS
-        cleanStaleTemporaryRoots(app, cutoff)
         cleanStaleMediaWorkFiles(app, cutoff)
     }
 
@@ -181,32 +179,10 @@ object VaultCleanupRepository {
         }
     }
 
-    private fun runtimeRoots(context: Context): List<File> {
-        val socialDownloads = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            ?.let { File(it, SOCIAL_DOWNLOADS_DIRECTORY) }
-        val candidates = listOfNotNull(context.cacheDir, context.externalCacheDir, socialDownloads)
+    private fun runtimeRoots(context: Context): List<File> =
+        listOfNotNull(context.cacheDir, context.externalCacheDir)
             .distinctBy(::normalizedPath)
-            .sortedBy { normalizedPath(it).length }
-        return candidates.filterIndexed { index, candidate ->
-            val path = normalizedPath(candidate)
-            candidates.take(index).none { parent -> path.startsWith(normalizedPath(parent) + File.separator) }
-        }
-    }
 
-    private fun cleanStaleTemporaryRoots(context: Context, cutoff: Long): Int {
-        var cleaned = 0
-        val socialRoot = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-            ?.let { File(it, SOCIAL_DOWNLOADS_DIRECTORY) }
-        socialRoot?.listFiles().orEmpty().forEach { child ->
-            if (!containsActiveTemporary(child) && child.lastModified() in 1L until cutoff && child.deleteRecursively()) cleaned++
-        }
-        context.cacheDir.listFiles { file ->
-            file.isFile && file.name.startsWith(COOKIE_FILE_PREFIX) && file.lastModified() in 1L until cutoff
-        }.orEmpty().forEach { file ->
-            if (!containsActiveTemporary(file) && file.delete()) cleaned++
-        }
-        return cleaned
-    }
 
     private fun cleanStaleMediaWorkFiles(context: Context, cutoff: Long): Int {
         var cleaned = 0
@@ -259,9 +235,7 @@ object VaultCleanupRepository {
 
     private data class CacheMetrics(val files: Int, val bytes: Long)
 
-    private const val SOCIAL_DOWNLOADS_DIRECTORY = "SocialDownloads"
-    private const val COOKIE_FILE_PREFIX = "sv_cookies_"
     private const val MANUAL_STALE_WORK_MS = 60L * 60L * 1_000L
     private const val STARTUP_STALE_WORK_MS = 6L * 60L * 60L * 1_000L
-    private val TEMPORARY_MEDIA_SUFFIXES = setOf(".download", ".part", ".ytdl")
+    private val TEMPORARY_MEDIA_SUFFIXES = setOf(".download", ".part")
 }

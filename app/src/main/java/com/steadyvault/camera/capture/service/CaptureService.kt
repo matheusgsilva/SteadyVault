@@ -32,7 +32,6 @@ import com.steadyvault.camera.storage.vault.RecordingRecoveryRepository
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
 import com.steadyvault.camera.ui.capture.CaptureActivity
 import com.steadyvault.camera.ui.capture.CameraPreviewRegistry
-import com.steadyvault.camera.ui.apps.VaultScreenCaptureService
 import com.steadyvault.camera.widgets.WidgetRenderer
 
 import com.steadyvault.camera.core.settings.VisualIdentityStore
@@ -250,7 +249,6 @@ class CaptureService : Service() {
         AutoGapRepairService.pauseForCapture(this)
         VideoOptimizationService.pauseForCapture(this)
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
-        VaultScreenCaptureService.yieldToCameraCapture(this)
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
 
         recordingRequestedAtElapsedNs = intent?.getLongExtra(EXTRA_REQUESTED_AT_ELAPSED_NS, 0L)?.takeIf { it > 0L } ?: SystemClock.elapsedRealtimeNanos()

@@ -40,14 +40,6 @@ android {
                 "**/libc++_shared.so",
                 "**/libvlc.so",
                 "**/libvlcjni.so",
-                "**/libaria2c.so",
-                "**/libaria2c.zip.so",
-                "**/libffmpeg.so",
-                "**/libffmpeg.zip.so",
-                "**/libffprobe.so",
-                "**/libpython.so",
-                "**/libpython.zip.so",
-                "**/libqjs.so"
             )
         }
         resources.excludes += setOf(
@@ -75,15 +67,11 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.13.0")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.fragment:fragment-ktx:1.8.9")
-    implementation("androidx.webkit:webkit:1.16.0")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("androidx.media3:media3-ui:1.10.1")
     implementation("org.videolan.android:libvlc-all:3.7.4")
     implementation("org.opencv:opencv:4.13.0")
-    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
-    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
-    implementation("io.github.junkfood02.youtubedl-android:aria2c:0.18.1")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test:runner:1.7.0")

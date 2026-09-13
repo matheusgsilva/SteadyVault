@@ -9,12 +9,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import com.steadyvault.camera.R
 import com.steadyvault.camera.storage.vault.AppStorageCatalog
 import com.steadyvault.camera.storage.vault.VaultRepository
-import com.steadyvault.camera.ui.browser.BrowserWebViewConfigurator
 import com.steadyvault.camera.ui.components.OneUiDialog
 import com.steadyvault.camera.ui.navigation.SystemBarInsets
 import java.util.concurrent.Executors
@@ -96,25 +94,9 @@ class StorageManagementActivity : ComponentActivity() {
 
     private fun confirmClear(category: AppStorageCatalog.Category) {
         OneUiDialog.confirm(this, "Apagar ${category.label}?", "Serão removidos os dados desta área. Esta ação não pode ser desfeita.", "Apagar", destructive = true) {
-            if (category.id == AppStorageCatalog.ID_BROWSER_DATA) {
-                clearBrowserData()
-            } else {
-                worker.execute {
-                    val ok = AppStorageCatalog.clear(this, category.id)
-                    runOnUiThread { Toast.makeText(this, if (ok) "Área limpa" else "Não foi possível limpar tudo", Toast.LENGTH_SHORT).show(); refresh() }
-                }
-            }
-        }
-    }
-
-    private fun clearBrowserData() {
-        val webView = WebView(this)
-        BrowserWebViewConfigurator.configure(webView, mixedContentCompatibility = false, thirdPartyCookies = false)
-        BrowserWebViewConfigurator.clearPrivateData(webView) {
-            webView.destroy()
-            if (!isFinishing && !isDestroyed) {
-                Toast.makeText(this, "Dados privados do navegador apagados", Toast.LENGTH_SHORT).show()
-                refresh()
+            worker.execute {
+                val ok = AppStorageCatalog.clear(this, category.id)
+                runOnUiThread { Toast.makeText(this, if (ok) "Área limpa" else "Não foi possível limpar tudo", Toast.LENGTH_SHORT).show(); refresh() }
             }
         }
     }

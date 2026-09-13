@@ -1,7 +1,6 @@
 package com.steadyvault.camera.ui.settings
 
 import android.Manifest
-import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
@@ -12,13 +11,9 @@ import android.hardware.camera2.CaptureRequest
 import android.media.MediaFormat
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
-import android.media.projection.MediaProjectionManager
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.widget.AdapterView
@@ -54,8 +49,6 @@ import com.steadyvault.camera.processing.auto.AutoGapRepairSettings
 import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.storage.security.PrimaryVaultLock
 import com.steadyvault.camera.storage.security.VaultSecuritySettings
-import com.steadyvault.camera.storage.security.AppVaultLock
-import com.steadyvault.camera.storage.security.ProtectedAppsStore
 import com.steadyvault.camera.storage.vault.VaultCleanupRepository
 import com.steadyvault.camera.storage.vault.VaultMediaCacheSettings
 import com.steadyvault.camera.storage.vault.VaultTrashRepository
@@ -70,10 +63,7 @@ import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import com.steadyvault.camera.ui.theme.AppearanceStore
 import com.steadyvault.camera.widgets.WidgetPreviewPublisher
 import com.steadyvault.camera.widgets.WidgetRenderer
-import com.steadyvault.camera.ui.browser.PrivateBrowserStore
 import com.steadyvault.camera.ui.capture.QuickCaptureLauncher
-import com.steadyvault.camera.ui.apps.ProtectedAppsActivity
-import com.steadyvault.camera.ui.apps.VaultScreenCaptureService
 import com.steadyvault.camera.ui.vault.VaultBulkImportRunner
 import com.steadyvault.camera.ui.vault.RecoveryActivity
 import com.steadyvault.camera.ui.navigation.BottomNavigation
@@ -149,74 +139,7 @@ class SettingsActivity : FragmentActivity() {
     private var formReady = false
     private var saveGeneration = 0
     private var cacheUsageRefreshGeneration = 0
-    private var protectedCaptureFlowPending = false
-    private var pendingProtectedCaptureDestination =
-        VaultScreenCaptureService.DESTINATION_PRIMARY
 
-    private val protectedProjectionPermission =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val data = result.data
-            if (result.resultCode != Activity.RESULT_OK || data == null) {
-                cancelProtectedCaptureFlow()
-                Toast.makeText(this, "Captura de tela cancelada.", Toast.LENGTH_SHORT).show()
-                return@registerForActivityResult
-            }
-            runCatching {
-                ContextCompat.startForegroundService(
-                    this,
-                    VaultScreenCaptureService.startIntent(
-                        this,
-                        result.resultCode,
-                        data,
-                        pendingProtectedCaptureDestination
-                    )
-                )
-            }.onSuccess {
-                protectedCaptureFlowPending = false
-                Haptics.success(this)
-                Toast.makeText(
-                    this,
-                    "Controle protegido ativado. Abra um app e use foto ou gravação.",
-                    Toast.LENGTH_LONG
-                ).show()
-            }.onFailure {
-                Haptics.error(this)
-                cancelProtectedCaptureFlow()
-                Toast.makeText(
-                    this,
-                    it.message ?: "Não foi possível iniciar a captura.",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
-
-    private val protectedOverlayPermission =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            if (Settings.canDrawOverlays(this)) {
-                requestProtectedNotificationThenProjection()
-            } else {
-                cancelProtectedCaptureFlow()
-                Toast.makeText(
-                    this,
-                    "Autorize 'Exibir sobre outros apps' para usar os botões de captura.",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
-
-    private val protectedNotificationPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) {
-                requestProtectedProjectionPermission()
-            } else {
-                cancelProtectedCaptureFlow()
-                Toast.makeText(
-                    this,
-                    "Ative as notificações para manter a captura protegida em execução.",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
 
     private val microphonePermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -291,7 +214,7 @@ class SettingsActivity : FragmentActivity() {
             OneUiDialog.confirm(
                 activity = this,
                 title = "Restaurar ajustes de câmera?",
-                message = "Restaura resolução, FPS, codec e controles da câmera. Cofres, PINs, mídias, navegador e apps protegidos permanecem intactos.",
+                message = "Restaura resolução, FPS, codec e controles da câmera. Cofres, PINs e mídias permanecem intactos.",
                 positiveLabel = "Restaurar",
                 destructive = false
             ) {
@@ -323,7 +246,6 @@ class SettingsActivity : FragmentActivity() {
     }
 
     override fun onDestroy() {
-        if (protectedCaptureFlowPending) cancelProtectedCaptureFlow()
         mainHandler.removeCallbacksAndMessages(null)
         executor.shutdownNow()
         cacheExecutor.shutdownNow()
@@ -690,35 +612,6 @@ class SettingsActivity : FragmentActivity() {
         addInfo("Ao excluir, você pode usar a lixeira privada para restaurar depois ou apagar direto sem recuperação. Álbuns são opcionais e apenas organizam o cofre principal, sem alterar o cofre secundário.")
         addInfo("As mídias ficam privadas até serem exportadas. Desinstalar o aplicativo pode apagar o cofre; exporte cópias importantes.")
 
-        addSection("Apps protegidos")
-        addSwitch(
-            "Biometria para a aba Apps",
-            when {
-                !AppVaultLock.isEnabled(this) -> "Crie primeiro um PIN exclusivo para os apps."
-                !biometricAvailable -> "Nenhuma biometria cadastrada ou disponível no aparelho."
-                else -> "Protege a lista de atalhos separadamente dos cofres de mídia."
-            },
-            AppVaultLock.isEnabled(this) && biometricAvailable && ProtectedAppsStore.biometricEnabled(this)
-        ).apply {
-            isEnabled = AppVaultLock.isEnabled(this@SettingsActivity) && biometricAvailable
-            alpha = if (isEnabled) 1f else 0.45f
-            setOnCheckedChangeListener { _, checked ->
-                if (!building) ProtectedAppsStore.setBiometricEnabled(this@SettingsActivity, checked && isEnabled)
-            }
-        }
-        addSmallButton(if (AppVaultLock.isEnabled(this)) "Gerenciar PIN dos apps" else "Criar PIN dos apps") {
-            manageAppsPin()
-        }
-        addSmallButton("Abrir aba Apps protegidos") {
-            startActivity(Intent(this, ProtectedAppsActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
-        }
-        addInfo("Os ícones extras de foto e vídeo são controlados diretamente na seção Atalhos e disfarces abaixo. O app não abre mais uma tela genérica da One UI que não consegue alterar esses componentes.")
-        addSmallButton("Ativar controles protegidos de print e gravação de tela") {
-            Haptics.tap(this)
-            chooseProtectedCaptureDestination()
-        }
-        addInfo("A aba Apps fica somente com os atalhos e o botão Adicionar/remover. PIN, biometria, ocultação de ícones e autorização de captura são configurados aqui. A lista usa apenas aplicativos lançáveis do perfil normal e não lê Pasta Segura nem perfil de trabalho.")
-
 
         addSection("Execução em segundo plano")
         addInfo(
@@ -756,15 +649,8 @@ class SettingsActivity : FragmentActivity() {
         addSmallButton("Diagnóstico, logs e armazenamento") {
             startActivity(Intent(this, DiagnosticsActivity::class.java))
         }
-        addInfo("A limpeza não apaga fotos, vídeos, lixeira, álbuns, favoritos do navegador nem configurações da câmera. Miniaturas e detalhes necessários são recriados automaticamente.")
+        addInfo("A limpeza não apaga fotos, vídeos, lixeira, álbuns nem configurações da câmera. Miniaturas e detalhes necessários são recriados automaticamente.")
 
-        addSection("Navegador e downloads")
-        addSmallButton("Destino dos downloads: ${PrivateBrowserStore.destinationLabel(PrivateBrowserStore.downloadDestination(this))}") { chooseBrowserDownloadDestination() }
-        addSmallButton("Qualidade preferida dos downloads: ${PrivateBrowserStore.mediaPreferenceSummary(this)}") { chooseBrowserMediaQuality() }
-        addSmallButton("Opções avançadas do downloader: ${PrivateBrowserStore.advancedSummary(this)}") { showAdvancedDownloaderSettings() }
-        addSmallButton(if (PrivateBrowserStore.thirdPartyCookiesEnabled(this)) "Cookies de terceiros: permitidos" else "Cookies de terceiros: bloqueados") { toggleBrowserCookies() }
-        addInfo("O downloader usa o link original quando possível e análise de formatos somente quando necessário. Pode baixar vídeo, áudio e imagens para o cofre escolhido sem expor uma marca ou módulo separado no aplicativo.")
-        addInfo("O navegador abre em modo privado: não salva histórico local e mantém apenas os favoritos. O bloqueador remove anúncios, rastreadores e pop-ups comuns.")
 
         addSection("Aparência")
         addInfo("A tela de ajustes usa proteção contra toques durante a rolagem. Seletores só alteram o valor após tocar em Aplicar, e chaves ignoram gestos de arrastar.")
@@ -1106,112 +992,6 @@ class SettingsActivity : FragmentActivity() {
         AppearanceRuntime.apply(this)
     }
 
-    private fun chooseBrowserDownloadDestination() {
-        val values = PrivateBrowserStore.destinationValues
-        val current = PrivateBrowserStore.downloadDestination(this)
-        OneUiDialog.choices(
-            activity = this,
-            title = "Destino padrão dos downloads",
-            message = "No navegador, cada download ainda permite escolher outro destino na hora.",
-            choices = values.map { OneUiDialog.Choice(PrivateBrowserStore.destinationLabel(it), PrivateBrowserStore.destinationSubtitle(it)) },
-            selectedIndex = values.indexOf(current)
-        ) { index ->
-            PrivateBrowserStore.setDownloadDestination(this, values[index])
-            Toast.makeText(this, "Downloads: ${PrivateBrowserStore.destinationLabel(values[index])}", Toast.LENGTH_SHORT).show()
-            rebuildSettingsForm()
-        }
-    }
-
-    private fun chooseBrowserMediaQuality() {
-        val current = PrivateBrowserStore.mediaQuality(this)
-        OneUiDialog.choices(
-            activity = this,
-            title = "Qualidade de mídia",
-            message = "Preferência para sites que oferecem versões de mídia. Links diretos baixam o arquivo original.",
-            choices = PrivateBrowserStore.qualityValues.map { OneUiDialog.Choice(PrivateBrowserStore.qualityLabel(it)) },
-            selectedIndex = PrivateBrowserStore.qualityValues.indexOf(current)
-        ) { index ->
-            PrivateBrowserStore.setMediaQuality(this, PrivateBrowserStore.qualityValues[index])
-            chooseBrowserMediaResolution()
-        }
-    }
-
-    private fun chooseBrowserMediaResolution() {
-        val current = PrivateBrowserStore.mediaResolution(this)
-        OneUiDialog.choices(
-            activity = this,
-            title = "Resolução preferida",
-            message = "Original preserva a qualidade máxima do arquivo recebido. Outras opções só se aplicam quando o site expõe versões separadas.",
-            choices = PrivateBrowserStore.resolutionValues.map { OneUiDialog.Choice(PrivateBrowserStore.resolutionLabel(it)) },
-            selectedIndex = PrivateBrowserStore.resolutionValues.indexOf(current)
-        ) { index ->
-            PrivateBrowserStore.setMediaResolution(this, PrivateBrowserStore.resolutionValues[index])
-            Toast.makeText(this, "Mídia: ${PrivateBrowserStore.mediaPreferenceSummary(this)}", Toast.LENGTH_SHORT).show()
-            rebuildSettingsForm()
-        }
-    }
-
-    private fun toggleBrowserCookies() {
-        val enabled = !PrivateBrowserStore.thirdPartyCookiesEnabled(this)
-        PrivateBrowserStore.setThirdPartyCookiesEnabled(this, enabled)
-        Toast.makeText(this, if (enabled) "Cookies completos ligados" else "Cookies completos desligados", Toast.LENGTH_SHORT).show()
-        rebuildSettingsForm()
-    }
-
-    private fun showAdvancedDownloaderSettings() {
-        val profile = PrivateBrowserStore.performanceProfile(this)
-        OneUiDialog.choices(
-            activity = this,
-            title = "Downloader avançado",
-            message = "Escolha o que deseja configurar. Todas as opções abaixo alteram o downloader de verdade; recursos incompatíveis não são apresentados durante uma operação.",
-            choices = listOf(
-                OneUiDialog.Choice("Desempenho: ${PrivateBrowserStore.performanceLabel(profile)}", "Rápido prioriza conexões paralelas; Compatível usa o caminho mais simples."),
-                OneUiDialog.Choice(if (PrivateBrowserStore.wifiOnly(this)) "Somente Wi‑Fi: ligado" else "Somente Wi‑Fi: desligado", "Bloqueia novos downloads em rede móvel quando ativado."),
-                OneUiDialog.Choice(if (PrivateBrowserStore.aria2Enabled(this)) "Downloads paralelos: ligados" else "Downloads paralelos: desligados", "Usa aria2 quando o perfil e o formato suportam; em Compatível ele é ignorado."),
-                OneUiDialog.Choice(if (PrivateBrowserStore.embedMetadata(this)) "Metadados: preservar" else "Metadados: mínimos", "Inclui título, capa e metadados quando a ferramenta e o site fornecerem esses dados."),
-                OneUiDialog.Choice(if (PrivateBrowserStore.verifyFreeSpace(this)) "Espaço livre: verificar" else "Espaço livre: não verificar", "Evita começar uma operação que provavelmente não cabe no armazenamento.")
-            )
-        ) { index ->
-            when (index) {
-                0 -> chooseDownloaderPerformance()
-                1 -> {
-                    PrivateBrowserStore.setWifiOnly(this, !PrivateBrowserStore.wifiOnly(this))
-                    rebuildSettingsForm()
-                }
-                2 -> {
-                    PrivateBrowserStore.setAria2Enabled(this, !PrivateBrowserStore.aria2Enabled(this))
-                    rebuildSettingsForm()
-                }
-                3 -> {
-                    PrivateBrowserStore.setEmbedMetadata(this, !PrivateBrowserStore.embedMetadata(this))
-                    rebuildSettingsForm()
-                }
-                4 -> {
-                    PrivateBrowserStore.setVerifyFreeSpace(this, !PrivateBrowserStore.verifyFreeSpace(this))
-                    rebuildSettingsForm()
-                }
-            }
-        }
-    }
-
-    private fun chooseDownloaderPerformance() {
-        val values = PrivateBrowserStore.performanceProfiles
-        val current = PrivateBrowserStore.performanceProfile(this)
-        OneUiDialog.choices(
-            activity = this,
-            title = "Perfil do downloader",
-            message = "O perfil muda tentativas, timeouts e paralelismo. Ele não reduz a qualidade escolhida.",
-            choices = listOf(
-                OneUiDialog.Choice("Rápido", "Mais paralelismo quando disponível; indicado para Wi‑Fi estável."),
-                OneUiDialog.Choice("Equilibrado", "Boa velocidade com tolerância a servidores instáveis."),
-                OneUiDialog.Choice("Compatível", "Menos otimizações e caminho mais simples para sites problemáticos.")
-            ),
-            selectedIndex = values.indexOf(current)
-        ) { index ->
-            PrivateBrowserStore.setPerformanceProfile(this, values[index])
-            rebuildSettingsForm()
-        }
-    }
 
     private fun rebuildSettingsForm() {
         if (building) return
@@ -1701,209 +1481,6 @@ class SettingsActivity : FragmentActivity() {
         }
     }
 
-    private fun manageAppsPin() {
-        if (!AppVaultLock.isEnabled(this)) {
-            createAppsPin()
-            return
-        }
-        OneUiDialog.choices(
-            activity = this,
-            title = "Segurança dos apps",
-            message = "Este PIN protege somente a lista de atalhos da aba Apps.",
-            choices = listOf(
-                OneUiDialog.Choice("Alterar PIN dos apps", "Confirme o PIN atual e escolha um novo."),
-                OneUiDialog.Choice("Remover PIN dos apps", "A lista permanece salva, mas fica indisponível até criar outro PIN.", destructive = true)
-            )
-        ) { choice ->
-            when (choice) {
-                0 -> verifyAppsPin { createAppsPin() }
-                1 -> verifyAppsPin {
-                    AppVaultLock.clear(this)
-                    ProtectedAppsStore.setBiometricEnabled(this, false)
-                    Toast.makeText(this, "Proteção dos apps removida", Toast.LENGTH_SHORT).show()
-                    buildFormPreservingScroll(CaptureSettings.snapshot(this))
-                }
-            }
-        }
-    }
-
-    private fun verifyAppsPin(onVerified: () -> Unit) {
-        PinPadDialog.showVerify(
-            activity = this,
-            title = "Confirmar PIN dos apps",
-            subtitle = "Digite o PIN usado para abrir a aba Apps.",
-            verify = { AppVaultLock.verify(this, it) },
-            onVerified = onVerified
-        )
-    }
-
-    private fun createAppsPin() {
-        PinPadDialog.showCreate(
-            activity = this,
-            title = "Criar PIN dos apps",
-            onCreated = { pin ->
-                AppVaultLock.setPin(this, pin)
-                Toast.makeText(this, "PIN dos apps salvo", Toast.LENGTH_SHORT).show()
-                buildFormPreservingScroll(CaptureSettings.snapshot(this))
-            }
-        )
-    }
-
-
-    private fun chooseProtectedCaptureDestination() {
-        val secondaryEnabled = SecondaryVaultLock.isEnabled(this)
-        val tertiaryEnabled = TertiaryVaultLock.isEnabled(this)
-        OneUiDialog.choices(
-            activity = this,
-            title = "Salvar capturas em",
-            message = "Prints e vídeos ficarão somente no cofre escolhido.",
-            choices = listOf(
-                OneUiDialog.Choice("Cofre principal", "Protegido pelo PIN do cofre principal."),
-                OneUiDialog.Choice(
-                    "Cofre secundário",
-                    if (secondaryEnabled) {
-                        "Protegido pelo PIN do cofre secundário."
-                    } else {
-                        "Configure o cofre secundário primeiro."
-                    },
-                    enabled = secondaryEnabled
-                ),
-                OneUiDialog.Choice(
-                    "Cofre terciário",
-                    if (tertiaryEnabled) {
-                        "Protegido pelo PIN do cofre terciário."
-                    } else {
-                        "Configure o cofre terciário primeiro."
-                    },
-                    enabled = tertiaryEnabled
-                )
-            )
-        ) { index ->
-            pendingProtectedCaptureDestination = when (index) {
-                1 -> VaultScreenCaptureService.DESTINATION_SECONDARY
-                2 -> VaultScreenCaptureService.DESTINATION_TERTIARY
-                else -> VaultScreenCaptureService.DESTINATION_PRIMARY
-            }
-            protectedCaptureFlowPending = true
-            authorizeProtectedCaptureDestination()
-        }
-    }
-
-    private fun authorizeProtectedCaptureDestination() {
-        if (isProtectedCaptureDestinationUnlocked()) {
-            requestProtectedOverlayThenProjection()
-            return
-        }
-        PinPadDialog.showVerify(
-            activity = this,
-            title = "Autorizar ${protectedCaptureDestinationLabel()}",
-            subtitle = "Digite o PIN desse cofre. Nenhuma cópia será criada na galeria do aparelho.",
-            verify = { pin -> verifyProtectedCaptureDestination(pin) },
-            onVerified = { requestProtectedOverlayThenProjection() },
-            onCancel = { cancelProtectedCaptureFlow() }
-        )
-    }
-
-    private fun requestProtectedOverlayThenProjection() {
-        if (Settings.canDrawOverlays(this)) {
-            requestProtectedNotificationThenProjection()
-            return
-        }
-        runCatching {
-            protectedOverlayPermission.launch(
-                Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName")
-                )
-            )
-        }.onFailure {
-            cancelProtectedCaptureFlow()
-            Toast.makeText(
-                this,
-                it.message ?: "Não foi possível pedir a permissão do botão flutuante.",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
-
-    private fun requestProtectedNotificationThenProjection() {
-        if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            runCatching {
-                protectedNotificationPermission.launch(
-                    Manifest.permission.POST_NOTIFICATIONS
-                )
-            }.onFailure {
-                cancelProtectedCaptureFlow()
-                Toast.makeText(
-                    this,
-                    it.message ?: "Não foi possível pedir a permissão de notificação.",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        } else {
-            requestProtectedProjectionPermission()
-        }
-    }
-
-    private fun requestProtectedProjectionPermission() {
-        runCatching {
-            val manager = getSystemService(MediaProjectionManager::class.java)
-            protectedProjectionPermission.launch(manager.createScreenCaptureIntent())
-        }.onFailure {
-            cancelProtectedCaptureFlow()
-            Haptics.error(this)
-            Toast.makeText(
-                this,
-                it.message ?: "Não foi possível pedir a autorização de captura.",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
-
-    private fun isProtectedCaptureDestinationUnlocked(): Boolean =
-        when (pendingProtectedCaptureDestination) {
-            VaultScreenCaptureService.DESTINATION_SECONDARY ->
-                SecondaryVaultLock.isUnlocked(this)
-            VaultScreenCaptureService.DESTINATION_TERTIARY ->
-                TertiaryVaultLock.isUnlocked(this)
-            else ->
-                PrimaryVaultLock.isUnlocked(this)
-        }
-
-    private fun verifyProtectedCaptureDestination(pin: String): Boolean =
-        when (pendingProtectedCaptureDestination) {
-            VaultScreenCaptureService.DESTINATION_SECONDARY ->
-                SecondaryVaultLock.verify(this, pin)
-            VaultScreenCaptureService.DESTINATION_TERTIARY ->
-                TertiaryVaultLock.verify(this, pin)
-            else ->
-                PrimaryVaultLock.verify(this, pin)
-        }
-
-    private fun protectedCaptureDestinationLabel(): String =
-        when (pendingProtectedCaptureDestination) {
-            VaultScreenCaptureService.DESTINATION_SECONDARY -> "cofre secundário"
-            VaultScreenCaptureService.DESTINATION_TERTIARY -> "cofre terciário"
-            else -> "cofre principal"
-        }
-
-    private fun cancelProtectedCaptureFlow() {
-        when (pendingProtectedCaptureDestination) {
-            VaultScreenCaptureService.DESTINATION_SECONDARY ->
-                SecondaryVaultLock.lock()
-            VaultScreenCaptureService.DESTINATION_TERTIARY ->
-                TertiaryVaultLock.lock()
-            else ->
-                PrimaryVaultLock.lock()
-        }
-        protectedCaptureFlowPending = false
-    }
 
     private fun verifyPin(onVerified: () -> Unit) {
         PinPadDialog.showVerify(

@@ -1,9 +1,7 @@
 package com.steadyvault.camera.storage.vault
 
 import android.content.Context
-import android.os.Environment
 import com.steadyvault.camera.core.diagnostics.AppLogRepository
-import com.steadyvault.camera.ui.browser.BrowserDownloadRegistry
 import java.io.File
 
 object AppStorageCatalog {
@@ -21,17 +19,14 @@ object AppStorageCatalog {
         val thumbnailStats = MediaThumbnailRepository.cacheStats(app)
         val thumbnailDirectory = File(app.filesDir, THUMBNAIL_DIRECTORY)
         val importReports = File(app.filesDir, IMPORT_REPORTS_DIRECTORY)
-        val browserData = File(app.applicationInfo.dataDir, "app_webview")
         val databases = File(app.applicationInfo.dataDir, "databases")
         val preferences = File(app.applicationInfo.dataDir, "shared_prefs")
-        val browserTemp = File(app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: app.cacheDir, "SocialDownloads")
-        val publicDownloads = BrowserDownloadRegistry.entries(app)
         val publicGallery = PublicMediaRegistry.metrics(app)
         val noBackup = app.noBackupFilesDir
         val internalExcluded = listOf(primary, secondary, tertiary, trash, recovery, logFile, thumbnailDirectory, importReports)
         val otherInternal = metricsExcluding(app.filesDir, internalExcluded)
         val externalRoot = app.getExternalFilesDir(null)
-        val otherExternal = externalRoot?.let { metricsExcluding(it, listOf(browserTemp)) } ?: (0 to 0L)
+        val otherExternal = externalRoot?.let(::metrics) ?: (0 to 0L)
 
         return Snapshot(
             listOf(
@@ -43,13 +38,10 @@ object AppStorageCatalog {
                 fileCategory(ID_LOGS, "Logs", "Falhas e eventos técnicos do aplicativo", logFile),
                 Category(ID_THUMBNAILS, "Miniaturas", "Miniaturas persistentes da galeria; podem ser recriadas", thumbnailStats.diskFiles, thumbnailStats.diskBytes),
                 category(ID_IMPORT_REPORTS, "Relatórios legados", "Relatórios antigos de importação, quando existirem", importReports),
-                category(ID_BROWSER_DATA, "Dados privados do navegador", "Cookies, armazenamento de sites e dados do WebView; a limpeza usa a API oficial do WebView", browserData),
                 category(ID_DATABASES, "Índices e bancos locais", "Índice local da galeria; os arquivos dos cofres continuam sendo a fonte de verdade", databases),
-                category(ID_BROWSER_TEMP, "Temporários de downloads", "Arquivos de trabalho do downloader avançado", browserTemp),
                 cacheCategory(app),
                 Category(ID_OTHER_INTERNAL, "Outros dados internos", "Arquivos auxiliares criados por componentes e bibliotecas que não pertencem às áreas acima", otherInternal.first, otherInternal.second),
                 Category(ID_OTHER_EXTERNAL, "Outros dados externos privados", "Arquivos auxiliares na área externa privada do aplicativo", otherExternal.first, otherExternal.second),
-                Category(ID_PUBLIC_DOWNLOADS, "Downloads públicos do navegador", "Downloads iniciados pelo SteadyVault e registrados no DownloadManager", publicDownloads.size, 0L),
                 Category(ID_PUBLIC_GALLERY, "Cópias públicas na Galeria", "Fotos e vídeos exportados pelo SteadyVault e registrados para gerenciamento", publicGallery.files, publicGallery.bytes),
                 category(ID_NO_BACKUP, "Filas persistentes de importação", "Filas de trabalho em andamento que o Android exclui do backup automático; apague somente sem importações ativas", noBackup),
                 category(ID_PREFERENCES, "Configurações internas", "Preferências, perfis e estados do app; são removidos com ‘Zerar todo o aplicativo’", preferences, clearable = false)
@@ -69,11 +61,9 @@ object AppStorageCatalog {
             ID_THUMBNAILS -> { MediaThumbnailRepository.clearAll(app); true }
             ID_IMPORT_REPORTS -> clearDirectory(File(app.filesDir, IMPORT_REPORTS_DIRECTORY))
             ID_DATABASES -> { VaultMediaIndex.reset(app); clearDirectory(File(app.applicationInfo.dataDir, "databases")) }
-            ID_BROWSER_TEMP -> clearDirectory(File(app.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: app.cacheDir, "SocialDownloads"))
             ID_CACHE -> clearCaches(app)
             ID_OTHER_INTERNAL -> clearOtherInternal(app)
             ID_OTHER_EXTERNAL -> clearOtherExternal(app)
-            ID_PUBLIC_DOWNLOADS -> { BrowserDownloadRegistry.removeAll(app); true }
             ID_PUBLIC_GALLERY -> PublicMediaRegistry.removeAll(app)
             ID_NO_BACKUP -> clearDirectory(app.noBackupFilesDir)
             else -> false
@@ -130,8 +120,7 @@ object AppStorageCatalog {
 
     private fun clearOtherExternal(context: Context): Boolean {
         val root = context.getExternalFilesDir(null) ?: return true
-        val browserTemp = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: context.cacheDir, "SocialDownloads")
-        return deleteExcluding(root, setOf(canonicalPath(browserTemp)))
+        return deleteExcluding(root, emptySet())
     }
 
     private fun deleteExcluding(root: File, excludedPaths: Set<String>): Boolean {
@@ -159,13 +148,10 @@ object AppStorageCatalog {
     const val ID_LOGS = "logs"
     const val ID_THUMBNAILS = "thumbnails"
     const val ID_IMPORT_REPORTS = "import_reports"
-    const val ID_BROWSER_DATA = "browser_data"
     const val ID_DATABASES = "databases"
-    const val ID_BROWSER_TEMP = "browser_temp"
     const val ID_CACHE = "cache"
     const val ID_OTHER_INTERNAL = "other_internal"
     const val ID_OTHER_EXTERNAL = "other_external"
-    const val ID_PUBLIC_DOWNLOADS = "public_downloads"
     const val ID_PUBLIC_GALLERY = "public_gallery"
     const val ID_NO_BACKUP = "no_backup"
     const val ID_PREFERENCES = "preferences"

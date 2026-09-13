@@ -1,17 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.MAIN" />
-            <category android:name="android.intent.category.LAUNCHER" />
-        </intent>
-    </queries>
 
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
 
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -24,8 +16,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROCESSING" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:name=".SteadyVaultApplication"
@@ -63,27 +53,6 @@
                 <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
-        <activity
-            android:name=".ui.browser.PrivateBrowserActivity"
-            android:documentLaunchMode="never"
-            android:exported="true"
-            android:label="@string/share_link_browser_label"
-            android:launchMode="singleTask"
-            android:screenOrientation="portrait">
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/plain" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="http" />
-                <data android:scheme="https" />
-            </intent-filter>
-        </activity>
-        <activity android:name=".ui.apps.ProtectedAppsActivity" android:exported="false" android:launchMode="singleTop" android:label="Apps protegidos" android:screenOrientation="portrait" />
         <activity android:name=".ui.vault.VaultTrashActivity" android:exported="false" android:label="Lixeira dos cofres" android:screenOrientation="portrait" />
         <activity android:name=".ui.vault.SecondaryVaultActivity" android:exported="false" android:label="Cofre secundário" android:screenOrientation="portrait" />
         <activity android:name=".ui.vault.TertiaryVaultActivity" android:exported="false" android:label="Cofre terciário" android:screenOrientation="portrait" />
@@ -247,10 +216,6 @@
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="dataSync" />
-        <service
-            android:name=".ui.apps.VaultScreenCaptureService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
 
         <receiver android:name=".core.state.CaptureStateReceiver" android:exported="false">
             <intent-filter>
@@ -260,14 +225,6 @@
         <receiver android:name=".widgets.WidgetPinnedReceiver" android:exported="false" />
         <receiver android:name=".widgets.WidgetStartReceiver" android:exported="false" />
         <receiver android:name=".widgets.WidgetZoomReceiver" android:exported="false" />
-        <receiver android:name=".ui.apps.ProtectedAppsPackageReceiver" android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.PACKAGE_ADDED" />
-                <action android:name="android.intent.action.PACKAGE_REMOVED" />
-                <action android:name="android.intent.action.PACKAGE_CHANGED" />
-                <data android:scheme="package" />
-            </intent-filter>
-        </receiver>
 
         <receiver android:name=".widgets.ExpandedControlWidget" android:exported="true" android:icon="@mipmap/ic_launcher" android:label="@string/widget_expanded_name">
             <intent-filter>

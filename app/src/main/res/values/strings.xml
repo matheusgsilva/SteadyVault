@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">SteadyVault</string>
-    <string name="share_link_browser_label">SteadyVault — abrir link</string>
 
     <string name="quick_camera_name">Câmera</string>
     <string name="quick_scanner_name">Scanner</string>
