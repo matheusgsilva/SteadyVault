@@ -6,6 +6,7 @@ on:
       - test-1.8.131-motion-gap-repair
     paths:
       - .github/workflows/remove-high-fps.yml
+      - tools/restore_select_best.py
 
 permissions:
   contents: write
