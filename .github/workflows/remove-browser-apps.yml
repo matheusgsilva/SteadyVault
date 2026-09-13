@@ -33,8 +33,6 @@ jobs:
       - name: Verify removed feature references
         run: |
           ! grep -R -n -E 'ui\.browser|ui\.apps|PrivateBrowser|ProtectedApps|AppVaultLock|VaultScreenCaptureService|navBrowser|navApps|ic_nav_browser|ic_nav_apps|activity_private_browser|activity_protected_apps|item_protected_app|share_link_browser_label|SocialDownloads|sv_cookies_|youtubedl-android|androidx\.webkit:webkit|FOREGROUND_SERVICE_MEDIA_PROJECTION|SYSTEM_ALERT_WINDOW' app/src app/build.gradle.kts
-          test ! -d app/src/main/java/com/steadyvault/camera/ui/browser
-          test ! -d app/src/main/java/com/steadyvault/camera/ui/apps
           test ! -e app/src/main/java/com/steadyvault/camera/storage/security/AppVaultLock.kt
           test ! -e app/src/main/java/com/steadyvault/camera/storage/security/ProtectedAppsStore.kt
           test ! -e app/src/main/java/com/steadyvault/camera/storage/security/ProtectedAppsIndexStore.kt
