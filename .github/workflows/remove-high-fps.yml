@@ -1,0 +1,27 @@
+name: Remove 120 and 240 FPS
+
+on:
+  push:
+    branches:
+      - test-1.8.131-motion-gap-repair
+    paths:
+      - .github/workflows/remove-high-fps.yml
+      - tools/remove_high_fps.py
+
+permissions:
+  contents: write
+
+jobs:
+  patch_and_build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: test-1.8.131-motion-gap-repair
+          fetch-depth: 0
+
+      - name: Inventory high FPS code
+        run: |
+          grep -R -n -E 'FPS_120|FPS_240|120 FPS|240 FPS|highSpeed|HighSpeed|high-speed|CONSTRAINED_HIGH_SPEED' app/src/main/java app/src/main/res --exclude-dir=processing || true
+          exit 1
