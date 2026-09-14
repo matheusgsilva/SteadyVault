@@ -433,7 +433,7 @@ class MediaPlayerActivity : ComponentActivity() {
         imageView.setOnZoomChangedListener(zoomChanged)
         imageView.setOnClickListener { toggleViewerControls() }
         imageView.setOnDismissListener { dismissToVault() }
-        videoView.setOnDismissListener(null)
+        videoView.setOnDismissListener { dismissToVault() }
 
         playPauseButton.setOnClickListener {
             hideZoomHelpImmediately()

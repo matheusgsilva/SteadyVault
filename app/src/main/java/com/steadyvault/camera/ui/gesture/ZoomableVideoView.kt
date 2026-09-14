@@ -891,11 +891,11 @@ class ZoomableVideoView @JvmOverloads constructor(
                 highFrameRatePlayback -> HIGH_FRAME_RATE_REBUFFER_MS
                 else -> PERFORMANCE_REBUFFER_MS
             }
-            val backBufferMs = if (highFrameRatePlayback) HIGH_FRAME_RATE_BACK_BUFFER_MS else BACK_BUFFER_MS
+            val backBufferMs = if (highFrameRatePlayback || demandingPlayback) HIGH_FRAME_RATE_BACK_BUFFER_MS else BACK_BUFFER_MS
             val loadControl = DefaultLoadControl.Builder()
                 .setBufferDurationsMs(minBufferMs, maxBufferMs, playbackBufferMs, rebufferMs)
                 .setBackBuffer(backBufferMs, !highFrameRatePlayback)
-                .setPrioritizeTimeOverSizeThresholdsForLocalPlayback(true)
+                .setPrioritizeTimeOverSizeThresholdsForLocalPlayback(false)
                 .build()
 
             val player = ExoPlayer.Builder(context, renderersFactory)
