@@ -66,6 +66,7 @@ import android.view.MotionEvent
 import android.view.PixelCopy
 import android.view.Gravity
 import android.view.View
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ScrollView
 import android.widget.ImageView
@@ -112,6 +113,8 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var modeInfoText: TextView
     private lateinit var fps30Button: TextView
     private lateinit var fps60Button: TextView
+    private lateinit var fpsSegmentedControl: FrameLayout
+    private lateinit var fpsSliderIndicator: View
     private lateinit var batteryStatusText: TextView
     private lateinit var startButton: View
     private lateinit var stopButton: View
@@ -383,6 +386,8 @@ class CaptureActivity : ComponentActivity() {
         modeInfoText = findViewById(R.id.modeInfoText)
         fps30Button = findViewById(R.id.fps30Button)
         fps60Button = findViewById(R.id.fps60Button)
+        fpsSegmentedControl = findViewById(R.id.fpsSegmentedControl)
+        fpsSliderIndicator = findViewById(R.id.fpsSliderIndicator)
         batteryStatusText = findViewById(R.id.batteryStatusText)
         startButton = findViewById(R.id.startButton)
         stopButton = findViewById(R.id.stopButton)
@@ -3293,15 +3298,16 @@ class CaptureActivity : ComponentActivity() {
             val label = if (selected && effectiveMode?.fps == fps) "${effectiveMode.resolutionLabel}\n$fps FPS" else configured.buttonText
             button.text = label
             button.visibility = if (visible) View.VISIBLE else View.GONE
-            button.setBackgroundResource(if (selected) R.drawable.bg_mode_selected else R.drawable.bg_mode_unselected)
-            button.setTextColor(if (selected) AppearanceStore.palette(this).accent else getColor(R.color.text_primary))
+            button.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            button.setTextColor(if (selected) getColor(R.color.text_primary) else getColor(R.color.text_secondary))
             button.isEnabled = enabled
             button.alpha = if (enabled || selected) 1f else 0.32f
         }
 
         configureButton(fps30Button, CaptureModeStore.FPS_30)
         configureButton(fps60Button, CaptureModeStore.FPS_60)
-        (fps30Button.parent as? View)?.visibility = if (fps30Button.visibility == View.VISIBLE || fps60Button.visibility == View.VISIBLE) View.VISIBLE else View.GONE
+        fpsSegmentedControl.visibility = if (fps30Button.visibility == View.VISIBLE || fps60Button.visibility == View.VISIBLE) View.VISIBLE else View.GONE
+        updateFpsSlider(selectedFps)
 
         val selectedProfile = configuredProfile(settings.fps, settings.resolution)
         val displayedResolution = effectiveMode?.resolutionLabel
@@ -3318,6 +3324,40 @@ class CaptureActivity : ComponentActivity() {
         val validationLabel = if (effectiveMode != null) " • modo real usado" else " • ${profileValidationText(selectedProfile)}"
         modeSummaryText.text = "$displayedResolution • $displayedFps FPS\n$hdrLabel • ${settings.bitrateMbps} Mbps"
         modeInfoText.text = "$codecLabel • $colorLabel • ${stabilizationUiLabel(settings.stabilization)} • áudio ${settings.audioBitrateKbps} kbps$validationLabel"
+    }
+
+    private fun updateFpsSlider(selectedFps: Int) {
+        if (!::fpsSegmentedControl.isInitialized || !::fpsSliderIndicator.isInitialized) return
+        fpsSegmentedControl.post {
+            val visible30 = fps30Button.visibility == View.VISIBLE
+            val visible60 = fps60Button.visibility == View.VISIBLE
+            val visibleCount = listOf(visible30, visible60).count { it }
+            if (visibleCount == 0) return@post
+
+            val inset = (3f * resources.displayMetrics.density).toInt()
+            val available = fpsSegmentedControl.width.coerceAtLeast(1)
+            val segmentWidth = if (visibleCount == 1) available else available / 2
+            val params = (fpsSliderIndicator.layoutParams as FrameLayout.LayoutParams).apply {
+                width = (segmentWidth - inset * 2).coerceAtLeast(1)
+                height = FrameLayout.LayoutParams.MATCH_PARENT
+                marginStart = inset
+                topMargin = inset
+                bottomMargin = inset
+            }
+            fpsSliderIndicator.layoutParams = params
+
+            val selectedIndex = when {
+                visibleCount == 1 -> 0
+                selectedFps == CaptureModeStore.FPS_60 && visible60 -> 1
+                else -> 0
+            }
+            fpsSliderIndicator.animate().cancel()
+            fpsSliderIndicator.animate()
+                .translationX((selectedIndex * segmentWidth).toFloat())
+                .setDuration(220L)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+        }
     }
 
     private fun selectedModeStateMessage(
