@@ -157,6 +157,7 @@ class SettingsActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
+        AppearanceRuntime.apply(this)
         settingsScroll = findViewById(R.id.settingsScroll)
         container = findViewById(R.id.settingsContainer)
         runCatching { SystemBarInsets.applyTop(findViewById<View>(R.id.settingsScreenRoot)) }
