@@ -78,7 +78,6 @@ class SettingsActivity : FragmentActivity() {
     private lateinit var modeCapabilitiesText: TextView
     private lateinit var resolution: Spinner
     private lateinit var fps: Spinner
-    private lateinit var autoFpsLowLight: Switch
     private lateinit var codec: Spinner
     private lateinit var bitrate: Spinner
     private lateinit var iframe: Spinner
@@ -294,11 +293,6 @@ class SettingsActivity : FragmentActivity() {
             "Taxa de quadros da gravação (FPS)",
             fpsOptions(),
             snapshot.fps.toString()
-        )
-        autoFpsLowLight = addSwitch(
-            "FPS automático em pouca luz",
-            "Fica desligado por padrão. Em 30/60 FPS, se a câmera publicar uma faixa variável compatível, permite reduzir temporariamente o FPS para ganhar exposição em pouca luz.",
-            snapshot.autoFpsLowLight
         )
         modeCapabilitiesText = addCapabilitiesCard()
         codec = addSpinner(
@@ -1311,7 +1305,7 @@ class SettingsActivity : FragmentActivity() {
     ): CaptureSettings.Snapshot = base.copy(
         resolution = resolutionValue,
         fps = fpsValue,
-        autoFpsLowLight = autoFpsLowLight.isChecked,
+        autoFpsLowLight = false,
         codec = selected(codec),
         bitrateMbps = selected(bitrate).toIntOrNull()?.coerceIn(4, 240) ?: base.bitrateMbps,
         iFrameIntervalSeconds = selected(iframe).toIntOrNull()?.coerceIn(1, 10) ?: base.iFrameIntervalSeconds,

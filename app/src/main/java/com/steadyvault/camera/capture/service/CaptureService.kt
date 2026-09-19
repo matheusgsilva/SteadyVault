@@ -652,7 +652,6 @@ class CaptureService : Service() {
         targetFps,
         recordingSettings.codec,
         recordingSettings.bitrateMbps,
-        recordingSettings.autoFpsLowLight,
         allowHdr,
         recordingSettings.stabilization,
         recordingSettings.focusMode,
@@ -714,20 +713,12 @@ class CaptureService : Service() {
         characteristics: CameraCharacteristics,
         targetFps: Int
     ): Range<Int> {
-        val exact = Range(targetFps, targetFps)
-
-        // 60 FPS é contrato de cadência fixa. Não permita 30-60/15-60 em gravação
-        // de alta taxa, mesmo quando Auto FPS em pouca luz estiver habilitado.
-        if (targetFps >= CaptureModeStore.FPS_60) return exact
-
-        if (!recordingSettings.autoFpsLowLight || targetFps != CaptureModeStore.FPS_30) {
-            return exact
-        }
-
-        val ranges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
-            ?.filter { it.upper == targetFps && it.lower < targetFps }
-            .orEmpty()
-        return ranges.maxByOrNull { it.lower } ?: exact
+        // Não existe mais Auto FPS: 30 = [30,30] e 60 = [60,60].
+        // Mantemos o parâmetro characteristics porque este método faz parte do fluxo
+        // de resolução da câmera, mas a faixa escolhida é sempre fixa.
+        @Suppress("UNUSED_VARIABLE")
+        val ignoredCharacteristics = characteristics
+        return Range(targetFps, targetFps)
     }
 
     /**
@@ -773,12 +764,9 @@ class CaptureService : Service() {
     private fun CameraProfile.hasExactFpsRange(): Boolean =
         fpsRange.lower == targetFps && fpsRange.upper == targetFps
 
-    private fun CameraProfile.matchesRequestedFpsContract(): Boolean = when {
-        highSpeed -> false
-        targetFps >= CaptureModeStore.FPS_60 -> hasExactFpsRange()
-        !recordingSettings.autoFpsLowLight -> hasExactFpsRange()
-        else -> fpsRange.upper == targetFps && fpsRange.lower <= targetFps
-    }
+    private fun CameraProfile.matchesRequestedFpsContract(): Boolean =
+        !highSpeed && hasExactFpsRange()
+
 
     private fun Size.toPolicyDimensions() = StrictCaptureModePolicy.Dimensions(width, height)
 
@@ -968,12 +956,10 @@ class CaptureService : Service() {
         // exato para resolução/FPS/codec, use os parâmetros do fabricante em vez
         // de reconstruir manualmente o encoder.
         if (profile.hdrHlg10 && exact == null) return null
-        val effectiveBitrate = exact?.videoProfile?.bitrate ?: requestedBitrate
-
         return EncoderProfile(
             codecName = if (exact != null) "OEM EncoderProfiles" else "MediaRecorder direto",
             mime = mime,
-            bitrate = effectiveBitrate,
+            bitrate = requestedBitrate,
             hdrHlg10 = profile.hdrHlg10
         )
     }

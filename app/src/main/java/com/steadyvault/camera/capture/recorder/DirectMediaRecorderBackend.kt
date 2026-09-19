@@ -92,6 +92,10 @@ class DirectMediaRecorderBackend(
                     }
                     setOutputFormat(oemProfile!!.outputFormat)
                     setVideoProfile(oemProfile.videoProfile)
+                    // O perfil OEM fornece profile/level e demais parâmetros de
+                    // compatibilidade, mas o bitrate continua sendo o valor escolhido
+                    // pelo usuário no SteadyVault.
+                    setVideoEncodingBitRate(videoBitrate)
                 } else {
                     setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                     setVideoEncoder(videoEncoderFor(videoMime))
