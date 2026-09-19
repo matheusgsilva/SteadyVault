@@ -31,6 +31,7 @@ import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.processing.service.VideoOptimizationService
 import com.steadyvault.camera.storage.vault.RecordingRecoveryRepository
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
+import com.steadyvault.camera.storage.vault.MediaThumbnailRepository
 import com.steadyvault.camera.ui.capture.CaptureActivity
 import com.steadyvault.camera.ui.capture.CameraPreviewRegistry
 import com.steadyvault.camera.widgets.WidgetRenderer
@@ -250,6 +251,7 @@ class CaptureService : Service() {
         AutoGapRepairService.pauseForCapture(this)
         VideoOptimizationService.pauseForCapture(this)
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
+        MediaThumbnailRepository.prepareForCapture()
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
 
         recordingRequestedAtElapsedNs = intent?.getLongExtra(EXTRA_REQUESTED_AT_ELAPSED_NS, 0L)?.takeIf { it > 0L } ?: SystemClock.elapsedRealtimeNanos()
@@ -1425,6 +1427,15 @@ class CaptureService : Service() {
                                     profile = profile,
                                     token = token
                                 )
+                            } else if (
+                                recordingSettings.focusMode == CaptureSettings.FOCUS_LOCKED
+                            ) {
+                                startLockedFocusRecording(
+                                    session = session,
+                                    warmupRequest = request,
+                                    profile = profile,
+                                    token = token
+                                )
                             } else {
                                 startStabilizedRecording(
                                     session = session,
@@ -1569,6 +1580,115 @@ class CaptureService : Service() {
         }.onFailure {
             failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}")
         }
+    }
+
+    private fun startLockedFocusRecording(
+        session: CameraCaptureSession,
+        warmupRequest: CaptureRequest,
+        profile: CameraProfile,
+        token: Int
+    ) {
+        if (!isAttemptValid(token)) return
+
+        val recentFocus = Camera3AStateStore.recentFocus(profile.cameraId)
+        if (recentFocus != null) {
+            val lockedRequest = buildLockedFocusRequest(
+                profile,
+                recentFocus.focusDistanceDiopters
+            )
+            if (lockedRequest != null) {
+                startStabilizedRecording(session, lockedRequest, profile, token)
+                return
+            }
+        }
+
+        val completed = AtomicBoolean(false)
+        val frames = AtomicInteger(0)
+
+        fun finishWithFocus(distance: Float?) {
+            if (!completed.compareAndSet(false, true) || !isAttemptValid(token)) return
+            val lockedRequest = distance
+                ?.takeIf { it.isFinite() && it >= 0f }
+                ?.let { buildLockedFocusRequest(profile, it) }
+
+            runCatching {
+                armRecorderForFirstFrame(token)
+                session.setRepeatingRequest(lockedRequest ?: warmupRequest, null, mainHandler)
+                commitRecorderStart(profile, token, highSpeed = false)
+            }.onFailure {
+                failSelectedConfigurationFromWorker(
+                    token,
+                    "não foi possível travar o foco antes da gravação: ${errorText(it)}"
+                )
+            }
+        }
+
+        val callback = object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                captureSession: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                if (!isAttemptValid(token) || completed.get()) return
+
+                val distance = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+                if (distance != null) {
+                    Camera3AStateStore.updateFocus(profile.cameraId, distance)
+                }
+
+                val afState = result.get(CaptureResult.CONTROL_AF_STATE)
+                val focused =
+                    afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED ||
+                    afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
+
+                if (focused || frames.incrementAndGet() >= FOCUS_LOCK_MAX_WARMUP_FRAMES) {
+                    finishWithFocus(distance)
+                }
+            }
+        }
+
+        runCatching {
+            session.setRepeatingRequest(warmupRequest, callback, mainHandler)
+        }.onFailure {
+            finishWithFocus(null)
+        }
+
+        mainHandler.postDelayed(
+            {
+                if (!completed.get()) {
+                    finishWithFocus(
+                        Camera3AStateStore.recentFocus(profile.cameraId)
+                            ?.focusDistanceDiopters
+                    )
+                }
+            },
+            FOCUS_LOCK_MAX_WARMUP_MS
+        )
+    }
+
+    private fun buildLockedFocusRequest(
+        profile: CameraProfile,
+        focusDistanceDiopters: Float
+    ): CaptureRequest? {
+        val camera = synchronized(resourceLock) { cameraDevice } ?: return null
+        val surface = synchronized(resourceLock) { recorderSurface } ?: return null
+        val minimumFocusDistance = profile.characteristics.get(
+            CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE
+        ) ?: return null
+        if (minimumFocusDistance <= 0f) return null
+
+        val distance = focusDistanceDiopters.coerceIn(0f, minimumFocusDistance)
+
+        return runCatching {
+            createRecordRequestBuilder(camera).apply {
+                addTarget(surface)
+                configureCaptureRequest(this, profile)
+                applyFinalWhiteBalance(this, profile)
+                set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
+                set(CaptureRequest.LENS_FOCUS_DISTANCE, distance)
+            }.build()
+        }.getOrNull()
     }
 
     private fun supportsManualSensor(profile: CameraProfile): Boolean {
@@ -1726,23 +1846,17 @@ class CaptureService : Service() {
         setSafely(builder, CaptureRequest.CONTROL_CAPTURE_INTENT, CameraMetadata.CONTROL_CAPTURE_INTENT_VIDEO_RECORD)
 
         val afModes = profile.characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
-        val requestedAf = when {
-            // Sem preview, a gravação começa assim que a sessão fica pronta. O foco contínuo
-            // corrige a lente nos primeiros quadros sem atrasar o início, respeitando apenas
-            // a escolha explícita de foco desligado.
-            headlessCaptureRequested && recordingSettings.focusMode != CaptureSettings.FOCUS_OFF ->
-                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-            // Sessões high-speed aceitam um conjunto bem menor de controles; o modo contínuo
-            // de vídeo é o caminho mais estável quando o foco não foi desativado pelo usuário.
-            profile.highSpeed && recordingSettings.focusMode != CaptureSettings.FOCUS_OFF ->
-                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-            recordingSettings.focusMode == CaptureSettings.FOCUS_CONTINUOUS_PICTURE ->
+        val requestedAf = when (recordingSettings.focusMode) {
+            CaptureSettings.FOCUS_CONTINUOUS_PICTURE ->
                 CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-            recordingSettings.focusMode == CaptureSettings.FOCUS_AUTO ->
+            CaptureSettings.FOCUS_AUTO ->
+                CameraMetadata.CONTROL_AF_MODE_AUTO
+            CaptureSettings.FOCUS_LOCKED ->
                 CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-            recordingSettings.focusMode == CaptureSettings.FOCUS_OFF ->
+            CaptureSettings.FOCUS_OFF ->
                 CameraMetadata.CONTROL_AF_MODE_OFF
-            else -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+            else ->
+                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
         }
         val fallbackAf = listOf(
             requestedAf,
@@ -1755,10 +1869,9 @@ class CaptureService : Service() {
 
         if (!profile.highSpeed) {
             setSafely(builder, CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
-            if (fallbackAf == CameraMetadata.CONTROL_AF_MODE_OFF) {
-                // AF desligado sem distância manual configurável significa foco fixo no infinito.
-                setSafely(builder, CaptureRequest.LENS_FOCUS_DISTANCE, 0f)
-            }
+            // Em OFF não force LENS_FOCUS_DISTANCE=0 (infinito). A lente permanece
+            // na posição que a HAL já possui. O modo LOCKED aplica uma distância
+            // explícita antes do início do MP4.
         }
 
         val awbModes = profile.characteristics.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES) ?: intArrayOf()
@@ -2826,6 +2939,9 @@ class CaptureService : Service() {
         "${CaptureSettings.resolutionLabel(recordingSettings.resolution)} ${requestedTargetFps} FPS"
 
     companion object {
+        private const val FOCUS_LOCK_MAX_WARMUP_FRAMES = 8
+        private const val FOCUS_LOCK_MAX_WARMUP_MS = 250L
+
         const val ACTION_RECORDING_VISUAL_FINISHED =
             "com.steadyvault.camera.RECORDING_VISUAL_FINISHED"
 
@@ -2861,7 +2977,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-settings-faithful-1.8.266"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-cadence-controls-1.8.267"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"

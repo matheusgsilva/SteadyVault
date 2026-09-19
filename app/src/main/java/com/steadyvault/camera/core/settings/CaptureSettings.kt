@@ -22,6 +22,7 @@ object CaptureSettings {
     const val FOCUS_CONTINUOUS_VIDEO = "CONTINUOUS_VIDEO"
     const val FOCUS_CONTINUOUS_PICTURE = "CONTINUOUS_PICTURE"
     const val FOCUS_AUTO = "AUTO"
+    const val FOCUS_LOCKED = "LOCKED"
     const val FOCUS_OFF = "OFF"
 
     const val PROCESSING_AUTO = "AUTO"
@@ -120,12 +121,20 @@ object CaptureSettings {
         val codec = storedCodec?.takeIf { it in SUPPORTED_CODECS } ?: CODEC_HEVC
         val storedStabilization = prefs.getString("stabilization", STABILIZATION_OFF)
         val stabilization = storedStabilization?.takeIf { it in SUPPORTED_STABILIZATIONS } ?: STABILIZATION_OFF
+        val storedFocus = prefs.getString("focus_mode", FOCUS_CONTINUOUS_VIDEO)
+        val focusMode = storedFocus?.takeIf { it in SUPPORTED_FOCUS_MODES } ?: FOCUS_CONTINUOUS_VIDEO
 
-        if (storedFps != fps || storedCodec != codec || storedStabilization != stabilization) {
+        if (
+            storedFps != fps ||
+            storedCodec != codec ||
+            storedStabilization != stabilization ||
+            storedFocus != focusMode
+        ) {
             prefs.edit()
                 .putInt("fps", fps)
                 .putString("codec", codec)
                 .putString("stabilization", stabilization)
+                .putString("focus_mode", focusMode)
                 .apply()
         }
 
@@ -143,7 +152,7 @@ object CaptureSettings {
             hdrHlg10 = prefs.getBoolean("hdr_hlg10", false),
             colorProfile = prefs.getString("color_profile", COLOR_NATURAL) ?: COLOR_NATURAL,
             stabilization = stabilization,
-            focusMode = prefs.getString("focus_mode", FOCUS_CONTINUOUS_VIDEO) ?: FOCUS_CONTINUOUS_VIDEO,
+            focusMode = focusMode,
             noiseReduction = prefs.getString("noise_reduction", PROCESSING_FAST) ?: PROCESSING_FAST,
             edgeMode = edgeMode,
             antibanding = prefs.getString("antibanding", ANTIBANDING_AUTO) ?: ANTIBANDING_AUTO,
@@ -172,7 +181,8 @@ object CaptureSettings {
             resolution = snapshot.resolution.takeIf { it in SUPPORTED_RESOLUTIONS } ?: RESOLUTION_4K,
             fps = snapshot.fps.takeIf { it in SUPPORTED_FPS } ?: 60,
             codec = snapshot.codec.takeIf { it in SUPPORTED_CODECS } ?: CODEC_HEVC,
-            stabilization = snapshot.stabilization.takeIf { it in SUPPORTED_STABILIZATIONS } ?: STABILIZATION_OFF
+            stabilization = snapshot.stabilization.takeIf { it in SUPPORTED_STABILIZATIONS } ?: STABILIZATION_OFF,
+            focusMode = snapshot.focusMode.takeIf { it in SUPPORTED_FOCUS_MODES } ?: FOCUS_CONTINUOUS_VIDEO
         )
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("resolution", normalized.resolution)
@@ -292,5 +302,12 @@ object CaptureSettings {
     private val SUPPORTED_RESOLUTIONS = linkedSetOf(RESOLUTION_8K, RESOLUTION_4K, RESOLUTION_1080P, RESOLUTION_720P)
     private val SUPPORTED_CODECS = linkedSetOf(CODEC_HEVC, CODEC_AVC)
     private val SUPPORTED_STABILIZATIONS = linkedSetOf(STABILIZATION_AUTO, STABILIZATION_PREVIEW, STABILIZATION_EIS, STABILIZATION_OIS, STABILIZATION_OFF)
+    private val SUPPORTED_FOCUS_MODES = linkedSetOf(
+        FOCUS_CONTINUOUS_VIDEO,
+        FOCUS_CONTINUOUS_PICTURE,
+        FOCUS_AUTO,
+        FOCUS_LOCKED,
+        FOCUS_OFF
+    )
     private val SUPPORTED_FPS = linkedSetOf(30, 60)
 }

@@ -19,8 +19,14 @@ object Camera3AStateStore {
         val capturedAtElapsedMs: Long
     )
 
+    data class FocusSnapshot(
+        val focusDistanceDiopters: Float,
+        val capturedAtElapsedMs: Long
+    )
+
     private val whiteBalance = ConcurrentHashMap<String, WhiteBalanceSnapshot>()
     private val exposure = ConcurrentHashMap<String, ExposureSnapshot>()
+    private val focus = ConcurrentHashMap<String, FocusSnapshot>()
 
     fun updateWhiteBalance(cameraId: String, gains: RggbChannelVector, transform: ColorSpaceTransform) {
         whiteBalance[cameraId] = WhiteBalanceSnapshot(gains, transform, SystemClock.elapsedRealtime())
@@ -39,5 +45,20 @@ object Camera3AStateStore {
     fun recentExposure(cameraId: String, maximumAgeMs: Long = 3_000L): ExposureSnapshot? {
         val snapshot = exposure[cameraId] ?: return null
         return snapshot.takeIf { SystemClock.elapsedRealtime() - it.capturedAtElapsedMs <= maximumAgeMs }
+    }
+
+    fun updateFocus(cameraId: String, focusDistanceDiopters: Float) {
+        if (!focusDistanceDiopters.isFinite() || focusDistanceDiopters < 0f) return
+        focus[cameraId] = FocusSnapshot(
+            focusDistanceDiopters = focusDistanceDiopters,
+            capturedAtElapsedMs = SystemClock.elapsedRealtime()
+        )
+    }
+
+    fun recentFocus(cameraId: String, maximumAgeMs: Long = 3_000L): FocusSnapshot? {
+        val snapshot = focus[cameraId] ?: return null
+        return snapshot.takeIf {
+            SystemClock.elapsedRealtime() - it.capturedAtElapsedMs <= maximumAgeMs
+        }
     }
 }

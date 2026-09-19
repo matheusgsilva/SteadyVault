@@ -1042,6 +1042,9 @@ class IdleCameraPreviewController(
                     Camera3AStateStore.updateWhiteBalance(measuredCameraId, measuredGains, measuredTransform)
                 }
                 if (measuredCameraId != null) {
+                    result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { focusDistance ->
+                        Camera3AStateStore.updateFocus(measuredCameraId, focusDistance)
+                    }
                     val exposureTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                     val sensitivityIso = result.get(CaptureResult.SENSOR_SENSITIVITY)
                     val frameDurationNs = result.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L
@@ -1112,6 +1115,7 @@ class IdleCameraPreviewController(
         val requestedAf = when (settings.focusMode) {
             CaptureSettings.FOCUS_CONTINUOUS_PICTURE -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
             CaptureSettings.FOCUS_AUTO -> CameraMetadata.CONTROL_AF_MODE_AUTO
+            CaptureSettings.FOCUS_LOCKED -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
             CaptureSettings.FOCUS_OFF -> CameraMetadata.CONTROL_AF_MODE_OFF
             else -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
         }

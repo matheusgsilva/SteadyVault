@@ -327,7 +327,7 @@ class SettingsActivity : FragmentActivity() {
             ),
             snapshot.iFrameIntervalSeconds.toString()
         )
-        addInfo("Pipeline direto Camera2 → Surface → MediaRecorder: uma única saída de vídeo durante a captura, sem interpolação ou callbacks por quadro. HEVC/H.264 e bitrate-alvo são configurados quando suportados pelo hardware.")
+        addInfo("Pipeline direto Camera2 → uma única Surface do encoder. Em 60 FPS SDR usa MediaCodec; 30 FPS/HDR usam o caminho compatível. Não há callback por quadro durante o MP4.")
         hdr = addSwitch(
             "HDR HLG10",
             "Usa HEVC Main10, BT.2020 HLG e faixa limitada. Combinações incompatíveis são informadas em vez de serem trocadas silenciosamente.",
@@ -347,6 +347,7 @@ class SettingsActivity : FragmentActivity() {
             snapshot.stabilization
         )
         addInfo("A estabilização aplicada é exatamente a escolhida aqui. O app não troca sozinho entre OIS, EIS, Preview stabilization e Off.")
+        addInfo("Em 4K60, EIS e Preview stabilization podem aumentar o trabalho do ISP. OIS ou Off tendem a ser mais leves; o app apenas informa e não altera sua escolha.")
         focus = addSpinner(
             "Modo de foco da câmera",
             focusOptions(snapshot.focusMode),
@@ -362,6 +363,7 @@ class SettingsActivity : FragmentActivity() {
             processingOptions(noise = false, currentValue = snapshot.edgeMode),
             snapshot.edgeMode
         )
+        addInfo("Em 4K60, Redução de ruído ou Nitidez em Alta qualidade podem aumentar o custo do ISP. A opção escolhida continua sendo respeitada.")
         antibanding = addSpinner(
             "Correção de cintilação da iluminação",
             antibandingOptions(snapshot.antibanding),
@@ -1898,8 +1900,13 @@ class SettingsActivity : FragmentActivity() {
         val specs = listOf(
             FeatureOptionSpec(CaptureSettings.FOCUS_CONTINUOUS_VIDEO, "Contínuo para vídeo", "Mantém o foco acompanhando a cena."),
             FeatureOptionSpec(CaptureSettings.FOCUS_CONTINUOUS_PICTURE, "Contínuo para foto", "Reage rapidamente a mudanças de assunto."),
-            FeatureOptionSpec(CaptureSettings.FOCUS_AUTO, "Automático", "Foco pontual controlado pela câmera."),
-            FeatureOptionSpec(CaptureSettings.FOCUS_OFF, "Fixo", "Evita caça de foco; depende da distância atual da lente.")
+            FeatureOptionSpec(CaptureSettings.FOCUS_AUTO, "Automático", "Usa o modo AF automático da câmera."),
+            FeatureOptionSpec(
+                CaptureSettings.FOCUS_LOCKED,
+                "Estabilizar e travar",
+                "Antes de começar o MP4, estabiliza o foco e depois fixa a distância durante toda a gravação. Útil para testar cadência em 4K60."
+            ),
+            FeatureOptionSpec(CaptureSettings.FOCUS_OFF, "Desativado", "Desliga o autofocus sem forçar a lente para infinito.")
         )
         return featureOptions(specs, currentValue) { value ->
             if (
