@@ -715,13 +715,18 @@ class CaptureService : Service() {
         targetFps: Int
     ): Range<Int> {
         val exact = Range(targetFps, targetFps)
-        if (!recordingSettings.autoFpsLowLight || targetFps !in setOf(CaptureModeStore.FPS_30, CaptureModeStore.FPS_60)) {
+
+        // 60 FPS é contrato de cadência fixa. Não permita 30-60/15-60 em gravação
+        // de alta taxa, mesmo quando Auto FPS em pouca luz estiver habilitado.
+        if (targetFps >= CaptureModeStore.FPS_60) return exact
+
+        if (!recordingSettings.autoFpsLowLight || targetFps != CaptureModeStore.FPS_30) {
             return exact
         }
+
         val ranges = characteristics.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
             ?.filter { it.upper == targetFps && it.lower < targetFps }
             .orEmpty()
-        // Prefere a menor variação possível (ex.: 30-60 em vez de 15-60).
         return ranges.maxByOrNull { it.lower } ?: exact
     }
 
@@ -770,6 +775,7 @@ class CaptureService : Service() {
 
     private fun CameraProfile.matchesRequestedFpsContract(): Boolean = when {
         highSpeed -> false
+        targetFps >= CaptureModeStore.FPS_60 -> hasExactFpsRange()
         !recordingSettings.autoFpsLowLight -> hasExactFpsRange()
         else -> fpsRange.upper == targetFps && fpsRange.lower <= targetFps
     }
@@ -2692,7 +2698,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "cadence-first-auto60-1.8.262"
+        private const val CAPTURE_PIPELINE_REVISION = "oem-profile-fixed60-1.8.263"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
