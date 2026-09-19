@@ -137,7 +137,9 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var previewSettingsButton: ImageView
     private lateinit var previewPhotoModeButton: TextView
     private lateinit var previewVideoModeButton: TextView
+    private lateinit var previewModeSliderIndicator: View
     private lateinit var previewFpsRow: View
+    private lateinit var previewFpsSliderIndicator: View
     private lateinit var previewSettingsText: TextView
     private lateinit var previewPerformanceText: TextView
     private lateinit var previewPausedScrim: View
@@ -412,7 +414,9 @@ class CaptureActivity : ComponentActivity() {
         previewSettingsButton = findViewById(R.id.previewSettingsButton)
         previewPhotoModeButton = findViewById(R.id.previewPhotoModeButton)
         previewVideoModeButton = findViewById(R.id.previewVideoModeButton)
+        previewModeSliderIndicator = findViewById(R.id.previewModeSliderIndicator)
         previewFpsRow = findViewById(R.id.previewFpsRow)
+        previewFpsSliderIndicator = findViewById(R.id.previewFpsSliderIndicator)
         previewSettingsText = findViewById(R.id.previewSettingsText)
         previewPerformanceText = findViewById(R.id.previewPerformanceText)
         previewPausedScrim = findViewById(R.id.previewPausedScrim)
@@ -2758,26 +2762,20 @@ class CaptureActivity : ComponentActivity() {
             button.visibility = if (visible) View.VISIBLE else View.GONE
             button.isEnabled = selectable
             button.alpha = if (selectable || selected) 1f else 0.38f
-            button.setBackgroundResource(if (selected) R.drawable.bg_camera_chip_selected_yellow else R.drawable.bg_camera_chip_unselected)
-            button.setTextColor(getColor(if (selected) android.R.color.black else android.R.color.white))
+            button.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            button.setTextColor(getColor(if (selected) R.color.text_primary else R.color.text_secondary))
         }
 
         val effectivePhotoMode = previewPhotoMode && !recordingBusy
         previewPhotoModeButton.isEnabled = !controlsLocked
         previewVideoModeButton.isEnabled = !controlsLocked
-        previewPhotoModeButton.setBackgroundResource(
-            if (effectivePhotoMode) R.drawable.bg_camera_chip_selected_yellow else R.drawable.bg_camera_chip_unselected
-        )
-        previewVideoModeButton.setBackgroundResource(
-            if (!effectivePhotoMode) R.drawable.bg_camera_chip_selected_yellow else R.drawable.bg_camera_chip_unselected
-        )
-        previewPhotoModeButton.setTextColor(
-            getColor(if (effectivePhotoMode) android.R.color.black else android.R.color.white)
-        )
-        previewVideoModeButton.setTextColor(
-            getColor(if (!effectivePhotoMode) android.R.color.black else android.R.color.white)
-        )
+        previewPhotoModeButton.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        previewVideoModeButton.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        previewPhotoModeButton.setTextColor(getColor(if (effectivePhotoMode) R.color.text_primary else R.color.text_secondary))
+        previewVideoModeButton.setTextColor(getColor(if (!effectivePhotoMode) R.color.text_primary else R.color.text_secondary))
+        updatePreviewSegmentSlider(previewModeSliderIndicator, if (effectivePhotoMode) 0 else 1, 2)
 
+        updatePreviewFpsSlider(settings.fps)
         previewFpsRow.visibility = if (effectivePhotoMode) View.GONE else View.VISIBLE
         previewRecordButton.visibility = if (effectivePhotoMode) View.GONE else View.VISIBLE
         previewPhotoButton.visibility = if (effectivePhotoMode) View.VISIBLE else View.GONE
@@ -3324,6 +3322,38 @@ class CaptureActivity : ComponentActivity() {
         val validationLabel = if (effectiveMode != null) " • modo real usado" else " • ${profileValidationText(selectedProfile)}"
         modeSummaryText.text = "$displayedResolution • $displayedFps FPS\n$hdrLabel • ${settings.bitrateMbps} Mbps"
         modeInfoText.text = "$codecLabel • $colorLabel • ${stabilizationUiLabel(settings.stabilization)} • áudio ${settings.audioBitrateKbps} kbps$validationLabel"
+    }
+
+    private fun updatePreviewSegmentSlider(indicator: View, selectedIndex: Int, segmentCount: Int) {
+        val parent = indicator.parent as? FrameLayout ?: return
+        parent.post {
+            val inset = (3f * resources.displayMetrics.density).toInt()
+            val segmentWidth = (parent.width / segmentCount.coerceAtLeast(1)).coerceAtLeast(1)
+            val params = (indicator.layoutParams as FrameLayout.LayoutParams).apply {
+                width = (segmentWidth - inset * 2).coerceAtLeast(1)
+                height = FrameLayout.LayoutParams.MATCH_PARENT
+                marginStart = inset
+                topMargin = inset
+                bottomMargin = inset
+            }
+            indicator.layoutParams = params
+            indicator.animate().cancel()
+            indicator.animate()
+                .translationX((selectedIndex.coerceIn(0, segmentCount - 1) * segmentWidth).toFloat())
+                .setDuration(220L)
+                .setInterpolator(DecelerateInterpolator())
+                .start()
+        }
+    }
+
+    private fun updatePreviewFpsSlider(selectedFps: Int) {
+        if (!::previewFpsSliderIndicator.isInitialized) return
+        val visible30 = previewFps30Button.visibility == View.VISIBLE
+        val visible60 = previewFps60Button.visibility == View.VISIBLE
+        val visibleCount = listOf(visible30, visible60).count { it }
+        if (visibleCount == 0) return
+        val selectedIndex = if (visibleCount == 2 && selectedFps == CaptureModeStore.FPS_60 && visible60) 1 else 0
+        updatePreviewSegmentSlider(previewFpsSliderIndicator, selectedIndex, visibleCount)
     }
 
     private fun updateFpsSlider(selectedFps: Int) {
