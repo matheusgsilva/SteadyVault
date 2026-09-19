@@ -29,7 +29,8 @@ class DirectMediaRecorderBackend(
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
 
-    override val backendName: String = "MediaRecorder direto"
+    override val backendName: String
+        get() = if (usesExactOemProfile) "OEM MediaRecorder direto" else "MediaRecorder direto"
     override val videoBitrateBps: Long
         get() = if (usesExactOemProfile) selectedProfile!!.videoProfile.bitrate.toLong() else videoBitrate.toLong()
     override val audioBitrateBps: Long get() = if (integratedAudio) audioBitrate.toLong() else 0L
@@ -42,7 +43,7 @@ class DirectMediaRecorderBackend(
     private var selectedProfile: Selection? = null
 
     private val usesExactOemProfile: Boolean
-        get() = selectedProfile != null && hdrHlg10
+        get() = selectedProfile != null
 
     val profileDescription: String
         get() = buildString {

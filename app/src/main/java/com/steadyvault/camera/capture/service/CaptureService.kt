@@ -945,6 +945,7 @@ class CaptureService : Service() {
 
     private fun selectDirectRecorderEncoder(profile: CameraProfile): EncoderProfile? {
         val mime = recordingSettings.codecMimes(profile.hdrHlg10).singleOrNull() ?: return null
+        val requestedBitrate = configuredVideoBitrate()
         val exact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             DirectMediaRecorderBackend.findExactSelection(
                 cameraId = profile.cameraId,
@@ -953,14 +954,20 @@ class CaptureService : Service() {
                 fps = profile.targetFps,
                 mime = mime,
                 hdrHlg10 = profile.hdrHlg10,
-                requestedBitrate = configuredVideoBitrate()
+                requestedBitrate = requestedBitrate
             )
         } else null
+
+        // HLG10 exige perfil OEM. Em SDR, quando a Samsung publica um VideoProfile
+        // exato para resolução/FPS/codec, use os parâmetros do fabricante em vez
+        // de reconstruir manualmente o encoder.
         if (profile.hdrHlg10 && exact == null) return null
+        val effectiveBitrate = exact?.videoProfile?.bitrate ?: requestedBitrate
+
         return EncoderProfile(
-            codecName = if (exact != null) "MediaRecorder direto (perfil OEM compatível)" else "MediaRecorder direto",
+            codecName = if (exact != null) "OEM EncoderProfiles" else "MediaRecorder direto",
             mime = mime,
-            bitrate = configuredVideoBitrate(),
+            bitrate = effectiveBitrate,
             hdrHlg10 = profile.hdrHlg10
         )
     }
