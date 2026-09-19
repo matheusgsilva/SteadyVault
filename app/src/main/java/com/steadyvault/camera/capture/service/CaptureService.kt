@@ -1938,6 +1938,19 @@ class CaptureService : Service() {
             if (profile.highSpeed || profile.targetFps > CaptureModeStore.FPS_60) {
                 return RecordingStabilizationPolicy.Mode.OFF
             }
+
+            // Em 60 FPS a prioridade do modo AUTO é preservar a cadência real.
+            // Preview stabilization/EIS adicionam trabalho ao ISP e, em 4K60,
+            // podem transformar picos de processamento em gaps que depois exigem
+            // reconstrução. OIS é óptico e tem custo muito menor no pipeline.
+            if (profile.targetFps >= CaptureModeStore.FPS_60) {
+                return if (profile.oisSupported) {
+                    RecordingStabilizationPolicy.Mode.OIS
+                } else {
+                    RecordingStabilizationPolicy.Mode.OFF
+                }
+            }
+
             return when {
                 profile.previewStabilizationSupported -> RecordingStabilizationPolicy.Mode.PREVIEW
                 profile.eisSupported -> RecordingStabilizationPolicy.Mode.EIS
@@ -2672,7 +2685,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "ios-like-ae-auto60-1.8.261-regular120"
+        private const val CAPTURE_PIPELINE_REVISION = "cadence-first-auto60-1.8.262"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
