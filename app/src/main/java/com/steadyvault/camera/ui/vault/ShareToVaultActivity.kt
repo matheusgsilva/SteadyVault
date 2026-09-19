@@ -1,5 +1,6 @@
 package com.steadyvault.camera.ui.vault
 
+import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import com.steadyvault.camera.storage.vault.VaultAreaId
 import android.content.Intent
 import android.net.Uri

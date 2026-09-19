@@ -1,5 +1,6 @@
 package com.steadyvault.camera.ui.vault
 
+import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle

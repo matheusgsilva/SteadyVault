@@ -1,5 +1,6 @@
 package com.steadyvault.camera.ui.vault
 
+import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
