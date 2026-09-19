@@ -1,6 +1,5 @@
 package com.steadyvault.camera.ui.vault
 
-import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import android.app.Activity
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -172,7 +171,6 @@ class VideoOptimizationActivity : Activity() {
             window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         }
         setContentView(R.layout.activity_video_optimization)
-        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(findViewById<View>(R.id.optimizerRoot))
         bindViews()
         bindOptions()

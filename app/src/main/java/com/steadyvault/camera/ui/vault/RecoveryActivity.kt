@@ -1,6 +1,5 @@
 package com.steadyvault.camera.ui.vault
 
-import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import android.content.Intent
 import android.graphics.Typeface
 import android.os.Bundle
@@ -39,7 +38,6 @@ class RecoveryActivity : FragmentActivity() {
         title = "Central de recuperação"
         val screen = buildScreen()
         setContentView(screen)
-        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(screen)
     }
 

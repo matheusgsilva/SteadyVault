@@ -1,6 +1,5 @@
 package com.steadyvault.camera.ui.vault
 
-import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Bitmap
@@ -216,7 +215,6 @@ class MediaPlayerActivity : ComponentActivity() {
             window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         }
         setContentView(R.layout.activity_media_player)
-        AppearanceRuntime.apply(this)
 
         val path = intent.getStringExtra(EXTRA_PATH).orEmpty()
         item = when {

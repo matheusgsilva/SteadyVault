@@ -1,19 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:state_pressed="true">
-        <layer-list>
-            <item><shape><solid android:color="#3B244953"/><stroke android:width="1dp" android:color="#7F9DDCE7"/><corners android:radius="22dp"/></shape></item>
-            <item android:left="1dp" android:top="1dp" android:right="1dp" android:bottom="1dp">
-                <shape><gradient android:angle="315" android:startColor="#36FFFFFF" android:centerColor="#2C21434C" android:endColor="#150D2228"/><corners android:radius="21dp"/></shape>
-            </item>
-        </layer-list>
-    </item>
-    <item>
-        <layer-list>
-            <item><shape><solid android:color="#21142B33"/><stroke android:width="1dp" android:color="#416F98A2"/><corners android:radius="22dp"/></shape></item>
-            <item android:left="1dp" android:top="1dp" android:right="1dp" android:bottom="1dp">
-                <shape><gradient android:angle="315" android:startColor="#28FFFFFF" android:centerColor="#20173139" android:endColor="#10091C22"/><corners android:radius="21dp"/></shape>
-            </item>
-        </layer-list>
-    </item>
+    <item android:state_pressed="true"><shape><solid android:color="@color/surface_elevated"/><corners android:radius="20dp"/></shape></item>
+    <item><shape><solid android:color="@color/surface"/><stroke android:width="1dp" android:color="@color/surface_border_soft"/><corners android:radius="20dp"/></shape></item>
 </selector>

@@ -75,7 +75,7 @@ object AppearanceStore {
 
     fun theme(context: Context): String = value(context, KEY_THEME, THEME_EMERALD, themeValues)
     fun font(context: Context): String = value(context, KEY_FONT, FONT_MODERN, fontValues)
-    fun corners(context: Context): String = value(context, KEY_CORNERS, CORNERS_SOFT, cornerValues)
+    fun corners(context: Context): String = value(context, KEY_CORNERS, CORNERS_BALANCED, cornerValues)
     fun borders(context: Context): String = value(context, KEY_BORDERS, BORDERS_SUBTLE, borderValues)
     fun surfaceStyle(context: Context): String = value(context, KEY_SURFACE, SURFACE_THEME, surfaceValues)
     fun contrast(context: Context): String = value(context, KEY_CONTRAST, CONTRAST_STRONG, contrastValues)
@@ -83,7 +83,7 @@ object AppearanceStore {
 
     fun setTheme(context: Context, value: String) = put(context, KEY_THEME, value.takeIf { it in themeValues } ?: THEME_EMERALD)
     fun setFont(context: Context, value: String) = put(context, KEY_FONT, value.takeIf { it in fontValues } ?: FONT_MODERN)
-    fun setCorners(context: Context, value: String) = put(context, KEY_CORNERS, value.takeIf { it in cornerValues } ?: CORNERS_SOFT)
+    fun setCorners(context: Context, value: String) = put(context, KEY_CORNERS, value.takeIf { it in cornerValues } ?: CORNERS_BALANCED)
     fun setBorders(context: Context, value: String) = put(context, KEY_BORDERS, value.takeIf { it in borderValues } ?: BORDERS_SUBTLE)
     fun setSurfaceStyle(context: Context, value: String) = put(context, KEY_SURFACE, value.takeIf { it in surfaceValues } ?: SURFACE_THEME)
     fun setContrast(context: Context, value: String) = put(context, KEY_CONTRAST, value.takeIf { it in contrastValues } ?: CONTRAST_STRONG)
@@ -122,12 +122,12 @@ object AppearanceStore {
         THEME_RUBY -> Palette(value, "Rubi", Color.rgb(255, 104, 112), Color.rgb(158, 60, 67), Color.rgb(29, 13, 15), Color.rgb(44, 20, 23), Color.rgb(11, 4, 5))
         THEME_MIDNIGHT -> Palette(value, "Meia-noite", Color.rgb(126, 158, 255), Color.rgb(73, 91, 154), Color.rgb(13, 16, 31), Color.rgb(22, 26, 48), Color.rgb(4, 5, 12))
         THEME_COPPER -> Palette(value, "Cobre", Color.rgb(240, 160, 102), Color.rgb(143, 93, 57), Color.rgb(28, 18, 12), Color.rgb(42, 27, 18), Color.rgb(10, 6, 4))
-        else -> Palette(THEME_EMERALD, "Liquid Glass", Color.rgb(139, 231, 244), Color.rgb(84, 149, 162), Color.rgb(18, 39, 48), Color.rgb(26, 49, 59), Color.rgb(6, 17, 22))
+        else -> Palette(THEME_EMERALD, "Esmeralda", Color.rgb(105, 223, 196), Color.rgb(60, 133, 117), Color.rgb(12, 22, 20), Color.rgb(20, 34, 31), Color.rgb(4, 9, 8))
     }
 
     fun themeLabel(value: String): String = palette(value).label
     fun themeSubtitle(value: String): String = when (value) {
-        THEME_EMERALD -> "Azul-petróleo translúcido, inspirado em Liquid Glass."
+        THEME_EMERALD -> "Verde moderno com fundo escuro."
         THEME_OCEAN -> "Azul limpo com contraste frio."
         THEME_VIOLET -> "Roxo profundo e destaque luminoso."
         THEME_AMBER -> "Dourado quente com superfícies escuras."
@@ -151,7 +151,7 @@ object AppearanceStore {
 
     fun cornerLabel(value: String): String = when (value) {
         CORNERS_COMPACT -> "Discretos"
-        CORNERS_SOFT -> "Liquid Glass"
+        CORNERS_SOFT -> "Bem arredondados"
         else -> "Equilibrados"
     }
 
@@ -164,7 +164,7 @@ object AppearanceStore {
     fun surfaceLabel(value: String): String = when (value) {
         SURFACE_NEUTRAL -> "Neutro"
         SURFACE_BLACK -> "Preto puro"
-        else -> "Vidro do tema"
+        else -> "Cor do tema"
     }
 
     fun contrastLabel(value: String): String = when (value) {
@@ -180,9 +180,9 @@ object AppearanceStore {
     }
 
     fun cornerRadiusDp(context: Context): Float = when (corners(context)) {
-        CORNERS_COMPACT -> 16f
+        CORNERS_COMPACT -> 12f
         CORNERS_SOFT -> 28f
-        else -> 22f
+        else -> 20f
     }
 
     fun borderWidthDp(context: Context): Float = when (borders(context)) {

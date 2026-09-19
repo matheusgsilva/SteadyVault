@@ -1,6 +1,5 @@
 package com.steadyvault.camera.ui.settings
 
-import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import android.app.ActivityManager
 import android.os.Bundle
 import android.graphics.Typeface
@@ -27,7 +26,6 @@ class StorageManagementActivity : ComponentActivity() {
         title = "Tudo que o app salva"
         val screen = buildScreen()
         setContentView(screen)
-        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(screen)
         refresh()
     }

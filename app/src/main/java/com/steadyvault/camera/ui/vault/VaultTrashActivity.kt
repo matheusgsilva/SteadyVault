@@ -1,6 +1,5 @@
 package com.steadyvault.camera.ui.vault
 
-import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.Process
@@ -59,7 +58,6 @@ class VaultTrashActivity : ComponentActivity() {
             override fun handleOnBackPressed() = finish()
         })
         setContentView(R.layout.activity_vault_trash)
-        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(findViewById(R.id.trashRoot))
         grid = findViewById(R.id.trashGrid)
         summary = findViewById(R.id.trashSummary)

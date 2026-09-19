@@ -1,6 +1,5 @@
 package com.steadyvault.camera.ui.settings
 
-import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import com.steadyvault.camera.storage.vault.VaultAreaId
 import android.graphics.Typeface
 import android.os.Bundle
@@ -38,7 +37,6 @@ class DiagnosticsActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         val screen = buildScreen()
         setContentView(screen)
-        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(screen)
         refresh()
     }

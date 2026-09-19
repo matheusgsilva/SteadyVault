@@ -1,6 +1,5 @@
 package com.steadyvault.camera.ui.vault
 
-import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import com.steadyvault.camera.storage.vault.VaultAreaId
 import android.content.Intent
 import android.net.Uri
@@ -49,7 +48,6 @@ class ShareToVaultActivity : ComponentActivity() {
         if (CaptureSettings.snapshot(this).secureScreen) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         uris = incomingMediaUris(intent)
         setContentView(createContent())
-        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(findViewById(R.id.shareVaultRoot))
         if (uris.isEmpty()) {
             status.text = "Nenhuma foto ou vídeo compatível foi compartilhado."

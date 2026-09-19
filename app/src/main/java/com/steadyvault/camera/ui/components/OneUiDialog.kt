@@ -4,7 +4,6 @@ import android.app.Activity
 import android.app.Dialog
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
-import android.os.Build
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -498,16 +497,7 @@ object OneUiDialog {
         dialog.window?.apply {
             setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
             addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
-                setBackgroundBlurRadius(dp(activity, 56))
-                attributes = attributes.apply {
-                    dimAmount = 0.48f
-                    blurBehindRadius = dp(activity, 34)
-                }
-            } else {
-                attributes = attributes.apply { dimAmount = 0.70f }
-            }
+            attributes = attributes.apply { dimAmount = 0.76f }
             val dialogWidth = minOf((activity.resources.displayMetrics.widthPixels * 0.92f).toInt(), dp(activity, 520))
             setLayout(dialogWidth, WindowManager.LayoutParams.WRAP_CONTENT)
             decorView.post {

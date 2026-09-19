@@ -5,7 +5,6 @@ import android.app.Dialog
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
-import android.os.Build
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -106,16 +105,7 @@ object PinPadDialog {
             dialog.window?.apply {
                 setBackgroundDrawable(ColorDrawable(android.graphics.Color.TRANSPARENT))
                 addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
-                    setBackgroundBlurRadius(dp(64))
-                    attributes = attributes.apply {
-                        dimAmount = 0.50f
-                        blurBehindRadius = dp(40)
-                    }
-                } else {
-                    attributes = attributes.apply { dimAmount = 0.72f }
-                }
+                attributes = attributes.apply { dimAmount = 0.82f }
                 val width = min((activity.resources.displayMetrics.widthPixels * 0.97f).toInt(), dp(560))
                 setLayout(width, PinLayoutRules.dialogHeightPx(activity.resources.displayMetrics.heightPixels, activity.resources.displayMetrics.density))
                 setGravity(Gravity.CENTER)
