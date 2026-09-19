@@ -1,1 +1,20 @@
-<?xml version="1.0" encoding="utf-8"?><shape xmlns:android="http://schemas.android.com/apk/res/android"><gradient android:angle="315" android:startColor="#C9183039" android:endColor="#A90D2028"/><stroke android:width="1dp" android:color="#295E7D86"/><corners android:radius="28dp"/></shape>
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape>
+            <solid android:color="#241B4050"/>
+            <stroke android:width="1dp" android:color="#5A9ED6E1"/>
+            <corners android:radius="28dp"/>
+        </shape>
+    </item>
+    <item android:left="1dp" android:top="1dp" android:right="1dp" android:bottom="1dp">
+        <shape>
+            <gradient android:angle="315"
+                android:startColor="#3DFFFFFF"
+                android:centerColor="#2A1C4652"
+                android:endColor="#16091D25"/>
+            <stroke android:width="1dp" android:color="#22D9F7FC"/>
+            <corners android:radius="27dp"/>
+        </shape>
+    </item>
+</layer-list>
