@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <dimen name="action_icon_text_spacing">4dp</dimen>
+    <dimen name="action_icon_text_spacing">5dp</dimen>
     <dimen name="gallery_action_icon_size">18dp</dimen>
+    <dimen name="glass_corner_small">16dp</dimen>
+    <dimen name="glass_corner_medium">24dp</dimen>
+    <dimen name="glass_corner_large">32dp</dimen>
+    <dimen name="glass_border">1dp</dimen>
+    <dimen name="glass_content_spacing">12dp</dimen>
 </resources>
