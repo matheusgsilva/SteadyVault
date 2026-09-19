@@ -398,7 +398,7 @@ class SettingsActivity : FragmentActivity() {
             exposureOptions(snapshot.exposureCompensation),
             snapshot.exposureCompensation.toString()
         )
-        addInfo("Com FPS automático desligado, 30/60 usam faixa fixa. Com FPS automático ligado, podem usar uma faixa variável publicada pela câmera; o app nunca inventa quadros.")
+        addInfo("30 e 60 FPS usam faixa fixa. O app não reduz o FPS automaticamente em pouca luz.")
         thermal = addSwitch(
             "Proteção contra temperatura crítica",
             "Antes de iniciar, verifica a condição térmica do aparelho para evitar começar uma captura quando o sistema já está em estado crítico.",

@@ -285,6 +285,15 @@ class CaptureService : Service() {
         // perfil histórico da câmera no instante em que o usuário toca em Gravar.
         CameraProfileStore.setActiveMode(this, CameraProfileStore.FunctionMode.VIDEO)
         recordingSettings = currentSettings.copy(selectedCameraId = profileCameraId, zoomRatio = profileZoomRatio)
+
+        if (recordingSettings.thermalProtection && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val thermalStatus = getSystemService(PowerManager::class.java).currentThermalStatus
+            if (thermalStatus >= PowerManager.THERMAL_STATUS_SEVERE) {
+                failAndStop("temperatura do aparelho está muito alta para iniciar com proteção térmica ativa")
+                return
+            }
+        }
+
         requestedTargetFps = intent
             ?.getIntExtra(EXTRA_TARGET_FPS, recordingSettings.fps)
             ?.takeIf { it in CaptureSettings.supportedFpsValues }
@@ -1771,44 +1780,42 @@ class CaptureService : Service() {
         setSafely(builder, CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
 
         val noiseModes = profile.characteristics.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES) ?: intArrayOf()
-        val requestedNoise = when {
-            profile.targetFps >= CaptureModeStore.FPS_60 -> CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL
-            recordingSettings.noiseReduction == CaptureSettings.PROCESSING_OFF -> CameraMetadata.NOISE_REDUCTION_MODE_OFF
-            recordingSettings.noiseReduction == CaptureSettings.PROCESSING_HIGH_QUALITY -> CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY
-            else -> CameraMetadata.NOISE_REDUCTION_MODE_FAST
-        }
-        val noiseFallbackOrder = if (profile.targetFps >= CaptureModeStore.FPS_60) {
-            listOf(
-                CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL,
-                CameraMetadata.NOISE_REDUCTION_MODE_OFF,
+        val requestedNoise = when (recordingSettings.noiseReduction) {
+            CaptureSettings.PROCESSING_OFF -> CameraMetadata.NOISE_REDUCTION_MODE_OFF
+            CaptureSettings.PROCESSING_HIGH_QUALITY -> CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY
+            CaptureSettings.PROCESSING_FAST -> CameraMetadata.NOISE_REDUCTION_MODE_FAST
+            else -> if (profile.targetFps >= CaptureModeStore.FPS_60) {
+                CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL
+            } else {
                 CameraMetadata.NOISE_REDUCTION_MODE_FAST
-            )
-        } else {
-            listOf(
-                requestedNoise,
-                CameraMetadata.NOISE_REDUCTION_MODE_FAST,
-                CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL,
-                CameraMetadata.NOISE_REDUCTION_MODE_OFF
-            )
+            }
         }
+        val noiseFallbackOrder = listOf(
+            requestedNoise,
+            CameraMetadata.NOISE_REDUCTION_MODE_MINIMAL,
+            CameraMetadata.NOISE_REDUCTION_MODE_FAST,
+            CameraMetadata.NOISE_REDUCTION_MODE_OFF
+        ).distinct()
         noiseFallbackOrder.firstOrNull { noiseModes.contains(it) }?.let {
             setSafely(builder, CaptureRequest.NOISE_REDUCTION_MODE, it)
         }
 
         val edgeModes = profile.characteristics.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES) ?: intArrayOf()
-        val requestedEdge = when {
-            profile.targetFps >= CaptureModeStore.FPS_60 -> CameraMetadata.EDGE_MODE_OFF
-            recordingSettings.edgeMode == CaptureSettings.PROCESSING_OFF -> CameraMetadata.EDGE_MODE_OFF
-            recordingSettings.edgeMode == CaptureSettings.PROCESSING_HIGH_QUALITY -> CameraMetadata.EDGE_MODE_HIGH_QUALITY
-            recordingSettings.edgeMode == CaptureSettings.PROCESSING_AUTO && profile.targetFps <= CaptureModeStore.FPS_30 ->
+        val requestedEdge = when (recordingSettings.edgeMode) {
+            CaptureSettings.PROCESSING_OFF -> CameraMetadata.EDGE_MODE_OFF
+            CaptureSettings.PROCESSING_HIGH_QUALITY -> CameraMetadata.EDGE_MODE_HIGH_QUALITY
+            CaptureSettings.PROCESSING_FAST -> CameraMetadata.EDGE_MODE_FAST
+            else -> if (profile.targetFps >= CaptureModeStore.FPS_60) {
+                CameraMetadata.EDGE_MODE_OFF
+            } else {
                 CameraMetadata.EDGE_MODE_HIGH_QUALITY
-            else -> CameraMetadata.EDGE_MODE_FAST
+            }
         }
-        val edgeFallbackOrder = if (profile.targetFps >= CaptureModeStore.FPS_60) {
-            listOf(CameraMetadata.EDGE_MODE_OFF, CameraMetadata.EDGE_MODE_FAST)
-        } else {
-            listOf(requestedEdge, CameraMetadata.EDGE_MODE_FAST, CameraMetadata.EDGE_MODE_OFF)
-        }
+        val edgeFallbackOrder = listOf(
+            requestedEdge,
+            CameraMetadata.EDGE_MODE_FAST,
+            CameraMetadata.EDGE_MODE_OFF
+        ).distinct()
         edgeFallbackOrder
             .firstOrNull { edgeModes.contains(it) }?.let { setSafely(builder, CaptureRequest.EDGE_MODE, it) }
 
@@ -2831,7 +2838,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-oem-minimal-1.8.265"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-settings-faithful-1.8.266"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
