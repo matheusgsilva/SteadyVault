@@ -289,7 +289,8 @@ class DirectMediaCodecBackend(
                 runCatching {
                     val caps = info.getCapabilitiesForType(videoMime)
                     val videoCaps = caps.videoCapabilities
-                    videoCaps.isSizeSupported(width, height) &&
+                    videoCaps != null &&
+                        videoCaps.isSizeSupported(width, height) &&
                         videoCaps.areSizeAndRateSupported(
                             width,
                             height,
