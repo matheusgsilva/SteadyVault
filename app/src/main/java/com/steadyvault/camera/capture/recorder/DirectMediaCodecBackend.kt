@@ -3,12 +3,14 @@ package com.steadyvault.camera.capture.recorder
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
+import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.Bundle
 import android.os.Process
 import android.view.Surface
 import java.io.File
+import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
@@ -32,13 +34,20 @@ class DirectMediaCodecBackend(
     private val videoBitrate: Int,
     private val iFrameIntervalSeconds: Int,
     private val orientationHint: Int,
+    override val integratedAudio: Boolean,
+    private val audioSampleRate: Int,
+    private val audioBitrate: Int,
+    private val requestedAudioChannels: Int,
+    private val audioGainDb: Int,
+    private val audioAgc: Boolean,
+    private val audioNoiseSuppressor: Boolean,
+    private val audioLowCut: Boolean,
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
 
     override val backendName: String = "MediaCodec direto"
-    override val integratedAudio: Boolean = false
     override val videoBitrateBps: Long get() = videoBitrate.toLong()
-    override val audioBitrateBps: Long = 0L
+    override val audioBitrateBps: Long get() = if (integratedAudio) audioBitrate.toLong() else 0L
 
     val profileDescription: String
         get() = "${width}x${height} ${targetFps} FPS " +
@@ -58,6 +67,9 @@ class DirectMediaCodecBackend(
     private var inputSurface: Surface? = null
     private var muxer: MediaMuxer? = null
     private var drainFuture: Future<*>? = null
+    private var audioRecorder: DirectAacAudioRecorder? = null
+    private var audioTempFile: File? = null
+    private val audioStarted = AtomicBoolean(false)
 
     private val committed = AtomicBoolean(false)
     private val stopRequested = AtomicBoolean(false)
@@ -112,6 +124,26 @@ class DirectMediaCodecBackend(
             mediaMuxer.setOrientationHint(orientationHint)
             muxer = mediaMuxer
 
+            if (integratedAudio) {
+                val temp = File(
+                    outputFile.parentFile,
+                    outputFile.nameWithoutExtension + ".audio.m4a"
+                )
+                val audio = DirectAacAudioRecorder(
+                    outputFile = temp,
+                    sampleRate = audioSampleRate,
+                    bitrate = audioBitrate,
+                    requestedChannels = requestedAudioChannels,
+                    gainDb = audioGainDb,
+                    useAgc = audioAgc,
+                    useNoiseSuppressor = audioNoiseSuppressor,
+                    useLowCut = audioLowCut
+                )
+                audio.prepare()
+                audioTempFile = temp
+                audioRecorder = audio
+            }
+
             mediaCodec.start()
             drainFuture = drainExecutor.submit {
                 drain(mediaCodec, mediaMuxer)
@@ -141,13 +173,28 @@ class DirectMediaCodecBackend(
         if (!started || released.get()) return false
 
         stopRequested.set(true)
+        val audioOk = if (integratedAudio && audioStarted.get()) {
+            runCatching { audioRecorder?.stop() == true }.getOrDefault(false)
+        } else {
+            !integratedAudio
+        }
+
         runCatching { codec?.signalEndOfInputStream() }
         runCatching { drainFuture?.get(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS) }
 
         closeCodecAndMuxer()
         started = false
 
-        return outputFile.isFile && outputFile.length() > 0L
+        if (!outputFile.isFile || outputFile.length() <= 0L) return false
+        if (!integratedAudio) return true
+        if (!audioOk) return false
+
+        val audioFile = audioTempFile
+        if (audioFile == null || !audioFile.isFile || audioFile.length() <= 0L) return false
+
+        val merged = mergeAudioIntoVideo(audioFile)
+        if (merged) runCatching { audioFile.delete() }
+        return merged
     }
 
     override fun release() {
@@ -157,6 +204,11 @@ class DirectMediaCodecBackend(
         runCatching { codec?.signalEndOfInputStream() }
         runCatching { drainFuture?.get(RELEASE_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
         closeCodecAndMuxer()
+        runCatching { audioRecorder?.release() }
+        runCatching { audioTempFile?.delete() }
+        audioRecorder = null
+        audioTempFile = null
+        audioStarted.set(false)
         drainExecutor.shutdownNow()
 
         prepared = false
@@ -239,6 +291,13 @@ class DirectMediaCodecBackend(
                                 if (syncRequested && isKeyFrame) {
                                     gateOpen = true
                                     firstPtsUs = ptsUs
+                                    if (
+                                        integratedAudio &&
+                                        audioStarted.compareAndSet(false, true)
+                                    ) {
+                                        runCatching { audioRecorder?.start() }
+                                            .onFailure { onError(it) }
+                                    }
                                 }
                             }
 
@@ -269,6 +328,118 @@ class DirectMediaCodecBackend(
                 onError(throwable)
             }
         }
+    }
+
+    private fun mergeAudioIntoVideo(audioFile: File): Boolean {
+        val mergedFile = File(
+            outputFile.parentFile,
+            outputFile.nameWithoutExtension + ".mux.mp4"
+        )
+        runCatching { mergedFile.delete() }
+
+        val videoExtractor = MediaExtractor()
+        val audioExtractor = MediaExtractor()
+        var mergedMuxer: MediaMuxer? = null
+
+        return try {
+            videoExtractor.setDataSource(outputFile.absolutePath)
+            audioExtractor.setDataSource(audioFile.absolutePath)
+
+            val videoSourceTrack = findTrack(videoExtractor, "video/")
+            val audioSourceTrack = findTrack(audioExtractor, "audio/")
+            require(videoSourceTrack >= 0) { "faixa de vídeo não encontrada no remux" }
+            require(audioSourceTrack >= 0) { "faixa de áudio não encontrada no remux" }
+
+            val localMuxer = MediaMuxer(
+                mergedFile.absolutePath,
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+            )
+            mergedMuxer = localMuxer
+            localMuxer.setOrientationHint(orientationHint)
+
+            val videoTargetTrack =
+                localMuxer.addTrack(videoExtractor.getTrackFormat(videoSourceTrack))
+            val audioTargetTrack =
+                localMuxer.addTrack(audioExtractor.getTrackFormat(audioSourceTrack))
+            localMuxer.start()
+
+            copyTrack(videoExtractor, videoSourceTrack, localMuxer, videoTargetTrack)
+            copyTrack(audioExtractor, audioSourceTrack, localMuxer, audioTargetTrack)
+
+            localMuxer.stop()
+            localMuxer.release()
+            mergedMuxer = null
+
+            require(mergedFile.isFile && mergedFile.length() > 0L) {
+                "remux de áudio não produziu arquivo"
+            }
+
+            val original = File(
+                outputFile.parentFile,
+                outputFile.nameWithoutExtension + ".video-only.mp4"
+            )
+            runCatching { original.delete() }
+            require(outputFile.renameTo(original)) {
+                "não foi possível reservar o vídeo antes do remux"
+            }
+            if (!mergedFile.renameTo(outputFile)) {
+                original.renameTo(outputFile)
+                error("não foi possível publicar o MP4 com áudio")
+            }
+            original.delete()
+            true
+        } catch (_: Throwable) {
+            runCatching { mergedMuxer?.stop() }
+            runCatching { mergedMuxer?.release() }
+            runCatching { mergedFile.delete() }
+            false
+        } finally {
+            runCatching { videoExtractor.release() }
+            runCatching { audioExtractor.release() }
+        }
+    }
+
+    private fun findTrack(extractor: MediaExtractor, prefix: String): Int {
+        for (index in 0 until extractor.trackCount) {
+            val mime = extractor.getTrackFormat(index)
+                .getString(MediaFormat.KEY_MIME)
+                .orEmpty()
+            if (mime.startsWith(prefix)) return index
+        }
+        return -1
+    }
+
+    private fun copyTrack(
+        extractor: MediaExtractor,
+        sourceTrack: Int,
+        targetMuxer: MediaMuxer,
+        targetTrack: Int
+    ) {
+        extractor.selectTrack(sourceTrack)
+        extractor.seekTo(0L, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+
+        val buffer = ByteBuffer.allocateDirect(REMUX_BUFFER_BYTES)
+        val info = MediaCodec.BufferInfo()
+        var firstPtsUs = -1L
+
+        while (extractor.sampleTrackIndex >= 0) {
+            buffer.clear()
+            val size = extractor.readSampleData(buffer, 0)
+            if (size < 0) break
+
+            val sourcePts = extractor.sampleTime
+            if (firstPtsUs < 0L) firstPtsUs = sourcePts
+            info.set(
+                0,
+                size,
+                (sourcePts - firstPtsUs).coerceAtLeast(0L),
+                extractor.sampleFlags
+            )
+            targetMuxer.writeSampleData(targetTrack, buffer, info)
+
+            if (!extractor.advance()) break
+        }
+        extractor.unselectTrack(sourceTrack)
     }
 
     private fun selectEncoder(): MediaCodecInfo? {
@@ -333,5 +504,6 @@ class DirectMediaCodecBackend(
         private const val STOP_TIMEOUT_SECONDS = 4L
         private const val RELEASE_TIMEOUT_MS = 350L
         private const val STABLE_INTERVALS_BEFORE_FILE = 4
+        private const val REMUX_BUFFER_BYTES = 16 * 1024 * 1024
     }
 }
