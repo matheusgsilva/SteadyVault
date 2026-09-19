@@ -1,5 +1,6 @@
 package com.steadyvault.camera.ui.vault
 
+import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
@@ -136,6 +137,7 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
             return
         }
         setContentView(R.layout.activity_private_vault)
+        AppearanceRuntime.apply(this)
         findViewById<TextView>(R.id.privateGalleryTitle).text = vaultTitle
         SystemBarInsets.applyTopAndBottom(findViewById(R.id.privateGalleryRoot))
         grid = findViewById(R.id.privateGalleryGrid)

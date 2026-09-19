@@ -1,5 +1,6 @@
 package com.steadyvault.camera.ui.vault
 
+import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import com.steadyvault.camera.storage.vault.VaultAreaId
 import android.app.Dialog
 import android.content.BroadcastReceiver
@@ -227,6 +228,7 @@ class PrimaryVaultActivity : FragmentActivity() {
             }
         })
         setContentView(R.layout.activity_primary_vault)
+        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTop(findViewById<View>(R.id.libraryRoot))
         BottomNavigation.bind(
             activity = this,

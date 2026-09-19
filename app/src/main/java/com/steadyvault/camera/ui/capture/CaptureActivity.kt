@@ -1,5 +1,6 @@
 package com.steadyvault.camera.ui.capture
 
+import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import com.steadyvault.camera.photo.service.PhotoService
 import com.steadyvault.camera.capture.service.CaptureService
 import com.steadyvault.camera.capture.service.RecordingServiceRouter
@@ -371,6 +372,7 @@ class CaptureActivity : ComponentActivity() {
             }
         })
         setContentView(R.layout.activity_capture)
+        AppearanceRuntime.apply(this)
         BottomNavigation.bind(this, BottomNavigation.TAB_RECORD)
 
         mainRoot = findViewById(R.id.mainRoot)
