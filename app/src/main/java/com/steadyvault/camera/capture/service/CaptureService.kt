@@ -3,6 +3,7 @@ package com.steadyvault.camera.capture.service
 import com.steadyvault.camera.ui.theme.AppearanceStore
 import com.steadyvault.camera.capture.recorder.RecordingBackend
 import com.steadyvault.camera.capture.recorder.DirectMediaRecorderBackend
+import com.steadyvault.camera.capture.recorder.DirectMediaCodecBackend
 import com.steadyvault.camera.capture.timing.RecordingStabilizationPolicy
 import com.steadyvault.camera.capture.timing.CaptureCadencePolicy
 import com.steadyvault.camera.capture.timing.StrictCaptureModePolicy
@@ -1002,42 +1003,77 @@ class CaptureService : Service() {
         cameraProfile: CameraProfile,
         encoderProfile: EncoderProfile
     ) {
-        val profileLabel = "${cameraProfile.videoSize.width}x${cameraProfile.videoSize.height}_${cameraProfile.targetFps}fps"
+        val profileLabel =
+            "${cameraProfile.videoSize.width}x${cameraProfile.videoSize.height}_${cameraProfile.targetFps}fps"
         val finalFile = VaultRepository.createRecordingFile(this, profileLabel)
-        val integratedAudio = hasAudioPermission() && runCatching {
-            startForegroundNow("Preparando gravação direta…", includeMicrophone = true)
-            true
-        }.getOrElse {
-            Log.w(LOG_TAG, "Áudio indisponível nesta tentativa; gravando vídeo puro", it)
-            false
-        }
 
-        val backend = DirectMediaRecorderBackend(
-            context = this,
-            outputFile = finalFile,
-            cameraId = cameraProfile.cameraId,
-            width = cameraProfile.videoSize.width,
-            height = cameraProfile.videoSize.height,
-            targetFps = cameraProfile.targetFps,
-            videoMime = encoderProfile.mime,
-            videoBitrate = encoderProfile.bitrate,
-            hdrHlg10 = cameraProfile.hdrHlg10,
-            orientationHint = calculateOrientationHint(cameraProfile.sensorOrientation),
-            integratedAudio = integratedAudio,
-            audioSampleRate = recordingSettings.audioSampleRate,
-            audioBitrate = recordingSettings.audioBitrateKbps * 1_000,
-            audioChannels = when (recordingSettings.audioChannels) {
-                CaptureSettings.CHANNELS_MONO -> 1
-                CaptureSettings.CHANNELS_STEREO -> 2
-                else -> 2
-            },
-            onError = { throwable ->
-                if (!stopping.get() && serviceActive.get()) failAndStop("MediaRecorder direto: ${errorText(throwable)}")
+        val preferDirectCodec =
+            cameraProfile.targetFps == CaptureModeStore.FPS_60 &&
+                !cameraProfile.hdrHlg10
+
+        val backend: RecordingBackend =
+            if (preferDirectCodec) {
+                DirectMediaCodecBackend(
+                    outputFile = finalFile,
+                    width = cameraProfile.videoSize.width,
+                    height = cameraProfile.videoSize.height,
+                    targetFps = cameraProfile.targetFps,
+                    videoMime = encoderProfile.mime,
+                    videoBitrate = encoderProfile.bitrate,
+                    iFrameIntervalSeconds = recordingSettings.iFrameIntervalSeconds,
+                    orientationHint = calculateOrientationHint(cameraProfile.sensorOrientation),
+                    onError = { throwable ->
+                        if (!stopping.get() && serviceActive.get()) {
+                            failAndStop("MediaCodec direto: ${errorText(throwable)}")
+                        }
+                    }
+                )
+            } else {
+                val integratedAudio = hasAudioPermission() && runCatching {
+                    startForegroundNow(
+                        "Preparando gravação direta…",
+                        includeMicrophone = true
+                    )
+                    true
+                }.getOrElse {
+                    Log.w(
+                        LOG_TAG,
+                        "Áudio indisponível nesta tentativa; gravando vídeo puro",
+                        it
+                    )
+                    false
+                }
+
+                DirectMediaRecorderBackend(
+                    context = this,
+                    outputFile = finalFile,
+                    cameraId = cameraProfile.cameraId,
+                    width = cameraProfile.videoSize.width,
+                    height = cameraProfile.videoSize.height,
+                    targetFps = cameraProfile.targetFps,
+                    videoMime = encoderProfile.mime,
+                    videoBitrate = encoderProfile.bitrate,
+                    hdrHlg10 = cameraProfile.hdrHlg10,
+                    orientationHint = calculateOrientationHint(cameraProfile.sensorOrientation),
+                    integratedAudio = integratedAudio,
+                    audioSampleRate = recordingSettings.audioSampleRate,
+                    audioBitrate = recordingSettings.audioBitrateKbps * 1_000,
+                    audioChannels = when (recordingSettings.audioChannels) {
+                        CaptureSettings.CHANNELS_MONO -> 1
+                        CaptureSettings.CHANNELS_STEREO -> 2
+                        else -> 2
+                    },
+                    onError = { throwable ->
+                        if (!stopping.get() && serviceActive.get()) {
+                            failAndStop("MediaRecorder direto: ${errorText(throwable)}")
+                        }
+                    }
+                )
             }
-        )
 
         try {
             val surface = backend.prepare()
+
             synchronized(resourceLock) {
                 finalOutputFile = finalFile
                 rawOutputFile = finalFile
@@ -1046,13 +1082,82 @@ class CaptureService : Service() {
                 activeRecorderBackendName = backend.backendName
                 activeRecorderMime = encoderProfile.mime
             }
-            val msg = "MediaRecorder direto pronto: ${backend.profileDescription}"
+
+            val description = when (backend) {
+                is DirectMediaCodecBackend -> backend.profileDescription
+                is DirectMediaRecorderBackend -> backend.profileDescription
+                else -> backend.backendName
+            }
+            val msg = "${backend.backendName} pronto: $description"
             Log.i(LOG_TAG, msg)
             AppLogRepository.info(this, "recording_backend", msg)
-        } catch (t: Throwable) {
+        } catch (codecFailure: Throwable) {
             runCatching { backend.release() }
             runCatching { finalFile.delete() }
-            throw t
+
+            if (!preferDirectCodec) throw codecFailure
+
+            Log.w(
+                LOG_TAG,
+                "MediaCodec direto recusado; usando MediaRecorder como fallback",
+                codecFailure
+            )
+            AppLogRepository.error(
+                this,
+                "recording_backend",
+                "MediaCodec direto recusado; fallback MediaRecorder: ${errorText(codecFailure)}"
+            )
+
+            val fallbackFile = VaultRepository.createRecordingFile(this, profileLabel)
+            val integratedAudio = hasAudioPermission() && runCatching {
+                startForegroundNow(
+                    "Preparando gravação direta…",
+                    includeMicrophone = true
+                )
+                true
+            }.getOrDefault(false)
+
+            val fallback = DirectMediaRecorderBackend(
+                context = this,
+                outputFile = fallbackFile,
+                cameraId = cameraProfile.cameraId,
+                width = cameraProfile.videoSize.width,
+                height = cameraProfile.videoSize.height,
+                targetFps = cameraProfile.targetFps,
+                videoMime = encoderProfile.mime,
+                videoBitrate = encoderProfile.bitrate,
+                hdrHlg10 = cameraProfile.hdrHlg10,
+                orientationHint = calculateOrientationHint(cameraProfile.sensorOrientation),
+                integratedAudio = integratedAudio,
+                audioSampleRate = recordingSettings.audioSampleRate,
+                audioBitrate = recordingSettings.audioBitrateKbps * 1_000,
+                audioChannels = when (recordingSettings.audioChannels) {
+                    CaptureSettings.CHANNELS_MONO -> 1
+                    CaptureSettings.CHANNELS_STEREO -> 2
+                    else -> 2
+                },
+                onError = { throwable ->
+                    if (!stopping.get() && serviceActive.get()) {
+                        failAndStop("MediaRecorder fallback: ${errorText(throwable)}")
+                    }
+                }
+            )
+
+            try {
+                val surface = fallback.prepare()
+                synchronized(resourceLock) {
+                    finalOutputFile = fallbackFile
+                    rawOutputFile = fallbackFile
+                    professionalRecorder = fallback
+                    recorderSurface = surface
+                    activeRecorderBackendName = fallback.backendName
+                    activeRecorderMime = encoderProfile.mime
+                }
+            } catch (fallbackFailure: Throwable) {
+                runCatching { fallback.release() }
+                runCatching { fallbackFile.delete() }
+                throw fallbackFailure
+            }
         }
     }
 
@@ -1514,7 +1619,8 @@ class CaptureService : Service() {
         CaptureStateStore.updateEffectiveMode(this, resolutionValue(profile.videoSize), sizeName(profile.videoSize), profile.targetFps)
         if (recordingSettings.vibrateStartStop) Haptics.start(this)
 
-        val suffix = if (highSpeed) "high-speed • MediaRecorder direto" else "MediaRecorder direto • ${stabilizationName(profile)}"
+        val backendLabel = activeRecorderBackendName.ifBlank { "encoder direto" }
+        val suffix = if (highSpeed) "high-speed • $backendLabel" else "$backendLabel • ${stabilizationName(profile)}"
         val fpsStatus = "${profile.targetFps} FPS • AE ${profile.fpsRange.lower}–${profile.fpsRange.upper}"
         val message = "Gravando ${sizeName(profile.videoSize)} • $fpsStatus • " +
             "${if (profile.hdrHlg10) "HLG10" else "SDR BT.709"} • ${encoderName()} • $suffix"
@@ -2024,7 +2130,11 @@ class CaptureService : Service() {
 
         if (!validOutput || finalFile == null || !finalFile.isFile || finalFile.length() <= 0L) {
             if (finalFile != null && finalFile.isFile && finalFile.length() > 0L) {
-                finishWithRecoveredPartial(finalFile, finalFile, "MediaRecorder não conseguiu finalizar o MP4 direto")
+                finishWithRecoveredPartial(
+                    finalFile,
+                    finalFile,
+                    "${activeRecorderBackendName.ifBlank { "encoder" }} não conseguiu finalizar o MP4"
+                )
             } else {
                 runCatching { finalFile?.delete() }
                 sendStateOnMain("Nenhum quadro foi produzido antes da parada")
@@ -2684,7 +2794,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "oem-profile-fixed60-1.8.263"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-cadence-1.8.264"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
