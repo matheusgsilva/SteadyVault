@@ -27,6 +27,7 @@ class StorageManagementActivity : ComponentActivity() {
         title = "Tudo que o app salva"
         val screen = buildScreen()
         setContentView(screen)
+        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(screen)
         refresh()
     }

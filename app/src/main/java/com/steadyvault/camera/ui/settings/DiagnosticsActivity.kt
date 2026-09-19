@@ -38,6 +38,7 @@ class DiagnosticsActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         val screen = buildScreen()
         setContentView(screen)
+        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(screen)
         refresh()
     }

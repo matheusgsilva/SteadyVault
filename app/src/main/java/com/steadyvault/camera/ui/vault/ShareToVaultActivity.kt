@@ -49,6 +49,7 @@ class ShareToVaultActivity : ComponentActivity() {
         if (CaptureSettings.snapshot(this).secureScreen) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         uris = incomingMediaUris(intent)
         setContentView(createContent())
+        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(findViewById(R.id.shareVaultRoot))
         if (uris.isEmpty()) {
             status.text = "Nenhuma foto ou vídeo compatível foi compartilhado."

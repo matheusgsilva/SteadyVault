@@ -172,6 +172,7 @@ class VideoOptimizationActivity : Activity() {
             window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         }
         setContentView(R.layout.activity_video_optimization)
+        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(findViewById<View>(R.id.optimizerRoot))
         bindViews()
         bindOptions()

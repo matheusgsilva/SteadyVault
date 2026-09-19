@@ -39,6 +39,7 @@ class RecoveryActivity : FragmentActivity() {
         title = "Central de recuperação"
         val screen = buildScreen()
         setContentView(screen)
+        AppearanceRuntime.apply(this)
         SystemBarInsets.applyTopAndBottom(screen)
     }
 
