@@ -1,5 +1,1 @@
-<?xml version="1.0" encoding="utf-8"?>
-<selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:state_pressed="true"><shape><solid android:color="#B72C4A54"/><stroke android:width="1dp" android:color="@color/accent"/><corners android:radius="24dp"/></shape></item>
-    <item><shape><gradient android:angle="315" android:startColor="#A91C3943" android:endColor="#8A10252D"/><stroke android:width="1dp" android:color="#498BC4CF"/><corners android:radius="24dp"/></shape></item>
-</selector>
+<?xml version="1.0" encoding="utf-8"?><selector xmlns:android="http://schemas.android.com/apk/res/android"><item android:state_pressed="true"><shape><solid android:color="#B72C4A54"/><stroke android:width="1dp" android:color="#748BE7F4"/><corners android:radius="24dp"/></shape></item><item><shape><gradient android:angle="315" android:startColor="#A91C3943" android:endColor="#8A10252D"/><stroke android:width="1dp" android:color="#2B607A83"/><corners android:radius="24dp"/></shape></item></selector>
