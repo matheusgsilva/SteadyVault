@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:state_pressed="true"><shape><solid android:color="#71466770"/><stroke android:width="1dp" android:color="#9CDDECF0"/><corners android:radius="22dp"/></shape></item>
-    <item><shape><solid android:color="#6A102229"/><stroke android:width="1dp" android:color="#559ACBD4"/><corners android:radius="22dp"/></shape></item>
+    <item android:state_pressed="true"><layer-list><item><shape><solid android:color="#4A315963"/><stroke android:width="1dp" android:color="#8DB6E4EC"/><corners android:radius="22dp"/></shape></item><item android:left="1dp" android:top="1dp" android:right="1dp" android:bottom="1dp"><shape><gradient android:angle="315" android:startColor="#47FFFFFF" android:endColor="#2020444D"/><corners android:radius="21dp"/></shape></item></layer-list></item>
+    <item><layer-list><item><shape><solid android:color="#30112831"/><stroke android:width="1dp" android:color="#526E99A4"/><corners android:radius="22dp"/></shape></item><item android:left="1dp" android:top="1dp" android:right="1dp" android:bottom="1dp"><shape><gradient android:angle="315" android:startColor="#32FFFFFF" android:endColor="#160B1F26"/><corners android:radius="21dp"/></shape></item></layer-list></item>
 </selector>
