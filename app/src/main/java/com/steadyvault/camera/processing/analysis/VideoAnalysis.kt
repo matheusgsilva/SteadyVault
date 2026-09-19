@@ -224,25 +224,21 @@ data class VideoAnalysis(
             try {
                 extractor.setDataSource(file.absolutePath)
                 extractor.selectTrack(videoTrack)
+                val deltas = ArrayList<Long>(4096)
                 var previousPts = -1L
-                var largeGapCount = 0
-                var estimatedMissingFrames = 0
                 while (extractor.sampleTrackIndex >= 0) {
                     val pts = extractor.sampleTime
                     if (pts < 0L) break
                     if (previousPts >= 0L) {
                         val delta = pts - previousPts
-                        if (delta > nominalDeltaUs * 3L / 2L) {
-                            largeGapCount++
-                            estimatedMissingFrames += ((delta + nominalDeltaUs / 2L) / nominalDeltaUs - 1L)
-                                .coerceIn(1L, 240L)
-                                .toInt()
-                        }
+                        if (delta > 0L) deltas += delta
                     }
                     previousPts = pts
                     if (!extractor.advance()) break
                 }
-                return largeGapCount to estimatedMissingFrames
+
+                val gaps = CadenceGapClassifier.classify(deltas, nominalDeltaUs)
+                return gaps.largeGapCount to gaps.estimatedMissingFrames
             } finally {
                 extractor.release()
             }
