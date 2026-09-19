@@ -28,6 +28,7 @@ class DirectMediaCodecBackend(
     private val height: Int,
     private val targetFps: Int,
     private val videoMime: String,
+    private val preferredCodecName: String?,
     private val videoBitrate: Int,
     private val iFrameIntervalSeconds: Int,
     private val orientationHint: Int,
@@ -86,21 +87,14 @@ class DirectMediaCodecBackend(
             )
             setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameIntervalSeconds.coerceAtLeast(1))
-            setInteger(MediaFormat.KEY_PRIORITY, 0)
-            setFloat(MediaFormat.KEY_OPERATING_RATE, targetFps.toFloat())
-
-            val encoderCaps = capabilities.encoderCapabilities
-            if (
-                encoderCaps?.isBitrateModeSupported(
-                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
-                ) == true
-            ) {
-                setInteger(
-                    MediaFormat.KEY_BITRATE_MODE,
-                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
-                )
-            }
+            // Mantém o mesmo conjunto mínimo usado no Cadence Probe, que apresentou
+            // a melhor cadência no S25 Ultra. Não forçamos operating-rate, priority
+            // nem CBR: esses parâmetros extras podem ativar caminhos diferentes de
+            // rate-control no codec do fabricante.
+            setInteger(
+                MediaFormat.KEY_I_FRAME_INTERVAL,
+                iFrameIntervalSeconds.coerceAtLeast(1)
+            )
         }
 
         try {
@@ -277,8 +271,8 @@ class DirectMediaCodecBackend(
         }
     }
 
-    private fun selectEncoder(): MediaCodecInfo? =
-        MediaCodecList(MediaCodecList.ALL_CODECS)
+    private fun selectEncoder(): MediaCodecInfo? {
+        val compatible = MediaCodecList(MediaCodecList.ALL_CODECS)
             .codecInfos
             .asSequence()
             .filter { it.isEncoder }
@@ -298,10 +292,22 @@ class DirectMediaCodecBackend(
                         )
                 }.getOrDefault(false)
             }
-            .sortedByDescending { info ->
-                runCatching { info.isHardwareAccelerated }.getOrDefault(false)
+            .toList()
+
+        preferredCodecName
+            ?.let { preferred ->
+                compatible.firstOrNull { it.name == preferred }
             }
+            ?.let { return it }
+
+        return compatible
+            .sortedWith(
+                compareByDescending<MediaCodecInfo> {
+                    runCatching { it.isHardwareAccelerated }.getOrDefault(false)
+                }.thenBy { it.name }
+            )
             .firstOrNull()
+    }
 
     private fun closeCodecAndMuxer() {
         val localCodec = codec

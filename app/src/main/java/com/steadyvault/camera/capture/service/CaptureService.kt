@@ -957,8 +957,44 @@ class CaptureService : Service() {
         // exato para resolução/FPS/codec, use os parâmetros do fabricante em vez
         // de reconstruir manualmente o encoder.
         if (profile.hdrHlg10 && exact == null) return null
+        val directCodecName = if (!profile.hdrHlg10) {
+            MediaCodecList(MediaCodecList.ALL_CODECS)
+                .codecInfos
+                .asSequence()
+                .filter { it.isEncoder }
+                .filter { info ->
+                    info.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+                }
+                .filter { info ->
+                    runCatching {
+                        val videoCaps =
+                            info.getCapabilitiesForType(mime).videoCapabilities
+                        videoCaps != null &&
+                            videoCaps.isSizeSupported(
+                                profile.videoSize.width,
+                                profile.videoSize.height
+                            ) &&
+                            videoCaps.areSizeAndRateSupported(
+                                profile.videoSize.width,
+                                profile.videoSize.height,
+                                profile.targetFps.toDouble()
+                            )
+                    }.getOrDefault(false)
+                }
+                .sortedWith(
+                    compareByDescending<MediaCodecInfo> {
+                        runCatching { it.isHardwareAccelerated }.getOrDefault(false)
+                    }.thenBy { it.name }
+                )
+                .firstOrNull()
+                ?.name
+        } else {
+            null
+        }
+
         return EncoderProfile(
-            codecName = if (exact != null) "OEM EncoderProfiles" else "MediaRecorder direto",
+            codecName = directCodecName
+                ?: if (exact != null) "OEM EncoderProfiles" else "MediaRecorder direto",
             mime = mime,
             bitrate = requestedBitrate,
             hdrHlg10 = profile.hdrHlg10
@@ -1019,6 +1055,7 @@ class CaptureService : Service() {
                     height = cameraProfile.videoSize.height,
                     targetFps = cameraProfile.targetFps,
                     videoMime = encoderProfile.mime,
+                    preferredCodecName = encoderProfile.codecName,
                     videoBitrate = encoderProfile.bitrate,
                     iFrameIntervalSeconds = recordingSettings.iFrameIntervalSeconds,
                     orientationHint = calculateOrientationHint(cameraProfile.sensorOrientation),
@@ -2794,7 +2831,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-cadence-1.8.264"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-oem-minimal-1.8.265"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
