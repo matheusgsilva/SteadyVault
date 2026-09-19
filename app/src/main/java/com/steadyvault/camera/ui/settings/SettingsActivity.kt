@@ -401,6 +401,33 @@ class SettingsActivity : FragmentActivity() {
             snapshot.exposureCompensation.toString()
         )
         addInfo("30 e 60 FPS usam faixa fixa. O app não reduz o FPS automaticamente em pouca luz.")
+        addSmallButton("Aplicar perfil de teste de cadência 4K60") {
+            val current = CaptureSettings.snapshot(this)
+            val testProfile = current.copy(
+                resolution = CaptureSettings.RESOLUTION_4K,
+                fps = CaptureModeStore.FPS_60,
+                hdrHlg10 = false,
+                stabilization = CaptureSettings.STABILIZATION_OFF,
+                focusMode = CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
+                noiseReduction = CaptureSettings.PROCESSING_AUTO,
+                edgeMode = CaptureSettings.PROCESSING_AUTO
+            )
+            CaptureSettings.saveResolutionForFps(
+                this,
+                CaptureModeStore.FPS_60,
+                CaptureSettings.RESOLUTION_4K
+            )
+            CaptureSettings.save(this, testProfile)
+            CaptureStateStore.clearEffectiveMode(this)
+            editingFps = CaptureModeStore.FPS_60
+            buildFormPreservingScroll(testProfile)
+            Toast.makeText(
+                this,
+                "Perfil 4K60 aplicado: SDR, estabilização Off, foco contínuo, ruído/nitidez Auto",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        addInfo("Esse botão só altera as opções quando você toca nele. Depois, qualquer ajuste manual continua sendo respeitado normalmente.")
         thermal = addSwitch(
             "Proteção contra temperatura crítica",
             "Antes de iniciar, verifica a condição térmica do aparelho para evitar começar uma captura quando o sistema já está em estado crítico.",
@@ -1915,6 +1942,9 @@ class SettingsActivity : FragmentActivity() {
                 value != CaptureSettings.FOCUS_OFF
             ) {
                 Support.UNSUPPORTED
+            } else if (value == CaptureSettings.FOCUS_LOCKED) {
+                features?.focusSupport(CaptureSettings.FOCUS_CONTINUOUS_VIDEO)
+                    ?: Support.UNVERIFIED
             } else {
                 features?.focusSupport(value) ?: Support.UNVERIFIED
             }
