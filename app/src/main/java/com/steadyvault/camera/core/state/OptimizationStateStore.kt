@@ -114,7 +114,7 @@ object OptimizationStateStore {
         if (updatedAt <= 0L || System.currentTimeMillis() - updatedAt <= STALE_RUNNING_MS) return
         prefs.edit()
             .putString(KEY_STATE, STATE_ERROR)
-            .putString(KEY_MESSAGE, "A otimização foi interrompida antes de concluir")
+            .putString(KEY_MESSAGE, "O processamento foi interrompido antes de concluir")
             .putLong(KEY_UPDATED_AT, System.currentTimeMillis())
             .apply()
     }
