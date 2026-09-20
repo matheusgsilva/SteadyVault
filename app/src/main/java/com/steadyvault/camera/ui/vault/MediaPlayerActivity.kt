@@ -23,8 +23,8 @@ import com.steadyvault.camera.R
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.playback.PlaybackSettings
 import com.steadyvault.camera.core.settings.CaptureSettings
-import com.steadyvault.camera.core.state.OptimizationStateStore
-import com.steadyvault.camera.processing.service.VideoOptimizationService
+import com.steadyvault.camera.core.state.VideoProcessingStateStore
+import com.steadyvault.camera.processing.service.VideoProcessingService
 import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.processing.model.OptimizationConfig
@@ -740,7 +740,7 @@ class MediaPlayerActivity : ComponentActivity() {
             startVideoPlayback(media)
             return
         }
-        OptimizationStateStore.recoverStale(this)
+        VideoProcessingStateStore.recoverStale(this)
         VaultRepository.releaseStaleProcessingLocks()
         if (isProcessing(media.file)) {
             waitingForProcessing = true
@@ -1037,7 +1037,7 @@ class MediaPlayerActivity : ComponentActivity() {
         ).normalized()
         exitTrimMode()
         stopVideoPlayback()
-        val started = runCatching { VideoOptimizationService.start(this, media.file, config) }.getOrElse { throwable ->
+        val started = runCatching { VideoProcessingService.start(this, media.file, config) }.getOrElse { throwable ->
             Toast.makeText(this, throwable.message ?: "Não foi possível iniciar o corte", Toast.LENGTH_LONG).show()
             false
         }
@@ -1342,7 +1342,7 @@ class MediaPlayerActivity : ComponentActivity() {
             title = "Encerrando processamento",
             message = "Aguardando o arquivo ser liberado com segurança…"
         )
-        VideoOptimizationService.cancel(this)
+        VideoProcessingService.cancel(this)
         waitForFileRelease(
             media.file,
             onReleased = {
@@ -1387,7 +1387,7 @@ class MediaPlayerActivity : ComponentActivity() {
         val deadline = SystemClock.uptimeMillis() + PROCESSING_RELEASE_TIMEOUT_MS
         fun check() {
             if (destroyed || isFinishing || isDestroyed) return
-            OptimizationStateStore.recoverStale(this)
+            VideoProcessingStateStore.recoverStale(this)
             VaultRepository.releaseStaleProcessingLocks()
             if (!isProcessing(file)) {
                 onReleased()
@@ -1403,7 +1403,7 @@ class MediaPlayerActivity : ComponentActivity() {
     }
 
     private fun isProcessing(file: File): Boolean =
-        OptimizationStateStore.snapshotFor(this, file)?.running == true || VaultRepository.isBeingProcessed(file)
+        VideoProcessingStateStore.snapshotFor(this, file)?.running == true || VaultRepository.isBeingProcessed(file)
 
     private fun setActionButtonsEnabled(enabled: Boolean) {
         actionButtonsEnabled = enabled

@@ -16,7 +16,7 @@ import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
 import com.steadyvault.camera.core.settings.VisualIdentityStore
-import com.steadyvault.camera.core.state.OptimizationStateStore
+import com.steadyvault.camera.core.state.VideoProcessingStateStore
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.processing.engine.ProcessingPolicy
 import com.steadyvault.camera.processing.engine.VideoOptimizer
@@ -33,14 +33,14 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
-class VideoOptimizationService : Service() {
+class VideoProcessingService : Service() {
     private val executor = Executors.newSingleThreadExecutor { task ->
         Thread(
             {
                 runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND) }
                 task.run()
             },
-            "SteadyVault-VideoOptimization"
+            "SteadyVault-VideoProcessing"
         )
     }
     private val cancelled = AtomicBoolean(false)
@@ -66,14 +66,14 @@ class VideoOptimizationService : Service() {
                     cancelled.set(true)
                     publishProgress(currentProgress, "Cancelando processamento…", forceNotification = true)
                 } else {
-                    val snapshot = OptimizationStateStore.snapshot(this)
+                    val snapshot = VideoProcessingStateStore.snapshot(this)
                     snapshot.sourcePath.takeIf { it.isNotBlank() }?.let { path ->
                         val source = File(path)
                         VaultRepository.releaseFromProcessing(source)
-                        OptimizationStateStore.finish(
+                        VideoProcessingStateStore.finish(
                             this,
                             source,
-                            OptimizationStateStore.STATE_CANCELLED,
+                            VideoProcessingStateStore.STATE_CANCELLED,
                             snapshot.progress,
                             "Processamento cancelado"
                         )
@@ -122,7 +122,7 @@ class VideoOptimizationService : Service() {
         ).normalized()
 
         cancelled.set(false)
-        OptimizationStateStore.begin(this, source)
+        VideoProcessingStateStore.begin(this, source)
         acquireWakeLock()
         val initialNotification = buildNotification(0, "Preparando vídeo…")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
@@ -217,7 +217,7 @@ class VideoOptimizationService : Service() {
                     if (replacementDeferred) append(" • troca pendente será aplicada ao reabrir o app ou fechar o player")
                 }
                 publishTerminal(
-                    state = OptimizationStateStore.STATE_SUCCESS,
+                    state = VideoProcessingStateStore.STATE_SUCCESS,
                     broadcastState = STATE_SUCCESS,
                     progress = 100,
                     message = message,
@@ -233,7 +233,7 @@ class VideoOptimizationService : Service() {
                     throwable.message ?: "Falha ao processar vídeo"
                 }
                 publishTerminal(
-                    state = if (wasCancelled) OptimizationStateStore.STATE_CANCELLED else OptimizationStateStore.STATE_ERROR,
+                    state = if (wasCancelled) VideoProcessingStateStore.STATE_CANCELLED else VideoProcessingStateStore.STATE_ERROR,
                     broadcastState = if (wasCancelled) STATE_CANCELLED else STATE_ERROR,
                     progress = currentProgress,
                     message = message,
@@ -279,7 +279,7 @@ class VideoOptimizationService : Service() {
         }
         if (!shouldPublish) return
 
-        OptimizationStateStore.update(this, source, safeProgress, message)
+        VideoProcessingStateStore.update(this, source, safeProgress, message)
         VaultRepository.heartbeatProcessing(source)
         broadcast(STATE_PROGRESS, message, safeProgress, null)
         getSystemService(NotificationManager::class.java)
@@ -295,7 +295,7 @@ class VideoOptimizationService : Service() {
         outputPath: String?
     ) {
         currentProgress = progress.coerceIn(0, 100)
-        OptimizationStateStore.finish(this, source, state, currentProgress, message, outputPath)
+        VideoProcessingStateStore.finish(this, source, state, currentProgress, message, outputPath)
         clearProcessingNotification()
         broadcast(broadcastState, message, currentProgress, outputPath)
     }
@@ -353,7 +353,7 @@ class VideoOptimizationService : Service() {
         val cancel = PendingIntent.getService(
             this,
             1,
-            Intent(this, VideoOptimizationService::class.java).setAction(ACTION_CANCEL),
+            Intent(this, VideoProcessingService::class.java).setAction(ACTION_CANCEL),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val safeProgress = progress.coerceIn(0, 100)
@@ -386,7 +386,7 @@ class VideoOptimizationService : Service() {
         cancelled.set(true)
         currentSourcePath?.let(::File)?.let { source ->
             publishTerminal(
-                OptimizationStateStore.STATE_ERROR,
+                VideoProcessingStateStore.STATE_ERROR,
                 STATE_ERROR,
                 currentProgress,
                 "O Android encerrou o processamento por limite de tempo",
@@ -443,14 +443,14 @@ class VideoOptimizationService : Service() {
         private const val NOTIFICATION_FORCE_INTERVAL_MS = 1_000L
 
         fun cancel(context: Context) {
-            val intent = Intent(context, VideoOptimizationService::class.java).setAction(ACTION_CANCEL)
+            val intent = Intent(context, VideoProcessingService::class.java).setAction(ACTION_CANCEL)
             context.startService(intent)
         }
 
         fun pauseForCapture(context: Context) {
             capturePriorityRequested = true
             runCatching {
-                context.startService(Intent(context, VideoOptimizationService::class.java).setAction(ACTION_CANCEL))
+                context.startService(Intent(context, VideoProcessingService::class.java).setAction(ACTION_CANCEL))
             }
         }
 
@@ -460,11 +460,11 @@ class VideoOptimizationService : Service() {
 
         fun start(context: Context, source: File, requestedConfig: OptimizationConfig): Boolean {
             if (capturePriorityRequested || CaptureStateStore.isBusy(context)) return false
-            val active = OptimizationStateStore.snapshot(context)
+            val active = VideoProcessingStateStore.snapshot(context)
             if (active.running) return false
             val config = requestedConfig.normalized()
-            OptimizationStateStore.begin(context, source)
-            val intent = Intent(context, VideoOptimizationService::class.java).setAction(ACTION_START).apply {
+            VideoProcessingStateStore.begin(context, source)
+            val intent = Intent(context, VideoProcessingService::class.java).setAction(ACTION_START).apply {
                 putExtra(EXTRA_SOURCE_PATH, source.absolutePath)
                 putExtra(EXTRA_PRESET, config.preset.name)
                 putExtra(EXTRA_FRAME_REPAIR, config.frameRepair.name)
@@ -485,10 +485,10 @@ class VideoOptimizationService : Service() {
                 context.startForegroundService(intent)
             } catch (throwable: Throwable) {
                 VaultRepository.releaseFromProcessing(source)
-                OptimizationStateStore.finish(
+                VideoProcessingStateStore.finish(
                     context,
                     source,
-                    OptimizationStateStore.STATE_ERROR,
+                    VideoProcessingStateStore.STATE_ERROR,
                     0,
                     throwable.message ?: "Não foi possível iniciar o processamento"
                 )

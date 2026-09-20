@@ -3,7 +3,7 @@ package com.steadyvault.camera.core.state
 import android.content.Context
 import java.io.File
 
-object OptimizationStateStore {
+object VideoProcessingStateStore {
     data class Snapshot(
         val state: String,
         val message: String,
@@ -17,7 +17,7 @@ object OptimizationStateStore {
             get() = state == STATE_RUNNING
     }
 
-    private const val PREFS = "steadyvault_optimization_state"
+    private const val PREFS = "steadyvault_video_processing_state"
     private const val KEY_STATE = "state"
     private const val KEY_MESSAGE = "message"
     private const val KEY_PROGRESS = "progress"
