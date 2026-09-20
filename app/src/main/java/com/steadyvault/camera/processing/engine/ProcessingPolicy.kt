@@ -16,15 +16,7 @@ class ProcessingPolicy(private val context: Context) {
 
     fun preflight(input: File, config: OptimizationConfig): Preflight {
         val available = StatFs(input.parentFile?.absolutePath ?: context.filesDir.absolutePath).availableBytes
-        val highQualityOutput = config.preset in setOf(
-            OptimizationPreset.HIGH_QUALITY,
-            OptimizationPreset.HQ_1080P,
-            OptimizationPreset.HQ_720P,
-            OptimizationPreset.CREATOR_2160P_4K,
-            OptimizationPreset.CREATOR_1080P,
-            OptimizationPreset.APPLE_2160P_4K_HEVC,
-            OptimizationPreset.ARCHIVE_4K
-        )
+        val highQualityOutput = config.preset == OptimizationPreset.HIGH_QUALITY
         val expansionFactor = when {
             highQualityOutput -> 1.55
             config.bitrateMbps > 0 -> 1.35
@@ -58,7 +50,7 @@ class ProcessingPolicy(private val context: Context) {
         val power = context.getSystemService(PowerManager::class.java)
         var waitedMs = 0L
         while (power.currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE) {
-            if (cancelled()) throw InterruptedException("Otimização cancelada")
+            if (cancelled()) throw InterruptedException("Processamento cancelado")
             onWaiting("Aparelho quente: processamento pausado; aguardando resfriamento")
             if (power.currentThermalStatus >= PowerManager.THERMAL_STATUS_EMERGENCY) {
                 throw IllegalStateException("Temperatura crítica. Aguarde o aparelho esfriar antes de continuar")
@@ -66,7 +58,7 @@ class ProcessingPolicy(private val context: Context) {
             SystemClock.sleep(THERMAL_POLL_MS)
             waitedMs += THERMAL_POLL_MS
             if (waitedMs >= MAX_THERMAL_WAIT_MS) {
-                throw IllegalStateException("O aparelho permaneceu quente por muito tempo; a otimização foi interrompida")
+                throw IllegalStateException("O aparelho permaneceu quente por muito tempo; o processamento foi interrompido")
             }
         }
     }
