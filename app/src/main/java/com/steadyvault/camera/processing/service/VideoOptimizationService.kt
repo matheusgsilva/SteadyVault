@@ -129,8 +129,6 @@ class VideoOptimizationService : Service() {
             ),
             maxInterpolatedFramesPerGap = intent.getIntExtra(EXTRA_MAX_INTERPOLATED_FRAMES, 8),
             thermalProtection = intent.getBooleanExtra(EXTRA_THERMAL_PROTECTION, true),
-            smartAutoTune = intent.getBooleanExtra(EXTRA_SMART_AUTO_TUNE, false),
-            aiAssisted = intent.getBooleanExtra(EXTRA_AI_ASSISTED, false),
             trimStartMs = intent.getLongExtra(EXTRA_TRIM_START_MS, 0L),
             trimEndMs = intent.getLongExtra(EXTRA_TRIM_END_MS, 0L)
         ).normalized()
@@ -450,8 +448,6 @@ class VideoOptimizationService : Service() {
         const val EXTRA_TINT = "filter_tint"
         const val EXTRA_MAX_INTERPOLATED_FRAMES = "max_interpolated_frames"
         const val EXTRA_THERMAL_PROTECTION = "thermal_protection"
-        const val EXTRA_SMART_AUTO_TUNE = "smart_auto_tune"
-        const val EXTRA_AI_ASSISTED = "ai_assisted"
         const val EXTRA_TRIM_START_MS = "trim_start_ms"
         const val EXTRA_TRIM_END_MS = "trim_end_ms"
         const val EXTRA_STATE = "state"
@@ -510,8 +506,6 @@ class VideoOptimizationService : Service() {
                 putExtra(EXTRA_TINT, config.filters.tint)
                 putExtra(EXTRA_MAX_INTERPOLATED_FRAMES, config.maxInterpolatedFramesPerGap)
                 putExtra(EXTRA_THERMAL_PROTECTION, config.thermalProtection)
-                putExtra(EXTRA_SMART_AUTO_TUNE, config.smartAutoTune)
-                putExtra(EXTRA_AI_ASSISTED, config.aiAssisted)
                 putExtra(EXTRA_TRIM_START_MS, config.trimStartMs)
                 putExtra(EXTRA_TRIM_END_MS, config.trimEndMs)
             }
