@@ -615,8 +615,8 @@ class HardwareVideoTranscoder {
         private val motionFramebuffers = IntArray(2)
         private val analysisTexture = IntArray(1)
         private val analysisFramebuffer = IntArray(1)
-        private val motionWidth = if (highQualityMotion) (width / 6).coerceIn(240, 480) else (width / 16).coerceIn(120, 240)
-        private val motionHeight = ((motionWidth.toLong() * height.toLong()) / width.coerceAtLeast(1).toLong()).toInt().coerceIn(90, 270)
+        private val motionWidth = if (highQualityMotion) (width / 4).coerceIn(360, 960) else (width / 16).coerceIn(120, 240)
+        private val motionHeight = ((motionWidth.toLong() * height.toLong()) / width.coerceAtLeast(1).toLong()).toInt().coerceIn(90, 540)
         private val motionReadback = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4).order(ByteOrder.nativeOrder())
         private val previousMotionPixels = ByteArray(motionWidth * motionHeight * 4)
         private val currentMotionPixels = ByteArray(motionWidth * motionHeight * 4)
@@ -624,6 +624,8 @@ class HardwareVideoTranscoder {
         private val backwardMotionUpload = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4).order(ByteOrder.nativeOrder())
         private var motionFlowScaleX = 0f
         private var motionFlowScaleY = 0f
+        private var motionGlobalReliability = 1f
+        private var motionSceneChange = false
         private var motionFieldDirty = true
         private var currentIndex = -1
         private var previousIndex = -1
@@ -773,6 +775,14 @@ class HardwareVideoTranscoder {
                 motionFlowScaleX,
                 motionFlowScaleY
             )
+            GLES20.glUniform1f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uGlobalReliability"),
+                motionGlobalReliability
+            )
+            GLES20.glUniform1f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uSceneChange"),
+                if (motionSceneChange) 1f else 0f
+            )
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             checkGl("interpolar movimento")
         }
@@ -790,6 +800,8 @@ class HardwareVideoTranscoder {
             )
             motionFlowScaleX = field.flowScaleX
             motionFlowScaleY = field.flowScaleY
+            motionGlobalReliability = field.globalReliability
+            motionSceneChange = field.sceneChangeLikely
             uploadMotionField(motionTextures[0], forwardMotionUpload, field.forwardRgba)
             uploadMotionField(motionTextures[1], backwardMotionUpload, field.backwardRgba)
             motionFieldDirty = false
@@ -954,27 +966,64 @@ uniform sampler2D uForwardMotion;
 uniform sampler2D uBackwardMotion;
 uniform vec2 uFlowScale;
 uniform float uAlpha;
+uniform float uGlobalReliability;
+uniform float uSceneChange;
+
+vec4 smoothFlow(sampler2D tex, vec2 uv){
+    vec2 px=vec2(1.0/960.0,1.0/540.0);
+    vec4 c=texture2D(tex,uv);
+    vec4 l=texture2D(tex,clamp(uv-vec2(px.x,0.0),vec2(0.0),vec2(1.0)));
+    vec4 r=texture2D(tex,clamp(uv+vec2(px.x,0.0),vec2(0.0),vec2(1.0)));
+    vec4 u=texture2D(tex,clamp(uv+vec2(0.0,px.y),vec2(0.0),vec2(1.0)));
+    vec4 d=texture2D(tex,clamp(uv-vec2(0.0,px.y),vec2(0.0),vec2(1.0)));
+    float cw=0.52+0.48*c.b;
+    float lw=0.12*l.b;
+    float rw=0.12*r.b;
+    float uw=0.12*u.b;
+    float dw=0.12*d.b;
+    float sum=max(cw+lw+rw+uw+dw,0.0001);
+    return (c*cw+l*lw+r*rw+u*uw+d*dw)/sum;
+}
+
 void main(){
     float a=clamp(uAlpha,0.0,1.0);
-    vec4 forward=texture2D(uForwardMotion,vTextureCoord);
-    vec4 backward=texture2D(uBackwardMotion,vTextureCoord);
-    vec2 forwardDelta=(forward.rg*2.0-1.0)*uFlowScale;
-    vec2 backwardDelta=(backward.rg*2.0-1.0)*uFlowScale;
-    vec2 prevUv=clamp(vTextureCoord-forwardDelta*a,vec2(0.0),vec2(1.0));
-    vec2 currUv=clamp(vTextureCoord-backwardDelta*(1.0-a),vec2(0.0),vec2(1.0));
-    vec4 prevWarped=texture2D(uPrevious,prevUv);
-    vec4 currWarped=texture2D(uCurrent,currUv);
     vec4 previous=texture2D(uPrevious,vTextureCoord);
     vec4 current=texture2D(uCurrent,vTextureCoord);
-    float prevConfidence=smoothstep(0.12,0.82,forward.b);
-    float currConfidence=smoothstep(0.12,0.82,backward.b);
+    vec4 simple=mix(previous,current,a);
+
+    if(uSceneChange>0.5){
+        gl_FragColor=(a<0.5)?previous:current;
+        return;
+    }
+
+    vec2 prevUv=vTextureCoord;
+    vec2 currUv=vTextureCoord;
+    vec4 forward=smoothFlow(uForwardMotion,prevUv);
+    vec4 backward=smoothFlow(uBackwardMotion,currUv);
+
+    // Duas iterações aproximam o inverse warp. Uma única amostra do fluxo no
+    // pixel de saída deixa erro espacial visível em objetos rápidos.
+    for(int i=0;i<2;i++){
+        vec2 forwardDelta=(forward.rg*2.0-1.0)*uFlowScale;
+        vec2 backwardDelta=(backward.rg*2.0-1.0)*uFlowScale;
+        prevUv=clamp(vTextureCoord-forwardDelta*a,vec2(0.0),vec2(1.0));
+        currUv=clamp(vTextureCoord-backwardDelta*(1.0-a),vec2(0.0),vec2(1.0));
+        forward=smoothFlow(uForwardMotion,prevUv);
+        backward=smoothFlow(uBackwardMotion,currUv);
+    }
+
+    vec4 prevWarped=texture2D(uPrevious,prevUv);
+    vec4 currWarped=texture2D(uCurrent,currUv);
+    float prevConfidence=smoothstep(0.08,0.78,forward.b);
+    float currConfidence=smoothstep(0.08,0.78,backward.b);
     float prevWeight=(1.0-a)*prevConfidence;
     float currWeight=a*currConfidence;
     float weightSum=max(prevWeight+currWeight,0.0001);
     vec4 warped=(prevWarped*prevWeight+currWarped*currWeight)/weightSum;
-    vec4 simple=mix(previous,current,a);
-    float reliability=clamp(max(prevConfidence,currConfidence)*0.75+
-                            min(prevConfidence,currConfidence)*0.25,0.0,1.0);
+
+    float localReliability=clamp(max(prevConfidence,currConfidence)*0.78+
+                                 min(prevConfidence,currConfidence)*0.22,0.0,1.0);
+    float reliability=clamp(localReliability*uGlobalReliability,0.0,1.0);
     gl_FragColor=mix(simple,warped,reliability);
 }"""
         }
