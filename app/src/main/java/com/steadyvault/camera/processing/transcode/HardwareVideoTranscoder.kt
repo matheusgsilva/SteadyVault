@@ -630,6 +630,8 @@ class HardwareVideoTranscoder {
         private var globalForwardUvY = 0f
         private var globalBackwardUvX = 0f
         private var globalBackwardUvY = 0f
+        private var motionNearlyStatic = false
+        private var globalMotionUnstable = false
         private var motionFieldDirty = true
         private var currentIndex = -1
         private var previousIndex = -1
@@ -802,6 +804,14 @@ class HardwareVideoTranscoder {
                 1f / motionWidth.coerceAtLeast(1).toFloat(),
                 1f / motionHeight.coerceAtLeast(1).toFloat()
             )
+            GLES20.glUniform1f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uMotionNearlyStatic"),
+                if (motionNearlyStatic) 1f else 0f
+            )
+            GLES20.glUniform1f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uGlobalMotionUnstable"),
+                if (globalMotionUnstable) 1f else 0f
+            )
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             checkGl("interpolar movimento")
         }
@@ -825,6 +835,8 @@ class HardwareVideoTranscoder {
             globalForwardUvY = field.globalForwardUvY
             globalBackwardUvX = field.globalBackwardUvX
             globalBackwardUvY = field.globalBackwardUvY
+            motionNearlyStatic = field.motionIsNearlyStatic
+            globalMotionUnstable = field.globalMotionIsUnstable
             uploadMotionField(motionTextures[0], forwardMotionUpload, field.forwardRgba)
             uploadMotionField(motionTextures[1], backwardMotionUpload, field.backwardRgba)
             motionFieldDirty = false
@@ -994,6 +1006,8 @@ uniform float uSceneChange;
 uniform vec2 uGlobalForward;
 uniform vec2 uGlobalBackward;
 uniform vec2 uMotionTexel;
+uniform float uMotionNearlyStatic;
+uniform float uGlobalMotionUnstable;
 
 vec4 smoothFlow(sampler2D tex, vec2 uv){
     vec2 px=uMotionTexel;
@@ -1021,6 +1035,10 @@ void main(){
         gl_FragColor=(a<0.5)?previous:current;
         return;
     }
+    if(uMotionNearlyStatic>0.5){
+        gl_FragColor=simple;
+        return;
+    }
 
     vec2 prevUv=vTextureCoord;
     vec2 currUv=vTextureCoord;
@@ -1045,8 +1063,9 @@ void main(){
     // em vez de congelar ou dissolver no lugar errado.
     vec2 localForward=(forward.rg*2.0-1.0)*uFlowScale;
     vec2 localBackward=(backward.rg*2.0-1.0)*uFlowScale;
-    vec2 effectiveForward=mix(uGlobalForward,localForward,prevConfidence);
-    vec2 effectiveBackward=mix(uGlobalBackward,localBackward,currConfidence);
+    float globalTrust = (uGlobalMotionUnstable>0.5) ? 0.0 : 1.0;
+    vec2 effectiveForward=mix(localForward,mix(uGlobalForward,localForward,prevConfidence),globalTrust);
+    vec2 effectiveBackward=mix(localBackward,mix(uGlobalBackward,localBackward,currConfidence),globalTrust);
     prevUv=clamp(vTextureCoord-effectiveForward*a,vec2(0.0),vec2(1.0));
     currUv=clamp(vTextureCoord-effectiveBackward*(1.0-a),vec2(0.0),vec2(1.0));
 
@@ -1065,7 +1084,9 @@ void main(){
     // preserva cor, mas congela a posição aparente e causa o salto no frame
     // real seguinte. A confiança agora escolhe local vs movimento global acima;
     // aqui mantemos o warp como saída principal.
-    float warpWeight=0.88+0.12*reliability;
+    float warpWeight=(uGlobalMotionUnstable>0.5)
+        ? (0.55+0.25*reliability)
+        : (0.88+0.12*reliability);
     gl_FragColor=mix(simple,warped,warpWeight);
 }"""
         }
