@@ -123,41 +123,6 @@ enum class OutputCodec {
     }
 }
 
-enum class FilterStrength(val amount: Float) {
-    OFF(0f),
-    LIGHT(0.25f),
-    MEDIUM(0.55f),
-    STRONG(0.85f);
-
-    companion object {
-        fun from(value: String?): FilterStrength = entries.firstOrNull { it.name == value } ?: OFF
-    }
-}
-
-data class VideoFilterConfig(
-    val denoise: FilterStrength = FilterStrength.OFF,
-    val sharpen: FilterStrength = FilterStrength.OFF,
-    val deblock: FilterStrength = FilterStrength.OFF,
-    val brightness: Int = 0,
-    val contrast: Int = 100,
-    val saturation: Int = 100,
-    val temperature: Int = 0,
-    val tint: Int = 0
-) {
-    val enabled: Boolean
-        get() = denoise != FilterStrength.OFF || sharpen != FilterStrength.OFF ||
-            deblock != FilterStrength.OFF || brightness != 0 || contrast != 100 || saturation != 100 ||
-            temperature != 0 || tint != 0
-
-    fun normalized(): VideoFilterConfig = copy(
-        brightness = brightness.coerceIn(-25, 25),
-        contrast = contrast.coerceIn(75, 135),
-        saturation = saturation.coerceIn(70, 140),
-        temperature = temperature.coerceIn(-50, 50),
-        tint = tint.coerceIn(-30, 30)
-    )
-}
-
 data class OptimizationConfig(
     val preset: OptimizationPreset = OptimizationPreset.BALANCED,
     val frameRepair: FrameRepairMode = FrameRepairMode.SMOOTH_TIMELINE,
@@ -169,7 +134,6 @@ data class OptimizationConfig(
     val bitrateMbps: Int = 0,
     val keepAudio: Boolean = true,
     val replaceOriginal: Boolean = false,
-    val filters: VideoFilterConfig = VideoFilterConfig(),
     val maxInterpolatedFramesPerGap: Int = 8,
     val thermalProtection: Boolean = true,
     val trimStartMs: Long = 0L,
@@ -183,7 +147,6 @@ data class OptimizationConfig(
             targetWidth = targetWidth.coerceAtLeast(0),
             targetHeight = targetHeight.coerceAtLeast(0),
             bitrateMbps = bitrateMbps.coerceIn(0, 240),
-            filters = filters.normalized(),
             maxInterpolatedFramesPerGap = maxInterpolatedFramesPerGap.coerceIn(1, 30),
             trimStartMs = safeStart,
             trimEndMs = if (safeEnd > safeStart) safeEnd else 0L
