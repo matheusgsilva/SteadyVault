@@ -28,7 +28,7 @@ import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.core.storage.RecordingStorageGuard
 import com.steadyvault.camera.storage.vault.VaultRepository
 import com.steadyvault.camera.processing.auto.AutoGapRepairService
-import com.steadyvault.camera.processing.service.VideoOptimizationService
+import com.steadyvault.camera.processing.service.VideoProcessingService
 import com.steadyvault.camera.storage.vault.RecordingRecoveryRepository
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
 import com.steadyvault.camera.storage.vault.MediaThumbnailRepository
@@ -257,7 +257,7 @@ class CaptureService : Service() {
         // an in-process cancellation flag before the service IPC, so preparation of
         // the next recording naturally gives GPU/codec work time to unwind.
         AutoGapRepairService.pauseForCapture(this)
-        VideoOptimizationService.pauseForCapture(this)
+        VideoProcessingService.pauseForCapture(this)
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
         MediaThumbnailRepository.prepareForCapture()
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
@@ -348,7 +348,7 @@ class CaptureService : Service() {
             sendState("Falha: permissões de câmera e microfone são obrigatórias para gravar com áudio")
             serviceActive.set(false)
             AutoGapRepairService.resumeAfterCapture(this)
-            VideoOptimizationService.resumeAfterCapture()
+            VideoProcessingService.resumeAfterCapture()
             stopSelf()
             return
         }
@@ -2972,7 +2972,7 @@ class CaptureService : Service() {
         CameraResourceCoordinator.releaseCapture(CameraResourceCoordinator.Owner.VIDEO, cameraLeaseToken)
         releaseWakeLock()
         AutoGapRepairService.resumeAfterCapture(this)
-        VideoOptimizationService.resumeAfterCapture()
+        VideoProcessingService.resumeAfterCapture()
         if (deferredRawCleanup) {
             deferredRawCleanup = false
             cleanupOldRawFilesAsync()
@@ -3040,7 +3040,7 @@ class CaptureService : Service() {
         CameraResourceCoordinator.releaseCapture(CameraResourceCoordinator.Owner.VIDEO, cameraLeaseToken)
         VaultStartupCoordinator.resumeAfterCapture(cameraLeaseToken)
         AutoGapRepairService.resumeAfterCapture(this)
-        VideoOptimizationService.resumeAfterCapture()
+        VideoProcessingService.resumeAfterCapture()
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         foregroundNotificationStarted = false
         serviceActive.set(false)
