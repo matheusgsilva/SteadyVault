@@ -151,25 +151,7 @@ class VideoOptimizer {
         if (config.targetWidth > 0 && config.targetHeight > 0) {
             return fitWithin(sourceWidth, sourceHeight, config.targetWidth, config.targetHeight)
         }
-        return when (config.preset) {
-            OptimizationPreset.SMALL_FILE,
-            OptimizationPreset.VERY_FAST_1080P,
-            OptimizationPreset.FAST_1080P,
-            OptimizationPreset.HQ_1080P,
-            OptimizationPreset.CREATOR_1080P,
-            OptimizationPreset.APPLE_1080P_SURROUND,
-            OptimizationPreset.ANDROID_1080P,
-            OptimizationPreset.WEB_1080P ->
-                fitWithin(sourceWidth, sourceHeight, 1920, 1080)
-            OptimizationPreset.FAST_720P,
-            OptimizationPreset.HQ_720P,
-            OptimizationPreset.SOCIAL_720P,
-            OptimizationPreset.ANDROID_720P -> fitWithin(sourceWidth, sourceHeight, 1280, 720)
-            OptimizationPreset.CREATOR_2160P_4K,
-            OptimizationPreset.APPLE_2160P_4K_HEVC,
-            OptimizationPreset.ARCHIVE_4K -> fitWithin(sourceWidth, sourceHeight, 3840, 2160)
-            else -> sourceWidth to sourceHeight
-        }
+        return sourceWidth to sourceHeight
     }
 
     private fun fitWithin(sourceWidth: Int, sourceHeight: Int, maxWidth: Int, maxHeight: Int): Pair<Int, Int> {
@@ -204,24 +186,10 @@ class VideoOptimizer {
         if (config.bitrateMbps > 0) return config.bitrateMbps.coerceIn(2, 240) * 1_000_000
         val pixelsPerSecond = width.toLong() * height.toLong() * fps.toLong()
         val bitsPerPixel = when (config.preset) {
-            OptimizationPreset.HIGH_QUALITY -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.14 else 0.20
-            OptimizationPreset.ARCHIVE_4K -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.13 else 0.19
-            OptimizationPreset.VERY_FAST_1080P -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.055 else 0.085
-            OptimizationPreset.FAST_1080P -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.072 else 0.11
-            OptimizationPreset.HQ_1080P -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.11 else 0.17
-            OptimizationPreset.FAST_720P -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.065 else 0.10
-            OptimizationPreset.HQ_720P -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.10 else 0.15
-            OptimizationPreset.CREATOR_2160P_4K -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.12 else 0.18
-            OptimizationPreset.CREATOR_1080P -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.115 else 0.175
-            OptimizationPreset.SOCIAL_720P -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.05 else 0.078
-            OptimizationPreset.APPLE_2160P_4K_HEVC -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.12 else 0.18
-            OptimizationPreset.APPLE_1080P_SURROUND -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.10 else 0.15
-            OptimizationPreset.ANDROID_1080P -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.078 else 0.12
-            OptimizationPreset.ANDROID_720P -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.075 else 0.11
-            OptimizationPreset.WEB_1080P -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.085 else 0.125
-            OptimizationPreset.SMALL_FILE -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.045 else 0.07
-            OptimizationPreset.REPAIR_ONLY -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.085 else 0.12
-            else -> if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.075 else 0.105
+            OptimizationPreset.HIGH_QUALITY ->
+                if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.14 else 0.20
+            OptimizationPreset.REPAIR_ONLY ->
+                if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) 0.085 else 0.12
         }
         val calculated = (pixelsPerSecond * bitsPerPixel).toLong().coerceIn(4_000_000L, 200_000_000L)
         return max(4_000_000, calculated.toInt())
