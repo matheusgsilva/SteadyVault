@@ -633,8 +633,8 @@ class HardwareVideoTranscoder {
         private var motionInterpolateProgram = 0
         private val frameTextures = IntArray(2)
         private val framebuffers = IntArray(2)
-        private val motionTexture = IntArray(1)
-        private val motionFramebuffer = IntArray(1)
+        private val motionTextures = IntArray(2)
+        private val motionFramebuffers = IntArray(2)
         private val analysisTexture = IntArray(1)
         private val analysisFramebuffer = IntArray(1)
         private val motionWidth = if (highQualityMotion) (width / 6).coerceIn(240, 480) else (width / 16).coerceIn(120, 240)
@@ -642,7 +642,8 @@ class HardwareVideoTranscoder {
         private val motionReadback = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4).order(ByteOrder.nativeOrder())
         private val previousMotionPixels = ByteArray(motionWidth * motionHeight * 4)
         private val currentMotionPixels = ByteArray(motionWidth * motionHeight * 4)
-        private val motionUpload = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4).order(ByteOrder.nativeOrder())
+        private val forwardMotionUpload = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4).order(ByteOrder.nativeOrder())
+        private val backwardMotionUpload = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4).order(ByteOrder.nativeOrder())
         private var motionFlowScaleX = 0f
         private var motionFlowScaleY = 0f
         private var motionFieldDirty = true
@@ -701,23 +702,25 @@ class HardwareVideoTranscoder {
                     "Framebuffer de processamento incompleto"
                 }
             }
-            GLES20.glGenTextures(1, motionTexture, 0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTexture[0])
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-            GLES20.glTexImage2D(
-                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, motionWidth, motionHeight, 0,
-                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
-            )
-            GLES20.glGenFramebuffers(1, motionFramebuffer, 0)
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, motionFramebuffer[0])
-            GLES20.glFramebufferTexture2D(
-                GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, motionTexture[0], 0
-            )
-            check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE) {
-                "Framebuffer do campo de movimento incompleto"
+            GLES20.glGenTextures(2, motionTextures, 0)
+            GLES20.glGenFramebuffers(2, motionFramebuffers, 0)
+            for (index in 0..1) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTextures[index])
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+                GLES20.glTexImage2D(
+                    GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, motionWidth, motionHeight, 0,
+                    GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
+                )
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, motionFramebuffers[index])
+                GLES20.glFramebufferTexture2D(
+                    GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, motionTextures[index], 0
+                )
+                check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE) {
+                    "Framebuffer do campo de movimento bidirecional incompleto"
+                }
             }
 
             GLES20.glGenTextures(1, analysisTexture, 0)
@@ -781,8 +784,11 @@ class HardwareVideoTranscoder {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTextures[currentIndex])
             GLES20.glUniform1i(GLES20.glGetUniformLocation(motionInterpolateProgram, "uCurrent"), 1)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTexture[0])
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(motionInterpolateProgram, "uMotion"), 2)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTextures[0])
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(motionInterpolateProgram, "uForwardMotion"), 2)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE3)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTextures[1])
+            GLES20.glUniform1i(GLES20.glGetUniformLocation(motionInterpolateProgram, "uBackwardMotion"), 3)
             GLES20.glUniform1f(GLES20.glGetUniformLocation(motionInterpolateProgram, "uAlpha"), safeAlpha)
             GLES20.glUniform2f(
                 GLES20.glGetUniformLocation(motionInterpolateProgram, "uFlowScale"),
@@ -806,10 +812,17 @@ class HardwareVideoTranscoder {
             )
             motionFlowScaleX = field.flowScaleX
             motionFlowScaleY = field.flowScaleY
-            motionUpload.clear()
-            motionUpload.put(field.rgba)
-            motionUpload.flip()
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTexture[0])
+            uploadMotionField(motionTextures[0], forwardMotionUpload, field.forwardRgba)
+            uploadMotionField(motionTextures[1], backwardMotionUpload, field.backwardRgba)
+            motionFieldDirty = false
+            checkGl("enviar campo de movimento")
+        }
+
+        private fun uploadMotionField(textureId: Int, buffer: ByteBuffer, rgba: ByteArray) {
+            buffer.clear()
+            buffer.put(rgba)
+            buffer.flip()
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
             GLES20.glTexSubImage2D(
                 GLES20.GL_TEXTURE_2D,
                 0,
@@ -819,11 +832,9 @@ class HardwareVideoTranscoder {
                 motionHeight,
                 GLES20.GL_RGBA,
                 GLES20.GL_UNSIGNED_BYTE,
-                motionUpload
+                buffer
             )
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
-            motionFieldDirty = false
-            checkGl("enviar campo de movimento")
         }
 
         private fun readMotionFrame(textureIndex: Int, target: ByteArray) {
@@ -887,8 +898,8 @@ class HardwareVideoTranscoder {
             if (externalTextureId >= 0) GLES20.glDeleteTextures(1, intArrayOf(externalTextureId), 0)
             GLES20.glDeleteTextures(2, frameTextures, 0)
             GLES20.glDeleteFramebuffers(2, framebuffers, 0)
-            GLES20.glDeleteTextures(1, motionTexture, 0)
-            GLES20.glDeleteFramebuffers(1, motionFramebuffer, 0)
+            GLES20.glDeleteTextures(2, motionTextures, 0)
+            GLES20.glDeleteFramebuffers(2, motionFramebuffers, 0)
             GLES20.glDeleteTextures(1, analysisTexture, 0)
             GLES20.glDeleteFramebuffers(1, analysisFramebuffer, 0)
             if (externalProgram != 0) GLES20.glDeleteProgram(externalProgram)
@@ -961,25 +972,32 @@ void main(){
 varying vec2 vTextureCoord;
 uniform sampler2D uPrevious;
 uniform sampler2D uCurrent;
-uniform sampler2D uMotion;
+uniform sampler2D uForwardMotion;
+uniform sampler2D uBackwardMotion;
 uniform vec2 uFlowScale;
 uniform float uAlpha;
 void main(){
     float a=clamp(uAlpha,0.0,1.0);
-    float eased=a;
-    vec4 flow=texture2D(uMotion,vTextureCoord);
-    vec2 delta=(flow.rg*2.0-1.0)*uFlowScale;
-    vec2 prevUv=clamp(vTextureCoord-delta*a,vec2(0.0),vec2(1.0));
-    vec2 currUv=clamp(vTextureCoord+delta*(1.0-a),vec2(0.0),vec2(1.0));
+    vec4 forward=texture2D(uForwardMotion,vTextureCoord);
+    vec4 backward=texture2D(uBackwardMotion,vTextureCoord);
+    vec2 forwardDelta=(forward.rg*2.0-1.0)*uFlowScale;
+    vec2 backwardDelta=(backward.rg*2.0-1.0)*uFlowScale;
+    vec2 prevUv=clamp(vTextureCoord-forwardDelta*a,vec2(0.0),vec2(1.0));
+    vec2 currUv=clamp(vTextureCoord-backwardDelta*(1.0-a),vec2(0.0),vec2(1.0));
+    vec4 prevWarped=texture2D(uPrevious,prevUv);
+    vec4 currWarped=texture2D(uCurrent,currUv);
     vec4 previous=texture2D(uPrevious,vTextureCoord);
     vec4 current=texture2D(uCurrent,vTextureCoord);
-    vec4 warped=mix(texture2D(uPrevious,prevUv),texture2D(uCurrent,currUv),eased);
-    vec4 simple=mix(previous,current,eased);
-    // Baixa confiança não deve congelar no quadro vizinho. Um blend temporal
-    // pode ter leve ghosting, mas mantém movimento contínuo e é muito menos
-    // perceptível que repetir um frame durante um gap de 16,6 ms.
-    float motionConfidence=smoothstep(0.18,0.72,flow.b);
-    gl_FragColor=mix(simple,warped,motionConfidence);
+    float prevConfidence=smoothstep(0.12,0.82,forward.b);
+    float currConfidence=smoothstep(0.12,0.82,backward.b);
+    float prevWeight=(1.0-a)*prevConfidence;
+    float currWeight=a*currConfidence;
+    float weightSum=max(prevWeight+currWeight,0.0001);
+    vec4 warped=(prevWarped*prevWeight+currWarped*currWeight)/weightSum;
+    vec4 simple=mix(previous,current,a);
+    float reliability=clamp(max(prevConfidence,currConfidence)*0.75+
+                            min(prevConfidence,currConfidence)*0.25,0.0,1.0);
+    gl_FragColor=mix(simple,warped,reliability);
 }"""
         }
     }
