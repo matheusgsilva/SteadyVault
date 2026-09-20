@@ -35,10 +35,7 @@ class VideoOptimizer {
         cancelled: () -> Boolean = { false }
     ): Result {
         if (cancelled()) throw InterruptedException("Processamento cancelado")
-        val config = requestedConfig.normalized().copy(
-            smartAutoTune = false,
-            aiAssisted = false
-        )
+        val config = requestedConfig.normalized()
         progress(1, "Analisando cadência e preparando reparo")
         val analysis = VideoAnalysis.read(input)
         val requestedFps = config.targetFps.takeIf { it in 1..240 }
@@ -132,9 +129,6 @@ class VideoOptimizer {
                 keepAudio = config.keepAudio,
                 filters = config.filters,
                 maxInterpolatedFramesPerGap = config.maxInterpolatedFramesPerGap,
-                // Compensação de movimento é sempre um reparo de qualidade. A opção
-                // aiAssisted continua controlando análise/filtros inteligentes, mas não
-                // reduz mais a precisão básica do optical flow quando há frames ausentes.
                 highQualityMotion = config.frameRepair == FrameRepairMode.MOTION_COMPENSATED,
                 trimStartUs = trimStartUs,
                 trimEndUs = trimEndUs
