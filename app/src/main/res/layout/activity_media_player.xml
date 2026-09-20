@@ -450,7 +450,7 @@
             android:layout_weight="1"
             android:background="@drawable/bg_oneui_button_secondary"
             android:gravity="center"
-            android:text="Melhorar"
+            android:text="Reparar fluidez"
             android:textColor="@color/accent"
             android:textSize="13sp"
             android:textStyle="bold" />
