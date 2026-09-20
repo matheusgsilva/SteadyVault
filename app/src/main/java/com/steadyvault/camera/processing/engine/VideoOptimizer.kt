@@ -3,9 +3,7 @@ package com.steadyvault.camera.processing.engine
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.ParcelFileDescriptor
-import com.steadyvault.camera.processing.analysis.OptimizationAdvisor
 import com.steadyvault.camera.processing.analysis.VideoAnalysis
-import com.steadyvault.camera.processing.ai.AiVideoEnhancer
 import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.processing.model.OptimizationConfig
 import com.steadyvault.camera.processing.model.OptimizationPreset
@@ -26,8 +24,7 @@ class VideoOptimizer {
         val createdFrames: Int,
         val blendedFrames: Int,
         val transcoded: Boolean,
-        val analysis: VideoAnalysis,
-        val aiReport: AiVideoEnhancer.Report? = null
+        val analysis: VideoAnalysis
     )
 
     fun optimize(
@@ -37,54 +34,23 @@ class VideoOptimizer {
         progress: (Int, String) -> Unit = { _, _ -> },
         cancelled: () -> Boolean = { false }
     ): Result {
-        if (cancelled()) throw InterruptedException("Otimização cancelada")
-        val normalizedConfig = requestedConfig.normalized()
-        progress(1, "Analisando cadência, resolução e codecs")
+        if (cancelled()) throw InterruptedException("Processamento cancelado")
+        val config = requestedConfig.normalized().copy(
+            smartAutoTune = false,
+            aiAssisted = false
+        )
+        progress(1, "Analisando cadência e preparando reparo")
         val analysis = VideoAnalysis.read(input)
-        val aiReport = if (normalizedConfig.aiAssisted || (normalizedConfig.preset == OptimizationPreset.SMART && normalizedConfig.smartAutoTune)) {
-            progress(2, "Análise visual local avaliando cadência, cor, ruído, exposição e movimento")
-            runCatching { AiVideoEnhancer.analyze(input, analysis, progress, cancelled) }.getOrNull()
-        } else null
-        val config = when {
-            normalizedConfig.preset == OptimizationPreset.SMART && normalizedConfig.smartAutoTune -> {
-                OptimizationAdvisor.recommend(analysis, aiReport).config.copy(
-                    keepAudio = normalizedConfig.keepAudio,
-                    replaceOriginal = normalizedConfig.replaceOriginal,
-                    targetWidth = normalizedConfig.targetWidth,
-                    targetHeight = normalizedConfig.targetHeight,
-                    thermalProtection = normalizedConfig.thermalProtection,
-                    smartAutoTune = false,
-                    aiAssisted = aiReport != null,
-                    trimStartMs = normalizedConfig.trimStartMs,
-                    trimEndMs = normalizedConfig.trimEndMs
-                ).normalized()
-            }
-            aiReport != null && normalizedConfig.preset != OptimizationPreset.REPAIR_ONLY -> normalizedConfig.copy(
-                filters = normalizedConfig.filters.copy(
-                    denoise = if (normalizedConfig.filters.denoise.name == "OFF") aiReport.filters.denoise else normalizedConfig.filters.denoise,
-                    sharpen = if (normalizedConfig.filters.sharpen.name == "OFF") aiReport.filters.sharpen else normalizedConfig.filters.sharpen,
-                    deblock = if (normalizedConfig.filters.deblock.name == "OFF") aiReport.filters.deblock else normalizedConfig.filters.deblock,
-                    brightness = if (normalizedConfig.filters.brightness == 0) aiReport.filters.brightness else normalizedConfig.filters.brightness,
-                    contrast = if (normalizedConfig.filters.contrast == 100) aiReport.filters.contrast else normalizedConfig.filters.contrast,
-                    saturation = if (normalizedConfig.filters.saturation == 100) aiReport.filters.saturation else normalizedConfig.filters.saturation,
-                    temperature = if (normalizedConfig.filters.temperature == 0) aiReport.filters.temperature else normalizedConfig.filters.temperature,
-                    tint = if (normalizedConfig.filters.tint == 0) aiReport.filters.tint else normalizedConfig.filters.tint
-                ),
-                aiAssisted = true
-            ).normalized()
-            aiReport != null -> normalizedConfig
-            else -> normalizedConfig
-        }
         val requestedFps = config.targetFps.takeIf { it in 1..240 }
         val targetFps = (requestedFps ?: analysis.estimatedFps).coerceIn(1, 240)
         val needsVisualProcessing = config.filters.enabled
 
         if (!config.hasTrim() && config.preset == OptimizationPreset.REPAIR_ONLY && config.frameRepair == FrameRepairMode.NONE && !needsVisualProcessing) {
             progress(10, "Copiando sem alterar o vídeo")
-            if (cancelled()) throw InterruptedException("Otimização cancelada")
+            if (cancelled()) throw InterruptedException("Processamento cancelado")
             input.copyTo(output, overwrite = true)
             progress(100, "Validando cópia sem recodificação")
-            return Result(output, input.length(), output.length(), analysis.frameCount, 0, 0, 0, false, analysis, aiReport)
+            return Result(output, input.length(), output.length(), analysis.frameCount, 0, 0, 0, false, analysis)
         }
 
         if (config.preset == OptimizationPreset.REPAIR_ONLY &&
@@ -108,7 +74,7 @@ class VideoOptimizer {
             }
             if (cancelled()) {
                 output.delete()
-                throw InterruptedException("Otimização cancelada")
+                throw InterruptedException("Processamento cancelado")
             }
             progress(100, "Validando reparo de timeline")
             return Result(
@@ -120,8 +86,7 @@ class VideoOptimizer {
                 0,
                 0,
                 false,
-                analysis,
-                aiReport
+                analysis
             )
         }
 
@@ -170,7 +135,7 @@ class VideoOptimizer {
                 // Compensação de movimento é sempre um reparo de qualidade. A opção
                 // aiAssisted continua controlando análise/filtros inteligentes, mas não
                 // reduz mais a precisão básica do optical flow quando há frames ausentes.
-                highQualityMotion = config.frameRepair == FrameRepairMode.MOTION_COMPENSATED || config.aiAssisted,
+                highQualityMotion = config.frameRepair == FrameRepairMode.MOTION_COMPENSATED,
                 trimStartUs = trimStartUs,
                 trimEndUs = trimEndUs
             ),
@@ -186,8 +151,7 @@ class VideoOptimizer {
             createdFrames = transcode.createdFrames,
             blendedFrames = transcode.blendedFrames,
             transcoded = true,
-            analysis = analysis,
-            aiReport = aiReport
+            analysis = analysis
         )
     }
 
