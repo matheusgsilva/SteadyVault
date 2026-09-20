@@ -31,7 +31,6 @@ import com.steadyvault.camera.processing.model.OptimizationConfig
 import com.steadyvault.camera.processing.model.OptimizationPreset
 import com.steadyvault.camera.processing.model.OptimizationRateMode
 import com.steadyvault.camera.processing.model.OutputCodec
-import com.steadyvault.camera.processing.model.VideoFilterConfig
 import com.steadyvault.camera.storage.security.PrimaryVaultLock
 import com.steadyvault.camera.storage.security.SecondaryVaultLock
 import com.steadyvault.camera.storage.security.TertiaryVaultLock
@@ -1032,7 +1031,6 @@ class MediaPlayerActivity : ComponentActivity() {
             bitrateMbps = 0,
             keepAudio = keepAudio,
             replaceOriginal = false,
-            filters = VideoFilterConfig(),
             thermalProtection = true,
             trimStartMs = startMs.toLong(),
             trimEndMs = endMs.toLong()
