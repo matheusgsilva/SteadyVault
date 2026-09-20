@@ -21,8 +21,8 @@ import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.core.state.PhotoCaptureStateStore
 import com.steadyvault.camera.core.storage.RecordingStorageGuard
 import com.steadyvault.camera.core.validation.UiBehaviorRules
-import com.steadyvault.camera.core.state.OptimizationStateStore
-import com.steadyvault.camera.processing.service.VideoOptimizationService
+import com.steadyvault.camera.core.state.VideoProcessingStateStore
+import com.steadyvault.camera.processing.service.VideoProcessingService
 import com.steadyvault.camera.ui.components.OneUiDialog
 import com.steadyvault.camera.ui.settings.SettingsActivity
 import com.steadyvault.camera.ui.navigation.BottomNavigation
@@ -346,11 +346,11 @@ class CaptureActivity : ComponentActivity() {
 
     private val optimizationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val state = intent?.getStringExtra(VideoOptimizationService.EXTRA_STATE).orEmpty()
-            val message = intent?.getStringExtra(VideoOptimizationService.EXTRA_MESSAGE).orEmpty()
-            val progress = intent?.getIntExtra(VideoOptimizationService.EXTRA_PROGRESS, 0) ?: 0
+            val state = intent?.getStringExtra(VideoProcessingService.EXTRA_STATE).orEmpty()
+            val message = intent?.getStringExtra(VideoProcessingService.EXTRA_MESSAGE).orEmpty()
+            val progress = intent?.getIntExtra(VideoProcessingService.EXTRA_PROGRESS, 0) ?: 0
             renderOptimizationState(state, message, progress)
-            if (state != VideoOptimizationService.STATE_PROGRESS) {
+            if (state != VideoProcessingService.STATE_PROGRESS) {
                 mainHandler.postDelayed({ refreshIdleOrStoredState() }, OPTIMIZATION_RESULT_HOLD_MS)
             }
         }
@@ -3365,7 +3365,7 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun beginRecordingFlow() {
-        if (OptimizationStateStore.snapshot(this).running) {
+        if (VideoProcessingStateStore.snapshot(this).running) {
             OneUiDialog.confirm(
                 activity = this,
                 title = "Otimização em andamento",
@@ -3374,11 +3374,11 @@ class CaptureActivity : ComponentActivity() {
                 negativeLabel = "Aguardar"
             ) {
                 pendingRecordingAfterOptimizationCancel = true
-                VideoOptimizationService.cancel(this)
+                VideoProcessingService.cancel(this)
                 renderOptimizationState(
-                    VideoOptimizationService.STATE_PROGRESS,
+                    VideoProcessingService.STATE_PROGRESS,
                     "Cancelando para liberar o processador para a gravação",
-                    OptimizationStateStore.snapshot(this).progress
+                    VideoProcessingStateStore.snapshot(this).progress
                 )
                 waitForOptimizationToStop(0)
             }
@@ -3401,7 +3401,7 @@ class CaptureActivity : ComponentActivity() {
 
     private fun waitForOptimizationToStop(attempt: Int) {
         if (!pendingRecordingAfterOptimizationCancel) return
-        val snapshot = OptimizationStateStore.snapshot(this)
+        val snapshot = VideoProcessingStateStore.snapshot(this)
         if (!snapshot.running) {
             pendingRecordingAfterOptimizationCancel = false
             mainHandler.postDelayed({ beginRecordingFlow() }, OPTIMIZATION_RELEASE_DELAY_MS)
@@ -3820,7 +3820,7 @@ class CaptureActivity : ComponentActivity() {
 
         val stateFilter = IntentFilter(CaptureService.ACTION_STATE)
         val photoFilter = IntentFilter(PhotoService.ACTION_PHOTO_STATE)
-        val optimizationFilter = IntentFilter(VideoOptimizationService.ACTION_STATE)
+        val optimizationFilter = IntentFilter(VideoProcessingService.ACTION_STATE)
 
         receiversRegistered = runCatching {
             ContextCompat.registerReceiver(this, stateReceiver, stateFilter, ContextCompat.RECEIVER_NOT_EXPORTED)
@@ -3840,10 +3840,10 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun refreshIdleOrStoredState() {
-        val optimization = OptimizationStateStore.snapshot(this)
+        val optimization = VideoProcessingStateStore.snapshot(this)
         if (optimization.running) {
             renderOptimizationState(
-                VideoOptimizationService.STATE_PROGRESS,
+                VideoProcessingService.STATE_PROGRESS,
                 optimization.message,
                 optimization.progress
             )
@@ -3877,14 +3877,14 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun refreshOptimizationState() {
-        val snapshot = OptimizationStateStore.snapshot(this)
-        if (snapshot.state == OptimizationStateStore.STATE_IDLE || snapshot.message.isBlank()) return
+        val snapshot = VideoProcessingStateStore.snapshot(this)
+        if (snapshot.state == VideoProcessingStateStore.STATE_IDLE || snapshot.message.isBlank()) return
         if (!snapshot.running && System.currentTimeMillis() - snapshot.updatedAtMs > OPTIMIZATION_RESULT_VISIBLE_MS) return
         val state = when (snapshot.state) {
-            OptimizationStateStore.STATE_RUNNING -> VideoOptimizationService.STATE_PROGRESS
-            OptimizationStateStore.STATE_SUCCESS -> VideoOptimizationService.STATE_SUCCESS
-            OptimizationStateStore.STATE_CANCELLED -> VideoOptimizationService.STATE_CANCELLED
-            else -> VideoOptimizationService.STATE_ERROR
+            VideoProcessingStateStore.STATE_RUNNING -> VideoProcessingService.STATE_PROGRESS
+            VideoProcessingStateStore.STATE_SUCCESS -> VideoProcessingService.STATE_SUCCESS
+            VideoProcessingStateStore.STATE_CANCELLED -> VideoProcessingService.STATE_CANCELLED
+            else -> VideoProcessingService.STATE_ERROR
         }
         renderOptimizationState(state, snapshot.message, snapshot.progress)
     }
@@ -3892,18 +3892,18 @@ class CaptureActivity : ComponentActivity() {
     private fun renderOptimizationState(state: String, message: String, progress: Int) {
         val safeProgress = progress.coerceIn(0, 100)
         val display = when (state) {
-            VideoOptimizationService.STATE_PROGRESS ->
+            VideoProcessingService.STATE_PROGRESS ->
                 "Otimização do último vídeo • $safeProgress%\n${message.ifBlank { "Processando no aparelho" }}"
-            VideoOptimizationService.STATE_SUCCESS ->
+            VideoProcessingService.STATE_SUCCESS ->
                 permissionAwareIdleMessage()
-            VideoOptimizationService.STATE_CANCELLED -> "Otimização cancelada"
+            VideoProcessingService.STATE_CANCELLED -> "Processamento cancelado"
             else -> "Falha na otimização\n${message.ifBlank { "Abra o cofre para tentar novamente" }}"
         }
         statusText.text = display
         statusDot.setBackgroundResource(
             when (state) {
-                VideoOptimizationService.STATE_PROGRESS -> R.drawable.bg_recording_dot
-                VideoOptimizationService.STATE_SUCCESS -> R.drawable.bg_ready_dot
+                VideoProcessingService.STATE_PROGRESS -> R.drawable.bg_recording_dot
+                VideoProcessingService.STATE_SUCCESS -> R.drawable.bg_ready_dot
                 else -> R.drawable.bg_error_dot
             }
         )

@@ -25,8 +25,8 @@ import android.widget.Toast
 import com.steadyvault.camera.R
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureSettings
-import com.steadyvault.camera.core.state.OptimizationStateStore
-import com.steadyvault.camera.processing.service.VideoOptimizationService
+import com.steadyvault.camera.core.state.VideoProcessingStateStore
+import com.steadyvault.camera.processing.service.VideoProcessingService
 import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.processing.auto.AutoGapRepairQueueStore
 import com.steadyvault.camera.storage.security.SecondaryVaultLock
@@ -60,7 +60,7 @@ class PrimaryVaultActivity : FragmentActivity() {
         val total: Int,
         val usedBytes: Long,
         val trashCount: Int,
-        val optimization: OptimizationStateStore.Snapshot
+        val optimization: VideoProcessingStateStore.Snapshot
     )
     private lateinit var mediaGrid: GridView
     private lateinit var emptyText: TextView
@@ -160,7 +160,7 @@ class PrimaryVaultActivity : FragmentActivity() {
     private val optimizationRefresh = object : Runnable {
         override fun run() {
             if (!PrimaryVaultLock.isUnlocked(this@PrimaryVaultActivity)) return
-            val snapshot = OptimizationStateStore.snapshot(this@PrimaryVaultActivity)
+            val snapshot = VideoProcessingStateStore.snapshot(this@PrimaryVaultActivity)
             val autoJob = AutoGapRepairQueueStore.runningJob(this@PrimaryVaultActivity)
             when {
                 snapshot.running -> updateOptimizationUi(snapshot)
@@ -186,14 +186,14 @@ class PrimaryVaultActivity : FragmentActivity() {
     private val optimizationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
-                VideoOptimizationService.ACTION_STATE -> {
-                    val state = intent.getStringExtra(VideoOptimizationService.EXTRA_STATE).orEmpty()
-                    if (state == VideoOptimizationService.STATE_PROGRESS) {
+                VideoProcessingService.ACTION_STATE -> {
+                    val state = intent.getStringExtra(VideoProcessingService.EXTRA_STATE).orEmpty()
+                    if (state == VideoProcessingService.STATE_PROGRESS) {
                         updateProcessingUi(
-                            intent.getStringExtra(VideoOptimizationService.EXTRA_SOURCE_PATH),
-                            intent.getIntExtra(VideoOptimizationService.EXTRA_PROGRESS, 0),
-                            intent.getStringExtra(VideoOptimizationService.EXTRA_MESSAGE).orEmpty(),
-                            "Otimização"
+                            intent.getStringExtra(VideoProcessingService.EXTRA_SOURCE_PATH),
+                            intent.getIntExtra(VideoProcessingService.EXTRA_PROGRESS, 0),
+                            intent.getStringExtra(VideoProcessingService.EXTRA_MESSAGE).orEmpty(),
+                            "Processamento"
                         )
                         scheduleOptimizationRefresh()
                     } else mainHandler.postDelayed({ refresh() }, 100L)
@@ -807,7 +807,7 @@ class PrimaryVaultActivity : FragmentActivity() {
             .apply()
     }
 
-    private fun applyGalleryView(optimization: OptimizationStateStore.Snapshot = OptimizationStateStore.snapshot(this)) {
+    private fun applyGalleryView(optimization: VideoProcessingStateStore.Snapshot = VideoProcessingStateStore.snapshot(this)) {
         if (!PrimaryVaultLock.isUnlocked(this)) return
         val albums = VaultAlbumStore.albums(this)
         if (activeAlbumId != null && activeAlbumId != ALBUM_UNASSIGNED && albums.none { it.id == activeAlbumId }) activeAlbumId = null
@@ -1048,10 +1048,10 @@ class PrimaryVaultActivity : FragmentActivity() {
 
     private fun moveSelectedToTrash(items: List<VaultRepository.MediaItem>) {
         val processingCount = items.count {
-            OptimizationStateStore.snapshotFor(this, it.file)?.running == true || VaultRepository.isBeingProcessed(it.file)
+            VideoProcessingStateStore.snapshotFor(this, it.file)?.running == true || VaultRepository.isBeingProcessed(it.file)
         }
         val safeItems = items.filterNot {
-            OptimizationStateStore.snapshotFor(this, it.file)?.running == true || VaultRepository.isBeingProcessed(it.file)
+            VideoProcessingStateStore.snapshotFor(this, it.file)?.running == true || VaultRepository.isBeingProcessed(it.file)
         }
         if (safeItems.isEmpty()) {
             clearSelection()
@@ -1093,7 +1093,7 @@ class PrimaryVaultActivity : FragmentActivity() {
 
     private fun confirmDirectDeleteSelected(items: List<VaultRepository.MediaItem>) {
         val safeItems = items.filterNot {
-            OptimizationStateStore.snapshotFor(this, it.file)?.running == true || VaultRepository.isBeingProcessed(it.file)
+            VideoProcessingStateStore.snapshotFor(this, it.file)?.running == true || VaultRepository.isBeingProcessed(it.file)
         }
         if (safeItems.isEmpty()) {
             clearSelection()
@@ -1444,7 +1444,7 @@ class PrimaryVaultActivity : FragmentActivity() {
     private fun refresh() {
         val restorePosition = if (::mediaGrid.isInitialized) mediaGrid.firstVisiblePosition else -1
         val restoreTop = if (::mediaGrid.isInitialized) mediaGrid.getChildAt(0)?.top ?: 0 else 0
-        OptimizationStateStore.recoverStale(this)
+        VideoProcessingStateStore.recoverStale(this)
         VaultRepository.releaseStaleProcessingLocks()
         if (!PrimaryVaultLock.isUnlocked(this)) {
             showLockedState(requestUnlock = false)
@@ -1463,7 +1463,7 @@ class PrimaryVaultActivity : FragmentActivity() {
                     val total = items.size
                     val used = VaultRepository.usedBytes(this)
                     val trashCount = VaultTrashRepository.count(this)
-                    val optimization = OptimizationStateStore.snapshot(this)
+                    val optimization = VideoProcessingStateStore.snapshot(this)
                     InitialVaultPage(items, total, used, trashCount, optimization)
                 }
                 runOnUiThread {
@@ -1512,7 +1512,7 @@ class PrimaryVaultActivity : FragmentActivity() {
             mediaGrid.setSelectionFromTop(restorePosition, restoreTop)
         }
         storageText.text = when {
-            page.optimization.running -> "Otimização ${page.optimization.progress}% • ${page.optimization.message}"
+            page.optimization.running -> "Processamento ${page.optimization.progress}% • ${page.optimization.message}"
             autoJob != null -> "Reparo ${autoJob.progress}% • ${autoJob.message}"
             else -> "${page.total} mídia(s) • ${VaultRepository.formatBytes(page.usedBytes)} • privado até exportar"
         }
@@ -1567,8 +1567,8 @@ class PrimaryVaultActivity : FragmentActivity() {
         }
     }
 
-    private fun updateOptimizationUi(snapshot: OptimizationStateStore.Snapshot) {
-        updateProcessingUi(snapshot.sourcePath.takeIf { snapshot.running }, snapshot.progress, snapshot.message, "Otimização")
+    private fun updateOptimizationUi(snapshot: VideoProcessingStateStore.Snapshot) {
+        updateProcessingUi(snapshot.sourcePath.takeIf { snapshot.running }, snapshot.progress, snapshot.message, "Processamento")
     }
 
     private fun updateProcessingUi(sourcePath: String?, progress: Int, message: String, label: String) {
@@ -1671,24 +1671,24 @@ class PrimaryVaultActivity : FragmentActivity() {
     private fun showActions(item: VaultRepository.MediaItem) {
         if (!ensureUnlocked()) return
         prefetchMediaDetails(item)
-        val optimization = OptimizationStateStore.snapshotFor(this, item.file)
+        val optimization = VideoProcessingStateStore.snapshotFor(this, item.file)
         val processing = optimization?.running == true || VaultRepository.isBeingProcessed(item.file)
         val actions = when {
             item.video && processing -> arrayOf(
                 "Abrir original", "Detalhes", "Ver progresso (${optimization?.progress ?: 0}%)",
-                "Cancelar otimização", "Cancelar e mover para a lixeira", "Cancelar e excluir direto"
+                "Cancelar processamento", "Cancelar e mover para a lixeira", "Cancelar e excluir direto"
             )
-            item.video -> arrayOf("Abrir", "Detalhes", "Cortar/editar", "Melhorar/otimizar", "Exportar", "Mover para a lixeira", "Excluir direto")
+            item.video -> arrayOf("Abrir", "Detalhes", "Cortar/editar", "Reparar fluidez", "Exportar", "Mover para a lixeira", "Excluir direto")
             else -> arrayOf("Abrir", "Detalhes", "Exportar", "Mover para a lixeira", "Excluir direto")
         }
         OneUiDialog.choices(
             activity = this,
             title = item.name,
-            message = optimization?.takeIf { processing }?.let { "Otimização ${it.progress}%\n${it.message}" },
+            message = optimization?.takeIf { processing }?.let { "Processamento ${it.progress}%\n${it.message}" },
             choices = actions.map { action ->
                 OneUiDialog.Choice(
                     title = action,
-                    destructive = action.contains("lixeira", ignoreCase = true) || action.contains("Excluir direto", ignoreCase = true) || action.contains("Cancelar otimização")
+                    destructive = action.contains("lixeira", ignoreCase = true) || action.contains("Excluir direto", ignoreCase = true) || action.contains("Cancelar processamento")
                 )
             }
         ) { which ->
@@ -1698,8 +1698,8 @@ class PrimaryVaultActivity : FragmentActivity() {
                     1 -> showMediaDetails(item)
                     2 -> openOptimization(item)
                     3 -> {
-                        VideoOptimizationService.cancel(this)
-                        Toast.makeText(this, "Cancelando otimização…", Toast.LENGTH_SHORT).show()
+                        VideoProcessingService.cancel(this)
+                        Toast.makeText(this, "Cancelando processamento…", Toast.LENGTH_SHORT).show()
                         scheduleOptimizationRefresh()
                     }
                     4 -> cancelProcessingAndDelete(item, permanently = false)
@@ -1760,8 +1760,9 @@ class PrimaryVaultActivity : FragmentActivity() {
     }
 
     private fun openOptimization(item: VaultRepository.MediaItem) {
-        startActivity(Intent(this, VideoOptimizationActivity::class.java)
-            .putExtra(VideoOptimizationActivity.EXTRA_PATH, item.file.absolutePath))
+        AutoGapRepairService.repairNow(this, item.file)
+        Toast.makeText(this, "Reparo de fluidez adicionado à fila", Toast.LENGTH_SHORT).show()
+        refresh()
     }
 
     private fun exportItem(item: VaultRepository.MediaItem) {
@@ -1782,11 +1783,11 @@ class PrimaryVaultActivity : FragmentActivity() {
     }
 
     private fun confirmDelete(item: VaultRepository.MediaItem) {
-        val optimization = OptimizationStateStore.snapshotFor(this, item.file)
+        val optimization = VideoProcessingStateStore.snapshotFor(this, item.file)
         if (optimization?.running == true || VaultRepository.isBeingProcessed(item.file)) {
             OneUiDialog.choices(
                 activity = this,
-                title = "Otimização em andamento",
+                title = "Processamento em andamento",
                 message = "Progresso: ${optimization?.progress ?: 0}%\n${optimization?.message ?: "Processando vídeo"}",
                 choices = listOf(
                     OneUiDialog.Choice("Ver progresso", "Acompanhar a etapa atual e o percentual."),
@@ -1829,7 +1830,7 @@ class PrimaryVaultActivity : FragmentActivity() {
         OneUiDialog.confirm(
             activity = this,
             title = "Cancelar e excluir direto?",
-            message = "A otimização será encerrada e a mídia será apagada permanentemente, sem passar pela lixeira.",
+            message = "A processamento será encerrada e a mídia será apagada permanentemente, sem passar pela lixeira.",
             positiveLabel = "Excluir direto",
             destructive = true
         ) { cancelProcessingAndDelete(item, permanently = true) }
@@ -1841,16 +1842,16 @@ class PrimaryVaultActivity : FragmentActivity() {
             title = "Encerrando processamento",
             message = "Aguardando o arquivo ser liberado com segurança…"
         )
-        VideoOptimizationService.cancel(this)
+        VideoProcessingService.cancel(this)
         val deadline = SystemClock.uptimeMillis() + PROCESSING_RELEASE_TIMEOUT_MS
         fun check() {
             if (isFinishing || isDestroyed) {
                 progress.dismiss()
                 return
             }
-            OptimizationStateStore.recoverStale(this)
+            VideoProcessingStateStore.recoverStale(this)
             VaultRepository.releaseStaleProcessingLocks()
-            val state = OptimizationStateStore.snapshotFor(this, item.file)
+            val state = VideoProcessingStateStore.snapshotFor(this, item.file)
             val processing = state?.running == true || VaultRepository.isBeingProcessed(item.file)
             if (!processing) {
                 progress.dismiss()
@@ -1887,7 +1888,7 @@ class PrimaryVaultActivity : FragmentActivity() {
     private fun registerOptimizationReceiver() {
         if (optimizationReceiverRegistered) return
         val filter = IntentFilter().apply {
-            addAction(VideoOptimizationService.ACTION_STATE)
+            addAction(VideoProcessingService.ACTION_STATE)
             addAction(AutoGapRepairService.ACTION_STATE)
         }
         optimizationReceiverRegistered = runCatching {
@@ -1909,7 +1910,7 @@ class PrimaryVaultActivity : FragmentActivity() {
 
     private fun scheduleOptimizationRefresh() {
         mainHandler.removeCallbacks(optimizationRefresh)
-        if (OptimizationStateStore.snapshot(this).running || AutoGapRepairQueueStore.runningJob(this) != null) {
+        if (VideoProcessingStateStore.snapshot(this).running || AutoGapRepairQueueStore.runningJob(this) != null) {
             mainHandler.postDelayed(optimizationRefresh, OPTIMIZATION_REFRESH_MS)
         }
     }

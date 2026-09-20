@@ -23,6 +23,7 @@ import androidx.media3.common.util.UnstableApi
 import com.steadyvault.camera.R
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureSettings
+import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.storage.vault.MediaThumbnailRepository
 import com.steadyvault.camera.storage.vault.VaultMediaCacheSettings
 import com.steadyvault.camera.storage.vault.VaultRepository
@@ -40,7 +41,6 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     protected abstract val vaultTitle: String
     protected abstract val vaultPrefsName: String
     protected abstract val mediaPlayerVaultExtra: String
-    protected abstract val videoOptimizationVaultExtra: String
     protected abstract fun isVaultUnlocked(): Boolean
     protected abstract fun unlockVaultSession()
     protected abstract fun lockVault()
@@ -753,7 +753,7 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
             OneUiDialog.Choice("Abrir", "Visualizar esta mídia."),
             OneUiDialog.Choice("Detalhes", "Ver resolução, duração, tamanho e data."),
             OneUiDialog.Choice("Cortar/editar", "Abrir o player já no modo de corte com prévia."),
-            OneUiDialog.Choice("Melhorar/otimizar", "Reparar fluidez, converter ou reduzir tamanho."),
+            OneUiDialog.Choice("Reparar fluidez", "Reparar fluidez, converter ou reduzir tamanho."),
             OneUiDialog.Choice("Exportar", "Criar uma cópia na galeria do aparelho."),
             OneUiDialog.Choice("Mover para a lixeira", "Pode restaurar depois.", destructive = true),
             OneUiDialog.Choice("Excluir direto", "Apaga permanentemente, sem lixeira.", destructive = true)
@@ -827,12 +827,9 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     }
 
     private fun openOptimization(item: VaultRepository.MediaItem) {
-        adapter.pauseLoading()
-        startActivity(
-            Intent(this, VideoOptimizationActivity::class.java)
-                .putExtra(VideoOptimizationActivity.EXTRA_PATH, item.file.absolutePath)
-                .putExtra(videoOptimizationVaultExtra, true)
-        )
+        AutoGapRepairService.repairNow(this, item.file)
+        Toast.makeText(this, "Reparo de fluidez adicionado à fila", Toast.LENGTH_SHORT).show()
+        refresh()
     }
 
     private fun export(item: VaultRepository.MediaItem) {

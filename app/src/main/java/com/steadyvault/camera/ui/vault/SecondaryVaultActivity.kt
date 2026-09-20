@@ -12,7 +12,6 @@ class SecondaryVaultActivity : PrivateVaultGalleryActivity() {
     override val vaultTitle = "Cofre secundário"
     override val vaultPrefsName = "secondary_vault_view_prefs"
     override val mediaPlayerVaultExtra = MediaPlayerActivity.EXTRA_SECONDARY
-    override val videoOptimizationVaultExtra = VideoOptimizationActivity.EXTRA_SECONDARY
     override fun isVaultUnlocked() = SecondaryVaultLock.isUnlocked(this)
     override fun unlockVaultSession() = SecondaryVaultLock.unlockSession()
     override fun lockVault() = SecondaryVaultLock.lock()

@@ -12,7 +12,6 @@ class TertiaryVaultActivity : PrivateVaultGalleryActivity() {
     override val vaultTitle = "Cofre terciário"
     override val vaultPrefsName = "tertiary_vault_view_prefs"
     override val mediaPlayerVaultExtra = MediaPlayerActivity.EXTRA_TERTIARY
-    override val videoOptimizationVaultExtra = VideoOptimizationActivity.EXTRA_TERTIARY
     override fun isVaultUnlocked() = TertiaryVaultLock.isUnlocked(this)
     override fun unlockVaultSession() = TertiaryVaultLock.unlockSession()
     override fun lockVault() = TertiaryVaultLock.lock()

@@ -11,9 +11,9 @@ import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.state.CaptureStateStore
-import com.steadyvault.camera.core.state.OptimizationStateStore
+import com.steadyvault.camera.core.state.VideoProcessingStateStore
 import com.steadyvault.camera.core.state.PhotoCaptureStateStore
-import com.steadyvault.camera.processing.service.VideoOptimizationService
+import com.steadyvault.camera.processing.service.VideoProcessingService
 import com.steadyvault.camera.core.storage.RecordingStorageGuard
 import com.steadyvault.camera.ui.capture.CaptureActivity
 
@@ -60,8 +60,8 @@ class WidgetStartReceiver : BroadcastReceiver() {
         )
         val settings = CaptureSettings.snapshot(context)
         val effectiveSettings = settings.copy(fps = fps)
-        if (OptimizationStateStore.snapshot(context).running) {
-            VideoOptimizationService.cancel(context)
+        if (VideoProcessingStateStore.snapshot(context).running) {
+            VideoProcessingService.cancel(context)
             CaptureStateStore.update(context, "Cancelando otimização para gravar sem dividir recursos…")
         }
         val spaceCheck = RecordingStorageGuard.checkProfile(context, effectiveSettings)

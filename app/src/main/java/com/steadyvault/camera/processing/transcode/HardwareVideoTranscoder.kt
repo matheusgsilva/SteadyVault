@@ -391,7 +391,7 @@ class HardwareVideoTranscoder {
                                     FrameRepairMode.ADAPTIVE_BLEND -> "Reconstruindo cadência com mistura temporal por GPU"
                                     FrameRepairMode.FILL_MISSING_FRAMES -> "Preenchendo lacunas com o quadro mais próximo"
                                     FrameRepairMode.SMOOTH_TIMELINE -> "Regularizando a timeline"
-                                    FrameRepairMode.NONE -> if (request.filters.enabled) "Aplicando filtros por GPU" else "Recodificando por hardware"
+                                    FrameRepairMode.NONE -> "Recodificando por hardware"
                                 }
                                 progress(percent, message)
                             }
