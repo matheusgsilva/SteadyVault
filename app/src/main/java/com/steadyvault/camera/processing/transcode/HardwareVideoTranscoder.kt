@@ -626,6 +626,10 @@ class HardwareVideoTranscoder {
         private var motionFlowScaleY = 0f
         private var motionGlobalReliability = 1f
         private var motionSceneChange = false
+        private var globalForwardUvX = 0f
+        private var globalForwardUvY = 0f
+        private var globalBackwardUvX = 0f
+        private var globalBackwardUvY = 0f
         private var motionFieldDirty = true
         private var currentIndex = -1
         private var previousIndex = -1
@@ -783,6 +787,21 @@ class HardwareVideoTranscoder {
                 GLES20.glGetUniformLocation(motionInterpolateProgram, "uSceneChange"),
                 if (motionSceneChange) 1f else 0f
             )
+            GLES20.glUniform2f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uGlobalForward"),
+                globalForwardUvX,
+                globalForwardUvY
+            )
+            GLES20.glUniform2f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uGlobalBackward"),
+                globalBackwardUvX,
+                globalBackwardUvY
+            )
+            GLES20.glUniform2f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uMotionTexel"),
+                1f / motionWidth.coerceAtLeast(1).toFloat(),
+                1f / motionHeight.coerceAtLeast(1).toFloat()
+            )
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             checkGl("interpolar movimento")
         }
@@ -802,6 +821,10 @@ class HardwareVideoTranscoder {
             motionFlowScaleY = field.flowScaleY
             motionGlobalReliability = field.globalReliability
             motionSceneChange = field.sceneChangeLikely
+            globalForwardUvX = field.globalForwardUvX
+            globalForwardUvY = field.globalForwardUvY
+            globalBackwardUvX = field.globalBackwardUvX
+            globalBackwardUvY = field.globalBackwardUvY
             uploadMotionField(motionTextures[0], forwardMotionUpload, field.forwardRgba)
             uploadMotionField(motionTextures[1], backwardMotionUpload, field.backwardRgba)
             motionFieldDirty = false
@@ -968,9 +991,12 @@ uniform vec2 uFlowScale;
 uniform float uAlpha;
 uniform float uGlobalReliability;
 uniform float uSceneChange;
+uniform vec2 uGlobalForward;
+uniform vec2 uGlobalBackward;
+uniform vec2 uMotionTexel;
 
 vec4 smoothFlow(sampler2D tex, vec2 uv){
-    vec2 px=vec2(1.0/960.0,1.0/540.0);
+    vec2 px=uMotionTexel;
     vec4 c=texture2D(tex,uv);
     vec4 l=texture2D(tex,clamp(uv-vec2(px.x,0.0),vec2(0.0),vec2(1.0)));
     vec4 r=texture2D(tex,clamp(uv+vec2(px.x,0.0),vec2(0.0),vec2(1.0)));
@@ -1012,10 +1038,20 @@ void main(){
         backward=smoothFlow(uBackwardMotion,currUv);
     }
 
-    vec4 prevWarped=texture2D(uPrevious,prevUv);
-    vec4 currWarped=texture2D(uCurrent,currUv);
     float prevConfidence=smoothstep(0.08,0.78,forward.b);
     float currConfidence=smoothstep(0.08,0.78,backward.b);
+
+    // Se a região local é ambígua, acompanha a panorâmica/movimento global
+    // em vez de congelar ou dissolver no lugar errado.
+    vec2 localForward=(forward.rg*2.0-1.0)*uFlowScale;
+    vec2 localBackward=(backward.rg*2.0-1.0)*uFlowScale;
+    vec2 effectiveForward=mix(uGlobalForward,localForward,prevConfidence);
+    vec2 effectiveBackward=mix(uGlobalBackward,localBackward,currConfidence);
+    prevUv=clamp(vTextureCoord-effectiveForward*a,vec2(0.0),vec2(1.0));
+    currUv=clamp(vTextureCoord-effectiveBackward*(1.0-a),vec2(0.0),vec2(1.0));
+
+    vec4 prevWarped=texture2D(uPrevious,prevUv);
+    vec4 currWarped=texture2D(uCurrent,currUv);
     float prevWeight=(1.0-a)*prevConfidence;
     float currWeight=a*currConfidence;
     float weightSum=max(prevWeight+currWeight,0.0001);
