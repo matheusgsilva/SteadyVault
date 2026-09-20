@@ -40,9 +40,7 @@ class VideoOptimizer {
         val analysis = VideoAnalysis.read(input)
         val requestedFps = config.targetFps.takeIf { it in 1..240 }
         val targetFps = (requestedFps ?: analysis.estimatedFps).coerceIn(1, 240)
-        val needsVisualProcessing = config.filters.enabled
-
-        if (!config.hasTrim() && config.preset == OptimizationPreset.REPAIR_ONLY && config.frameRepair == FrameRepairMode.NONE && !needsVisualProcessing) {
+        if (!config.hasTrim() && config.preset == OptimizationPreset.REPAIR_ONLY && config.frameRepair == FrameRepairMode.NONE) {
             progress(10, "Copiando sem alterar o vídeo")
             if (cancelled()) throw InterruptedException("Processamento cancelado")
             input.copyTo(output, overwrite = true)
@@ -52,7 +50,6 @@ class VideoOptimizer {
 
         if (config.preset == OptimizationPreset.REPAIR_ONLY &&
             config.frameRepair == FrameRepairMode.SMOOTH_TIMELINE &&
-            !needsVisualProcessing &&
             !config.hasTrim()
         ) {
             progress(5, "Regularizando timestamps sem perda de imagem")
@@ -127,7 +124,6 @@ class VideoOptimizer {
                 sourceDurationUs = visualTimelineUs,
                 sourceFrameCount = analysis.frameCount,
                 keepAudio = config.keepAudio,
-                filters = config.filters,
                 maxInterpolatedFramesPerGap = config.maxInterpolatedFramesPerGap,
                 highQualityMotion = config.frameRepair == FrameRepairMode.MOTION_COMPENSATED,
                 trimStartUs = trimStartUs,
