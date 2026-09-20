@@ -178,7 +178,7 @@ class VideoOptimizationService : Service() {
                 require(result.output.isFile && result.output.length() > 0L) {
                     "O processador não gerou um arquivo válido"
                 }
-                if (cancelledForCapture()) throw InterruptedException("Otimização pausada para a gravação")
+                if (cancelledForCapture()) throw InterruptedException("Processamento interrompido para priorizar a gravação")
 
                 publishProgress(98, "Validando integridade, duração, orientação e áudio", forceNotification = true)
                 val validation = VideoValidator.validate(
@@ -186,7 +186,7 @@ class VideoOptimizationService : Service() {
                     result.analysis,
                     expectedDurationUs = if (config.hasTrim()) config.trimmedDurationUs(result.analysis.durationUs) else null
                 )
-                if (cancelledForCapture()) throw InterruptedException("Otimização pausada para a gravação")
+                if (cancelledForCapture()) throw InterruptedException("Processamento interrompido para priorizar a gravação")
 
                 var replacementDeferred = false
                 val finalFile = if (config.replaceOriginal) {
@@ -490,7 +490,7 @@ class VideoOptimizationService : Service() {
                     source,
                     OptimizationStateStore.STATE_ERROR,
                     0,
-                    throwable.message ?: "Não foi possível iniciar a otimização"
+                    throwable.message ?: "Não foi possível iniciar o processamento"
                 )
                 throw throwable
             }
