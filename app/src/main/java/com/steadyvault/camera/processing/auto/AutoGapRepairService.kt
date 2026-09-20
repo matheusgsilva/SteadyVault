@@ -603,6 +603,18 @@ class AutoGapRepairService : Service() {
             startSelf(context, ACTION_RESUME)
         }
 
+        fun repairNow(context: Context, source: File) {
+            if (!source.isFile || !VaultRepository.isInsideVault(context, source)) return
+            AutoGapRepairSettings.setEnabled(context, true)
+            AutoGapRepairSettings.setMode(context, FrameRepairMode.MOTION_COMPENSATED)
+            userPauseRequested = false
+            interactivePriorityRequested = false
+            AutoGapRepairQueueStore.enqueue(context, source, 0)
+            if (!capturePriorityRequested && !CaptureStateStore.isBusy(context)) {
+                startSelf(context, ACTION_RESUME)
+            }
+        }
+
         fun pauseForCapture(context: Context) {
             // O flag é atualizado no mesmo processo antes de qualquer IPC: o transcoder
             // enxerga o cancelamento imediatamente, sem fazer a câmera esperar.
