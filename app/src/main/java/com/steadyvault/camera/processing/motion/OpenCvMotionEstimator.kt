@@ -25,7 +25,9 @@ object OpenCvMotionEstimator {
         val flowScaleX: Float,
         val flowScaleY: Float,
         val meanConfidence: Float,
-        val meanMotionPixels: Float
+        val meanMotionPixels: Float,
+        val globalReliability: Float,
+        val sceneChangeLikely: Boolean
     )
 
     @Volatile
@@ -68,9 +70,9 @@ object OpenCvMotionEstimator {
             Imgproc.cvtColor(previous, previousGray, Imgproc.COLOR_RGBA2GRAY)
             Imgproc.cvtColor(current, currentGray, Imgproc.COLOR_RGBA2GRAY)
 
-            val levels = if (highQuality) 7 else 4
-            val window = if (highQuality) 35 else 21
-            val iterations = if (highQuality) 8 else 3
+            val levels = if (highQuality) 8 else 4
+            val window = if (highQuality) 39 else 21
+            val iterations = if (highQuality) 10 else 3
             val polyN = if (highQuality) 7 else 5
             val polySigma = if (highQuality) 1.5 else 1.2
             Video.calcOpticalFlowFarneback(
@@ -99,6 +101,8 @@ object OpenCvMotionEstimator {
             val backwardEncoded = ByteArray(pixels * 4)
             var confidenceSum = 0.0
             var motionSum = 0.0
+            var photoDifferenceSum = 0.0
+            var lowConfidencePixels = 0
 
             for (y in 0 until height) {
                 for (x in 0 until width) {
@@ -145,7 +149,12 @@ object OpenCvMotionEstimator {
                         rawDy = bdyRaw
                     )
 
-                    confidenceSum += ((forwardConfidence + backwardConfidence) * 0.5).toDouble()
+                    val pairConfidence = (forwardConfidence + backwardConfidence) * 0.5f
+                    confidenceSum += pairConfidence.toDouble()
+                    if (pairConfidence < 0.22f) lowConfidencePixels++
+                    val previousValue = previousLuma[index].toInt() and 0xff
+                    val currentValue = currentLuma[index].toInt() and 0xff
+                    photoDifferenceSum += abs(previousValue - currentValue).toDouble() / 255.0
                     motionSum += (
                         hypot(fdx.toDouble(), fdy.toDouble()) +
                             hypot(bdx.toDouble(), bdy.toDouble())
@@ -156,13 +165,29 @@ object OpenCvMotionEstimator {
                 }
             }
 
+            val meanConfidence = (confidenceSum / pixels.coerceAtLeast(1)).toFloat()
+            val meanPhotoDifference = (photoDifferenceSum / pixels.coerceAtLeast(1)).toFloat()
+            val lowConfidenceRatio = lowConfidencePixels.toFloat() / pixels.coerceAtLeast(1).toFloat()
+            // Um corte real costuma combinar diferença fotométrica alta com fluxo
+            // inconsistente em grande parte da imagem. Não tratamos panorâmica rápida
+            // como corte apenas por haver movimento.
+            val sceneChangeLikely =
+                meanPhotoDifference > 0.34f && meanConfidence < 0.24f && lowConfidenceRatio > 0.58f
+            val globalReliability = if (sceneChangeLikely) {
+                0f
+            } else {
+                (meanConfidence * (1f - lowConfidenceRatio * 0.45f)).coerceIn(0.18f, 1f)
+            }
+
             return Field(
                 forwardRgba = forwardEncoded,
                 backwardRgba = backwardEncoded,
                 flowScaleX = maxFlow / width.toFloat(),
                 flowScaleY = maxFlow / height.toFloat(),
-                meanConfidence = (confidenceSum / pixels.coerceAtLeast(1)).toFloat(),
-                meanMotionPixels = (motionSum / pixels.coerceAtLeast(1).toDouble()).toFloat()
+                meanConfidence = meanConfidence,
+                meanMotionPixels = (motionSum / pixels.coerceAtLeast(1).toDouble()).toFloat(),
+                globalReliability = globalReliability,
+                sceneChangeLikely = sceneChangeLikely
             )
         } finally {
             previous.release()
@@ -233,9 +258,9 @@ object OpenCvMotionEstimator {
         val out = index * 4
         target[out] = encodeFlow(dx, maximum)
         target[out + 1] = encodeFlow(dy, maximum)
-        // Mantém um piso pequeno para nunca cair em repetição seca de frame.
-        val shaderConfidence = (0.12f + confidence * 0.88f).coerceIn(0f, 1f)
-        target[out + 2] = (shaderConfidence * 255f).roundToInt().coerceIn(0, 255).toByte()
+        // Confiança real, sem piso artificial. O shader possui fallback temporal
+        // contínuo quando o fluxo não é confiável.
+        target[out + 2] = (confidence.coerceIn(0f, 1f) * 255f).roundToInt().coerceIn(0, 255).toByte()
         target[out + 3] = 0xff.toByte()
     }
 
