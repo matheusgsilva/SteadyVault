@@ -222,7 +222,6 @@ class VideoOptimizationService : Service() {
                     append(if (replacementDeferred) "Vídeo corrigido e validado" else "Vídeo otimizado e validado")
                     append(" • ").append(validation.width).append('×').append(validation.height)
                     append(" • cadência ").append(result.analysis.cadenceScore).append("/100")
-                    result.aiReport?.let { append(" • análise local ").append(it.confidence).append('%') }
                     if (result.repairedGaps > 0) append(" • ${result.repairedGaps} irregularidades tratadas")
                     if (result.blendedFrames > 0) append(" • ${result.blendedFrames} transições misturadas")
                     val repeatedFrames = (result.createdFrames - result.blendedFrames).coerceAtLeast(0)
