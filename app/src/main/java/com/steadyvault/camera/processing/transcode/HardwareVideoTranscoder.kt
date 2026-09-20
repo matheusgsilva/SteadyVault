@@ -1060,7 +1060,13 @@ void main(){
     float localReliability=clamp(max(prevConfidence,currConfidence)*0.78+
                                  min(prevConfidence,currConfidence)*0.22,0.0,1.0);
     float reliability=clamp(localReliability*uGlobalReliability,0.0,1.0);
-    gl_FragColor=mix(simple,warped,reliability);
+
+    // Não voltar para crossfade quando o fluxo local perde confiança: isso
+    // preserva cor, mas congela a posição aparente e causa o salto no frame
+    // real seguinte. A confiança agora escolhe local vs movimento global acima;
+    // aqui mantemos o warp como saída principal.
+    float warpWeight=0.88+0.12*reliability;
+    gl_FragColor=mix(simple,warped,warpWeight);
 }"""
         }
     }
