@@ -437,6 +437,41 @@ class SettingsActivity : FragmentActivity() {
                 Toast.LENGTH_LONG
             ).show()
         }
+        addSmallButton("Aplicar perfil estável 4K60") {
+            val current = CaptureSettings.snapshot(this)
+            val stableProfile = current.copy(
+                resolution = CaptureSettings.RESOLUTION_4K,
+                fps = CaptureModeStore.FPS_60,
+                codec = CaptureSettings.CODEC_AVC,
+                bitrateMbps = 200,
+                hdrHlg10 = false,
+                stabilization = CaptureSettings.STABILIZATION_OIS,
+                focusMode = CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
+                noiseReduction = CaptureSettings.PROCESSING_AUTO,
+                edgeMode = CaptureSettings.PROCESSING_AUTO,
+                antibanding = CaptureSettings.ANTIBANDING_AUTO,
+                whiteBalanceMode = CaptureSettings.WHITE_BALANCE_AUTO,
+                lockAeAwbForCadence = true,
+                exposureCompensation = 0,
+                zoomRatio = 1f
+            )
+            CaptureSettings.saveResolutionForFps(
+                this,
+                CaptureModeStore.FPS_60,
+                CaptureSettings.RESOLUTION_4K
+            )
+            CaptureSettings.save(this, stableProfile)
+            CaptureStateStore.clearEffectiveMode(this)
+            editingFps = CaptureModeStore.FPS_60
+            buildFormPreservingScroll(stableProfile)
+            Toast.makeText(
+                this,
+                "Perfil estável aplicado: 4K60 AVC 200 Mbps, SDR, OIS, foco contínuo e AE/AWB travados",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        addInfo("Perfil estável baseado no melhor teste de cadência: 4K60, H.264/AVC, 200 Mbps, SDR, OIS, foco contínuo, ruído/nitidez/antibanding/WB em Auto, exposição 0 e zoom 1x.")
+
         addInfo("Esse botão só altera as opções quando você toca nele. Depois, qualquer ajuste manual continua sendo respeitado normalmente.")
         thermal = addSwitch(
             "Proteção contra temperatura crítica",
