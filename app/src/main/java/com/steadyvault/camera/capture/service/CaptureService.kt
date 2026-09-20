@@ -1602,39 +1602,29 @@ class CaptureService : Service() {
 
         val completed = AtomicBoolean(false)
         val frames = AtomicInteger(0)
-        var lastExposureNs: Long? = null
-        var lastSensitivityIso: Int? = null
-        var lastFocusDistance: Float? = null
-        var lastGains: RggbChannelVector? = null
-        var lastTransform: ColorSpaceTransform? = null
+        val consecutiveStableFrames = AtomicInteger(0)
 
         fun finish() {
             if (!completed.compareAndSet(false, true) || !isAttemptValid(token)) return
 
-            val exposureNs = lastExposureNs
-            val sensitivityIso = lastSensitivityIso
-            val plan = if (exposureNs != null && sensitivityIso != null) {
-                fixedCadencePlan(profile, exposureNs, sensitivityIso)
-            } else {
-                null
-            }
-
-            val request = buildLocked3ARequest(
-                profile = profile,
-                cadencePlan = plan,
-                gains = lastGains,
-                transform = lastTransform,
-                focusDistanceDiopters = lastFocusDistance
-            ) ?: warmupRequest
+            // Importante para o S25 Ultra:
+            // não converta a medição de AE para SENSOR_FRAME_DURATION /
+            // SENSOR_EXPOSURE_TIME / SENSOR_SENSITIVITY. Essa troca para sensor
+            // manual foi o único ponto que ainda podia colocar a HAL em cadências
+            // diferentes entre execuções. Mantemos AE/AWB automáticos, travamos os
+            // dois e preservamos exclusivamente CONTROL_AE_TARGET_FPS_RANGE [60,60].
+            val request = buildLockedAuto3ARequest(profile) ?: warmupRequest
 
             runCatching {
-                armRecorderForFirstFrame(token)
+                // Instala primeiro o request final estático. Só depois o arquivo é
+                // considerado iniciado; durante o MP4 não existe callback por frame.
                 session.setRepeatingRequest(request, null, mainHandler)
+                armRecorderForFirstFrame(token)
                 commitRecorderStart(profile, token, highSpeed = false)
             }.onFailure {
                 failSelectedConfigurationFromWorker(
                     token,
-                    "não foi possível congelar AE/AWB antes da gravação: ${errorText(it)}"
+                    "não foi possível estabilizar AE/AWB antes da gravação: ${errorText(it)}"
                 )
             }
         }
@@ -1647,21 +1637,8 @@ class CaptureService : Service() {
             ) {
                 if (!isAttemptValid(token) || completed.get()) return
 
-                result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let {
-                    lastExposureNs = it
-                }
-                result.get(CaptureResult.SENSOR_SENSITIVITY)?.let {
-                    lastSensitivityIso = it
-                }
                 result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let {
-                    lastFocusDistance = it
                     Camera3AStateStore.updateFocus(profile.cameraId, it)
-                }
-                result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let {
-                    lastGains = it
-                }
-                result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let {
-                    lastTransform = it
                 }
 
                 val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
@@ -1674,16 +1651,36 @@ class CaptureService : Service() {
                 val awbReady = awbState == null ||
                     awbState == CaptureResult.CONTROL_AWB_STATE_CONVERGED ||
                     awbState == CaptureResult.CONTROL_AWB_STATE_LOCKED
-                val focusReady =
-                    recordingSettings.focusMode != CaptureSettings.FOCUS_LOCKED ||
-                    afState == null ||
-                    afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED ||
-                    afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
+                val focusReady = when (recordingSettings.focusMode) {
+                    CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
+                    CaptureSettings.FOCUS_CONTINUOUS_PICTURE -> {
+                        afState == null ||
+                            afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED ||
+                            afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
+                            afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN
+                    }
+                    CaptureSettings.FOCUS_LOCKED -> {
+                        afState == null ||
+                            afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED ||
+                            afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
+                    }
+                    else -> true
+                }
 
-                val enoughFrames = frames.incrementAndGet() >= THREE_A_LOCK_MIN_WARMUP_FRAMES
-                if (enoughFrames && aeReady && awbReady && focusReady) {
+                val stable = aeReady && awbReady && focusReady
+                if (stable) {
+                    consecutiveStableFrames.incrementAndGet()
+                } else {
+                    consecutiveStableFrames.set(0)
+                }
+
+                val seen = frames.incrementAndGet()
+                if (
+                    seen >= THREE_A_DETERMINISTIC_MIN_WARMUP_FRAMES &&
+                    consecutiveStableFrames.get() >= THREE_A_DETERMINISTIC_STABLE_FRAMES
+                ) {
                     finish()
-                } else if (frames.get() >= THREE_A_LOCK_MAX_WARMUP_FRAMES) {
+                } else if (seen >= THREE_A_DETERMINISTIC_MAX_WARMUP_FRAMES) {
                     finish()
                 }
             }
@@ -1697,8 +1694,46 @@ class CaptureService : Service() {
 
         mainHandler.postDelayed(
             { if (!completed.get()) finish() },
-            THREE_A_LOCK_MAX_WARMUP_MS
+            THREE_A_DETERMINISTIC_MAX_WARMUP_MS
         )
+    }
+
+    private fun buildLockedAuto3ARequest(
+        profile: CameraProfile
+    ): CaptureRequest? {
+        val camera = synchronized(resourceLock) { cameraDevice } ?: return null
+        val surface = synchronized(resourceLock) { recorderSurface } ?: return null
+
+        return runCatching {
+            createRecordRequestBuilder(camera).apply {
+                addTarget(surface)
+                configureCaptureRequest(this, profile)
+
+                // Mantém o controle automático já convergido, mas congela exposição
+                // e balanço de branco sem entrar em modo SENSOR manual.
+                if (
+                    profile.characteristics.get(
+                        CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE
+                    ) == true
+                ) {
+                    setSafely(this, CaptureRequest.CONTROL_AE_LOCK, true)
+                }
+                if (
+                    profile.characteristics.get(
+                        CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE
+                    ) == true
+                ) {
+                    setSafely(this, CaptureRequest.CONTROL_AWB_LOCK, true)
+                }
+
+                // Reafirma o contrato fixo de 60/30 FPS depois dos locks.
+                setSafely(
+                    this,
+                    CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                    profile.fpsRange
+                )
+            }.build()
+        }.getOrNull()
     }
 
     private fun buildLocked3ARequest(
@@ -3138,6 +3173,10 @@ class CaptureService : Service() {
         private const val THREE_A_LOCK_MIN_WARMUP_FRAMES = 4
         private const val THREE_A_LOCK_MAX_WARMUP_FRAMES = 10
         private const val THREE_A_LOCK_MAX_WARMUP_MS = 350L
+        private const val THREE_A_DETERMINISTIC_MIN_WARMUP_FRAMES = 12
+        private const val THREE_A_DETERMINISTIC_STABLE_FRAMES = 6
+        private const val THREE_A_DETERMINISTIC_MAX_WARMUP_FRAMES = 30
+        private const val THREE_A_DETERMINISTIC_MAX_WARMUP_MS = 900L
 
         const val ACTION_RECORDING_VISUAL_FINISHED =
             "com.steadyvault.camera.RECORDING_VISUAL_FINISHED"
@@ -3174,7 +3213,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-3a-lock-test-1.8.268"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-deterministic-3a-1.8.270"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
