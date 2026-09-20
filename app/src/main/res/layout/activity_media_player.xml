@@ -443,7 +443,7 @@
             android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/optimizeMediaButton"
+            android:id="@+id/repairMediaButton"
             android:layout_width="0dp"
             android:layout_height="48dp"
             android:layout_marginStart="8dp"
