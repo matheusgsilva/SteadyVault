@@ -1326,9 +1326,9 @@ class MediaPlayerActivity : ComponentActivity() {
             activity = this,
             title = if (permanently) "Cancelar e excluir direto?" else "Cancelar e mover para a lixeira?",
             message = if (permanently) {
-                "A otimização será encerrada e a mídia será apagada permanentemente."
+                "O processamento será encerrado e a mídia será apagada permanentemente."
             } else {
-                "A otimização será encerrada e a mídia poderá ser restaurada depois."
+                "O processamento será encerrado e a mídia poderá ser restaurada depois."
             },
             positiveLabel = if (permanently) "Excluir direto" else "Mover",
             destructive = true
