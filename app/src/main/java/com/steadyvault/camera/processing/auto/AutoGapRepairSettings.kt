@@ -18,7 +18,7 @@ object AutoGapRepairSettings {
     private const val KEY_MAX_FRAMES = "max_frames"
     private const val KEY_AI_ASSISTED = "ai_assisted"
     private const val KEY_SCHEMA = "schema"
-    private const val SCHEMA = 3
+    private const val SCHEMA = 4
 
     fun snapshot(context: Context): Snapshot {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -26,9 +26,14 @@ object AutoGapRepairSettings {
             prefs.getString(KEY_MODE, FrameRepairMode.MOTION_COMPENSATED.name)
         )
         val previousSchema = prefs.getInt(KEY_SCHEMA, 0)
-        val migrated = if (previousSchema < 2 && stored == FrameRepairMode.ADAPTIVE_BLEND) {
-            FrameRepairMode.MOTION_COMPENSATED
-        } else stored
+        val migrated = when {
+            previousSchema < 4 &&
+                (stored == FrameRepairMode.FILL_MISSING_FRAMES ||
+                    stored == FrameRepairMode.SMOOTH_TIMELINE ||
+                    stored == FrameRepairMode.ADAPTIVE_BLEND) ->
+                FrameRepairMode.MOTION_COMPENSATED
+            else -> stored
+        }
         val safeMode = migrated.takeIf {
             it == FrameRepairMode.MOTION_COMPENSATED ||
                 it == FrameRepairMode.ADAPTIVE_BLEND ||

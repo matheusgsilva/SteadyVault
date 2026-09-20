@@ -226,36 +226,15 @@ class AutoGapRepairService : Service() {
                     FrameRepairMode.FILL_MISSING_FRAMES
                 )
             } else {
-                // SDR: um reparo automático de gap só é considerado concluído se
-                // preencher/reconstruir os quadros ausentes de verdade. Não cair em
-                // SMOOTH_TIMELINE, pois ele apenas regulariza PTS e pode manter o
-                // salto visual de um frame.
-                buildList {
-                    when (requestedMode) {
-                        FrameRepairMode.MOTION_COMPENSATED -> {
-                            add(FrameRepairMode.MOTION_COMPENSATED)
-                            add(FrameRepairMode.ADAPTIVE_BLEND)
-                            add(FrameRepairMode.FILL_MISSING_FRAMES)
-                        }
-                        FrameRepairMode.ADAPTIVE_BLEND -> {
-                            add(FrameRepairMode.ADAPTIVE_BLEND)
-                            add(FrameRepairMode.FILL_MISSING_FRAMES)
-                        }
-                        FrameRepairMode.FILL_MISSING_FRAMES -> {
-                            add(FrameRepairMode.FILL_MISSING_FRAMES)
-                        }
-                        FrameRepairMode.SMOOTH_TIMELINE -> {
-                            // Para o reparo automático SDR, "suavizar timeline" não
-                            // substitui frame ausente; volte ao preenchimento real.
-                            add(FrameRepairMode.FILL_MISSING_FRAMES)
-                        }
-                        else -> {
-                            add(FrameRepairMode.MOTION_COMPENSATED)
-                            add(FrameRepairMode.ADAPTIVE_BLEND)
-                            add(FrameRepairMode.FILL_MISSING_FRAMES)
-                        }
-                    }
-                }.distinct()
+                // SDR com frame realmente ausente: o automático ignora uma preferência
+                // antiga de "repetir quadro" e sempre tenta primeiro reconstrução visual.
+                // Isso evita uma saída temporalmente CFR porém ainda perceptivelmente
+                // engasgada por duplicação do vizinho.
+                listOf(
+                    FrameRepairMode.MOTION_COMPENSATED,
+                    FrameRepairMode.ADAPTIVE_BLEND,
+                    FrameRepairMode.FILL_MISSING_FRAMES
+                )
             }
 
             var lastFailure: Throwable? = null
@@ -320,6 +299,15 @@ class AutoGapRepairService : Service() {
                     val repairedAnalysis = VideoValidator.validateRepair(result.output, result.analysis)
                     require(repairedAnalysis.cadenceScore >= 90) {
                         "A saída ainda não atingiu a qualidade mínima de cadência"
+                    }
+                    if (
+                        needsFrameSynthesis &&
+                        (mode == FrameRepairMode.MOTION_COMPENSATED ||
+                            mode == FrameRepairMode.ADAPTIVE_BLEND)
+                    ) {
+                        require(result.blendedFrames > 0) {
+                            "A tentativa não reconstruiu visualmente nenhum quadro ausente"
+                        }
                     }
                     val finalFile = VaultRepository.commitOptimizedFile(
                         this,

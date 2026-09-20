@@ -370,6 +370,8 @@ class HardwareVideoTranscoder {
                                                 when {
                                                     motionAllowed -> writeMotionFrame(nextFillPtsUs, alpha)
                                                     blendAllowed -> writeBlendedFrame(nextFillPtsUs, alpha)
+                                                    request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ->
+                                                        writeBlendedFrame(nextFillPtsUs, alpha)
                                                     alpha < 0.5f -> writePreviousFrame(nextFillPtsUs)
                                                     else -> writeCurrentFrame(nextFillPtsUs)
                                                 }
@@ -1030,11 +1032,11 @@ void main(){
     vec4 current=texture2D(uCurrent,vTextureCoord);
     vec4 warped=mix(texture2D(uPrevious,prevUv),texture2D(uCurrent,currUv),eased);
     vec4 simple=mix(previous,current,eased);
-    vec4 nearest=a<0.5?previous:current;
-    float fallbackBlend=smoothstep(0.08,0.34,flow.b);
-    vec4 fallback=mix(nearest,simple,fallbackBlend);
+    // Baixa confiança não deve congelar no quadro vizinho. Um blend temporal
+    // pode ter leve ghosting, mas mantém movimento contínuo e é muito menos
+    // perceptível que repetir um frame durante um gap de 16,6 ms.
     float motionConfidence=smoothstep(0.18,0.72,flow.b);
-    gl_FragColor=mix(fallback,warped,motionConfidence);
+    gl_FragColor=mix(simple,warped,motionConfidence);
 }"""
         }
     }
