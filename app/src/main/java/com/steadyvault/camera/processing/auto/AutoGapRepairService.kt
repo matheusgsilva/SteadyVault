@@ -133,6 +133,7 @@ class AutoGapRepairService : Service() {
             return
         }
         if (!workerRunning.compareAndSet(false, true)) return
+        processingActive = true
         cancelCurrent.set(false)
         startForegroundProcessing("Preparando reparo automático…")
         acquireWakeLock()
@@ -162,6 +163,7 @@ class AutoGapRepairService : Service() {
         } finally {
             currentJobId = null
             workerRunning.set(false)
+            processingActive = false
             releaseWakeLock()
             clearNotification()
             stopSelf()
@@ -597,6 +599,7 @@ class AutoGapRepairService : Service() {
         @Volatile private var capturePriorityRequested = false
         @Volatile private var interactivePriorityRequested = false
         @Volatile private var userPauseRequested = false
+        @Volatile private var processingActive = false
 
         fun enqueue(context: Context, source: File, targetFps: Int) {
             if (!AutoGapRepairSettings.snapshot(context).enabled || !source.isFile) return
@@ -670,6 +673,19 @@ class AutoGapRepairService : Service() {
             userPauseRequested = false
             AutoGapRepairQueueStore.retryFailed(context)
             resumeIfEnabled(context)
+        }
+
+        fun awaitReleasedForCapture(timeoutMs: Long = 2_500L): Boolean {
+            val deadline = SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0L)
+            while (processingActive && SystemClock.elapsedRealtime() < deadline) {
+                try {
+                    Thread.sleep(25L)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return !processingActive
+                }
+            }
+            return !processingActive
         }
 
         private fun startSelf(context: Context, action: String, configure: Intent.() -> Unit = {}) {

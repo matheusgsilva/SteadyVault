@@ -252,6 +252,19 @@ class CaptureService : Service() {
         // the next recording naturally gives GPU/codec work time to unwind.
         AutoGapRepairService.pauseForCapture(this)
         VideoOptimizationService.pauseForCapture(this)
+
+        // O reparo robusto pode estar usando MediaCodec/GPU. O flag de cancelamento
+        // é imediato, mas liberar codec/EGL leva alguns ciclos. Não prepare o encoder
+        // da câmera enquanto o pós-processamento ainda está desmontando recursos.
+        val repairReleased = AutoGapRepairService.awaitReleasedForCapture()
+        if (!repairReleased) {
+            AppLogRepository.warn(
+                this,
+                "capture_priority",
+                "Pós-processamento ainda liberando recursos; captura seguirá após o limite de espera"
+            )
+        }
+
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
         MediaThumbnailRepository.prepareForCapture()
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
