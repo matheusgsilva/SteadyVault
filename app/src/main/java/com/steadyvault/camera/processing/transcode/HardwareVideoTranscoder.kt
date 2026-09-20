@@ -3,7 +3,6 @@ package com.steadyvault.camera.processing.transcode
 import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.processing.model.OptimizationPreset
 import com.steadyvault.camera.processing.model.OptimizationRateMode
-import com.steadyvault.camera.processing.model.VideoFilterConfig
 import com.steadyvault.camera.processing.motion.OpenCvMotionEstimator
 
 import android.graphics.SurfaceTexture
@@ -42,7 +41,6 @@ class HardwareVideoTranscoder {
         val sourceDurationUs: Long,
         val sourceFrameCount: Int,
         val keepAudio: Boolean,
-        val filters: VideoFilterConfig,
         val maxInterpolatedFramesPerGap: Int,
         val highQualityMotion: Boolean = false,
         val trimStartUs: Long = 0L,
@@ -345,7 +343,7 @@ class HardwareVideoTranscoder {
                             decoder!!.releaseOutputBuffer(outputIndex, renderInsideTrim)
                             if (renderInsideTrim) {
                                 outputSurface!!.awaitNewImage()
-                                outputSurface!!.captureCurrent(request.filters)
+                                outputSurface!!.captureCurrent()
                                 lastSourceRelativePts = max(lastSourceRelativePts, sourceRelative)
 
                                 when (request.frameRepair) {
@@ -634,7 +632,7 @@ class HardwareVideoTranscoder {
             surfaceTexture.updateTexImage()
         }
 
-        fun captureCurrent(filters: VideoFilterConfig) = renderer.captureFrame(surfaceTexture, filters)
+        fun captureCurrent() = renderer.captureFrame(surfaceTexture)
         fun drawCurrent() = renderer.drawCurrent()
         fun drawPrevious() = renderer.drawPrevious()
         fun drawBlend(alpha: Float) = renderer.drawBlend(alpha)
@@ -775,8 +773,7 @@ class HardwareVideoTranscoder {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
         }
 
-        fun captureFrame(surfaceTexture: SurfaceTexture, requestedFilters: VideoFilterConfig) {
-            val filters = requestedFilters.normalized()
+        fun captureFrame(surfaceTexture: SurfaceTexture) {
             previousIndex = currentIndex
             currentIndex = if (currentIndex < 0) 0 else 1 - currentIndex
             surfaceTexture.getTransformMatrix(transform)
@@ -788,19 +785,6 @@ class HardwareVideoTranscoder {
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTextureId)
             GLES20.glUniform1i(GLES20.glGetUniformLocation(externalProgram, "sTexture"), 0)
-            GLES20.glUniform2f(
-                GLES20.glGetUniformLocation(externalProgram, "uTexel"),
-                1f / width.toFloat(),
-                1f / height.toFloat()
-            )
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uDenoise"), filters.denoise.amount)
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uSharpen"), filters.sharpen.amount)
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uDeblock"), filters.deblock.amount)
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uBrightness"), filters.brightness / 100f)
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uContrast"), filters.contrast / 100f)
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uSaturation"), filters.saturation / 100f)
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uTemperature"), filters.temperature / 50f)
-            GLES20.glUniform1f(GLES20.glGetUniformLocation(externalProgram, "uTint"), filters.tint / 30f)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             if (previousIndex < 0) previousIndex = currentIndex
@@ -992,48 +976,8 @@ class HardwareVideoTranscoder {
 precision mediump float;
 varying vec2 vTextureCoord;
 uniform samplerExternalOES sTexture;
-uniform vec2 uTexel;
-uniform float uDenoise;
-uniform float uSharpen;
-uniform float uDeblock;
-uniform float uBrightness;
-uniform float uContrast;
-uniform float uSaturation;
-uniform float uTemperature;
-uniform float uTint;
 void main(){
-    vec3 center=texture2D(sTexture,vTextureCoord).rgb;
-    vec3 color=center;
-    if(uDenoise+uSharpen+uDeblock>0.001){
-        vec3 nearBlur=(
-            texture2D(sTexture,vTextureCoord+vec2(uTexel.x,0.0)).rgb+
-            texture2D(sTexture,vTextureCoord-vec2(uTexel.x,0.0)).rgb+
-            texture2D(sTexture,vTextureCoord+vec2(0.0,uTexel.y)).rgb+
-            texture2D(sTexture,vTextureCoord-vec2(0.0,uTexel.y)).rgb
-        )*0.25;
-        vec3 wideBlur=(
-            texture2D(sTexture,vTextureCoord+vec2(uTexel.x*2.0,0.0)).rgb+
-            texture2D(sTexture,vTextureCoord-vec2(uTexel.x*2.0,0.0)).rgb+
-            texture2D(sTexture,vTextureCoord+vec2(0.0,uTexel.y*2.0)).rgb+
-            texture2D(sTexture,vTextureCoord-vec2(0.0,uTexel.y*2.0)).rgb
-        )*0.25;
-        color=mix(center,nearBlur,uDenoise*0.55);
-        color=mix(color,wideBlur,uDeblock*0.30);
-        color+=(center-nearBlur)*uSharpen*0.75;
-    }
-    color=(color-0.5)*uContrast+0.5+uBrightness;
-    float luma=dot(color,vec3(0.2126,0.7152,0.0722));
-    color=mix(vec3(luma),color,uSaturation);
-    float cool=max(-uTemperature,0.0);
-    float warm=max(uTemperature,0.0);
-    color.r*=1.0+warm*0.16-cool*0.10;
-    color.b*=1.0+cool*0.22-warm*0.12;
-    float magenta=max(uTint,0.0);
-    float green=max(-uTint,0.0);
-    color.r+=magenta*0.025;
-    color.b+=magenta*0.025;
-    color.g+=green*0.035;
-    gl_FragColor=vec4(clamp(color,0.0,1.0),1.0);
+    gl_FragColor=texture2D(sTexture,vTextureCoord);
 }"""
             private const val BLEND_FRAGMENT_SHADER = """precision mediump float;
 varying vec2 vTextureCoord;
