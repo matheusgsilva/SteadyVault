@@ -120,7 +120,6 @@ class SettingsActivity : FragmentActivity() {
     private lateinit var autoGapRepairEnabled: Switch
     private lateinit var autoGapRepairMode: Spinner
     private lateinit var autoGapRepairMaxFrames: Spinner
-    private lateinit var autoGapRepairAi: Switch
     private lateinit var autoGapRepairQueueInfo: TextView
 
     private val executor = Executors.newSingleThreadExecutor()
@@ -559,7 +558,7 @@ class SettingsActivity : FragmentActivity() {
             audioNoise.visibility = View.GONE
         }
 
-        addSection("Processamento de vídeo")
+        addSection("Pós-processamento de fluidez")
         val autoRepair = AutoGapRepairSettings.snapshot(this)
         autoGapRepairEnabled = addSwitch(
             "Reparar vídeo automaticamente após gravar",
@@ -587,11 +586,6 @@ class SettingsActivity : FragmentActivity() {
             ),
             autoRepair.maxInterpolatedFramesPerGap.toString()
         )
-        autoGapRepairAi = addSwitch(
-            "Análise avançada de movimento",
-            "Opcional. Aumenta o detalhamento do campo de movimento e executa análise visual local antes do reparo. Nenhum serviço externo recebe o vídeo e o original continua intacto.",
-            autoRepair.aiAssisted
-        )
         autoGapRepairQueueInfo = addInfo(AutoGapRepairQueueStore.summary(this).text())
         addSmallButton("Tentar novamente os reparos com erro") {
             AutoGapRepairService.retryFailed(this)
@@ -614,7 +608,7 @@ class SettingsActivity : FragmentActivity() {
         openVideosExternally = addSwitch("Usar o player do celular para vídeos do cofre", "Ao abrir um vídeo, envia acesso temporário somente de leitura ao player padrão do Android/Samsung em vez de usar o player interno.", playback.openVideosExternally)
         openPhotosExternally = addSwitch("Usar a galeria do celular para fotos do cofre", "Ao abrir uma foto, envia acesso temporário somente de leitura ao visualizador padrão do Android/Samsung em vez de usar o visualizador interno.", playback.openPhotosExternally)
         playbackCache = addSpinner("Buffer do player em modo de compatibilidade (ms)", playbackCacheOptions(playback.fileCacheMs), playback.fileCacheMs.toString())
-        addInfo("O Media3 nativo é usado primeiro por fluidez. Se ele falhar, o player tenta perfis de compatibilidade e o VLC automaticamente. Falhas gravadas nos timestamps ainda podem exigir a ferramenta Otimizar vídeo. Ao abrir fora do app, o arquivo é compartilhado somente com permissão temporária de leitura.")
+        addInfo("O Media3 nativo é usado primeiro por fluidez. Se ele falhar, o player tenta perfis de compatibilidade e o VLC automaticamente. Falhas gravadas nos timestamps ainda podem exigir Reparar fluidez. Ao abrir fora do app, o arquivo é compartilhado somente com permissão temporária de leitura.")
 
         addSection("Privacidade e cofres")
         vibration = addSwitch("Vibrar quando a gravação realmente iniciar e terminar", "Emite uma confirmação tátil após o início efetivo da captura e outra quando o arquivo termina de ser salvo.", snapshot.vibrateStartStop)
@@ -1232,7 +1226,7 @@ class SettingsActivity : FragmentActivity() {
         listOf(
             hdr, thermal, audioAgc, audioNoise, audioLowCut, vibration, secureScreen,
             lockWhiteBalance, intelligentPlayback, dropLateFrames, prebuffer4k60, autoRecoverStalls,
-            openVideosExternally, openPhotosExternally, autoGapRepairEnabled, autoGapRepairAi
+            openVideosExternally, openPhotosExternally, autoGapRepairEnabled
         ).forEach { control ->
             control.setOnCheckedChangeListener { _, checked ->
                 if (building) return@setOnCheckedChangeListener
@@ -1240,10 +1234,6 @@ class SettingsActivity : FragmentActivity() {
                     AutoGapRepairSettings.setEnabled(this, checked)
                     if (checked) AutoGapRepairService.resumeIfEnabled(this) else AutoGapRepairService.pauseByUser(this)
                     refreshAutoGapRepairQueueCard()
-                    return@setOnCheckedChangeListener
-                }
-                if (control === autoGapRepairAi) {
-                    AutoGapRepairSettings.setAiAssisted(this, checked)
                     return@setOnCheckedChangeListener
                 }
                 if (control === hdr) enforceHdrCompatibility()
