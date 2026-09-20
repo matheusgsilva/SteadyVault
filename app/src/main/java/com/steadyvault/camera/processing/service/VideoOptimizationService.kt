@@ -347,7 +347,7 @@ class VideoOptimizationService : Service() {
 
     private fun createChannel() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Otimização de vídeo", NotificationManager.IMPORTANCE_LOW).apply {
+            NotificationChannel(CHANNEL_ID, "Processamento de vídeo", NotificationManager.IMPORTANCE_LOW).apply {
                 setSound(null, null)
                 enableVibration(false)
                 setShowBadge(false)
@@ -360,9 +360,9 @@ class VideoOptimizationService : Service() {
         val open = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, VideoOptimizationActivity::class.java)
+            Intent(this, MediaPlayerActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                .apply { currentSourcePath?.let { putExtra(VideoOptimizationActivity.EXTRA_PATH, it) } },
+                .apply { currentSourcePath?.let { putExtra(MediaPlayerActivity.EXTRA_PATH, it) } },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val cancel = PendingIntent.getService(
