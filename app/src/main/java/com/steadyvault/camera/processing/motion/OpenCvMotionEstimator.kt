@@ -31,7 +31,9 @@ object OpenCvMotionEstimator {
         val globalForwardUvX: Float,
         val globalForwardUvY: Float,
         val globalBackwardUvX: Float,
-        val globalBackwardUvY: Float
+        val globalBackwardUvY: Float,
+        val motionIsNearlyStatic: Boolean,
+        val globalMotionIsUnstable: Boolean
     )
 
     @Volatile
@@ -205,6 +207,24 @@ object OpenCvMotionEstimator {
                 (meanConfidence * (1f - lowConfidenceRatio * 0.45f)).coerceIn(0.18f, 1f)
             }
 
+            val globalForwardX = if (forwardWeight > 0.0) (forwardWeightedX / forwardWeight).toFloat() else 0f
+            val globalForwardY = if (forwardWeight > 0.0) (forwardWeightedY / forwardWeight).toFloat() else 0f
+            val globalBackwardX = if (backwardWeight > 0.0) (backwardWeightedX / backwardWeight).toFloat() else 0f
+            val globalBackwardY = if (backwardWeight > 0.0) (backwardWeightedY / backwardWeight).toFloat() else 0f
+            val globalForwardMagnitude = hypot(globalForwardX.toDouble(), globalForwardY.toDouble()).toFloat()
+            val globalBackwardMagnitude = hypot(globalBackwardX.toDouble(), globalBackwardY.toDouble()).toFloat()
+            val motionIsNearlyStatic = meanMotionPixels < 0.45f &&
+                globalForwardMagnitude < 0.35f &&
+                globalBackwardMagnitude < 0.35f
+            val directionDot = globalForwardX * -globalBackwardX + globalForwardY * -globalBackwardY
+            val directionDen = (globalForwardMagnitude * globalBackwardMagnitude).coerceAtLeast(0.0001f)
+            val directionAgreement = directionDot / directionDen
+            val globalMotionIsUnstable =
+                !motionIsNearlyStatic &&
+                globalForwardMagnitude > 0.2f &&
+                globalBackwardMagnitude > 0.2f &&
+                directionAgreement < 0.25f
+
             return Field(
                 forwardRgba = forwardEncoded,
                 backwardRgba = backwardEncoded,
@@ -214,10 +234,12 @@ object OpenCvMotionEstimator {
                 meanMotionPixels = (motionSum / pixels.coerceAtLeast(1).toDouble()).toFloat(),
                 globalReliability = globalReliability,
                 sceneChangeLikely = sceneChangeLikely,
-                globalForwardUvX = if (forwardWeight > 0.0) (forwardWeightedX / forwardWeight / width.toDouble()).toFloat() else 0f,
-                globalForwardUvY = if (forwardWeight > 0.0) (forwardWeightedY / forwardWeight / height.toDouble()).toFloat() else 0f,
-                globalBackwardUvX = if (backwardWeight > 0.0) (backwardWeightedX / backwardWeight / width.toDouble()).toFloat() else 0f,
-                globalBackwardUvY = if (backwardWeight > 0.0) (backwardWeightedY / backwardWeight / height.toDouble()).toFloat() else 0f
+                globalForwardUvX = globalForwardX / width.toFloat(),
+                globalForwardUvY = globalForwardY / height.toFloat(),
+                globalBackwardUvX = globalBackwardX / width.toFloat(),
+                globalBackwardUvY = globalBackwardY / height.toFloat(),
+                motionIsNearlyStatic = motionIsNearlyStatic,
+                globalMotionIsUnstable = globalMotionIsUnstable
             )
         } finally {
             previous.release()
