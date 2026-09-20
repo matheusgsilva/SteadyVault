@@ -388,15 +388,10 @@ class CaptureService : Service() {
             selectedCamera = cameraProfile
             selectedEncoder = encoderProfile
             if (!validateStorageForRecording(cameraProfile, encoderProfile)) return
-            if (headlessCaptureRequested) {
-                prepareHeadlessInParallel(
-                    cameraProfile = cameraProfile,
-                    encoderProfile = encoderProfile,
-                    token = token,
-                    requestCameraOwnership = true
-                )
-                return
-            }
+            // Headless (widget/tela preta) usa a mesma ordem determinística do app:
+            // prepara o encoder primeiro e só depois assume/abre a câmera. Continua
+            // encoder-only, sem Surface de preview; apenas deixa de correr abertura da
+            // câmera e preparação do codec em paralelo, que mudava o estado inicial da HAL.
             try {
                 prepareOutputAndRecorder(cameraProfile, encoderProfile)
             } catch (throwable: Throwable) {
@@ -1602,6 +1597,21 @@ class CaptureService : Service() {
 
         val completed = AtomicBoolean(false)
         val frames = AtomicInteger(0)
+        val minWarmupFrames = if (headlessCaptureRequested) {
+            THREE_A_HEADLESS_MIN_WARMUP_FRAMES
+        } else {
+            THREE_A_LOCK_MIN_WARMUP_FRAMES
+        }
+        val maxWarmupFrames = if (headlessCaptureRequested) {
+            THREE_A_HEADLESS_MAX_WARMUP_FRAMES
+        } else {
+            THREE_A_LOCK_MAX_WARMUP_FRAMES
+        }
+        val maxWarmupMs = if (headlessCaptureRequested) {
+            THREE_A_HEADLESS_MAX_WARMUP_MS
+        } else {
+            THREE_A_LOCK_MAX_WARMUP_MS
+        }
         var lastExposureNs: Long? = null
         var lastSensitivityIso: Int? = null
         var lastFocusDistance: Float? = null
@@ -1680,10 +1690,10 @@ class CaptureService : Service() {
                     afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED ||
                     afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
 
-                val enoughFrames = frames.incrementAndGet() >= THREE_A_LOCK_MIN_WARMUP_FRAMES
+                val enoughFrames = frames.incrementAndGet() >= minWarmupFrames
                 if (enoughFrames && aeReady && awbReady && focusReady) {
                     finish()
-                } else if (frames.get() >= THREE_A_LOCK_MAX_WARMUP_FRAMES) {
+                } else if (frames.get() >= maxWarmupFrames) {
                     finish()
                 }
             }
@@ -1697,7 +1707,7 @@ class CaptureService : Service() {
 
         mainHandler.postDelayed(
             { if (!completed.get()) finish() },
-            THREE_A_LOCK_MAX_WARMUP_MS
+            maxWarmupMs
         )
     }
 
@@ -3138,6 +3148,9 @@ class CaptureService : Service() {
         private const val THREE_A_LOCK_MIN_WARMUP_FRAMES = 4
         private const val THREE_A_LOCK_MAX_WARMUP_FRAMES = 10
         private const val THREE_A_LOCK_MAX_WARMUP_MS = 350L
+        private const val THREE_A_HEADLESS_MIN_WARMUP_FRAMES = 8
+        private const val THREE_A_HEADLESS_MAX_WARMUP_FRAMES = 30
+        private const val THREE_A_HEADLESS_MAX_WARMUP_MS = 1_000L
 
         const val ACTION_RECORDING_VISUAL_FINISHED =
             "com.steadyvault.camera.RECORDING_VISUAL_FINISHED"
@@ -3174,7 +3187,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-3a-lock-test-1.8.268"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-headless-parity-1.8.269"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
