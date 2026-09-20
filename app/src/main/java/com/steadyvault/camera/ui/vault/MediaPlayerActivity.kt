@@ -25,6 +25,7 @@ import com.steadyvault.camera.core.playback.PlaybackSettings
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.state.OptimizationStateStore
 import com.steadyvault.camera.processing.service.VideoOptimizationService
+import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.processing.model.OptimizationConfig
 import com.steadyvault.camera.processing.model.OptimizationPreset
@@ -392,17 +393,18 @@ class MediaPlayerActivity : ComponentActivity() {
         exportButton.setOnClickListener { export() }
         deleteButton.setOnClickListener { confirmDelete() }
         optimizeButton.apply {
+            text = "Reparar fluidez"
             visibility = if (item?.video == true) View.VISIBLE else View.GONE
             setOnClickListener {
                 val media = item ?: return@setOnClickListener
                 stopVideoPlayback()
-                startActivity(
-                    Intent(this@MediaPlayerActivity, VideoOptimizationActivity::class.java)
-                        .putExtra(VideoOptimizationActivity.EXTRA_PATH, media.file.absolutePath)
-                        .putExtra(VideoOptimizationActivity.EXTRA_SECONDARY, secondaryMode)
-                        .putExtra(VideoOptimizationActivity.EXTRA_TERTIARY, tertiaryMode)
-                )
-                finish()
+                AutoGapRepairService.repairNow(this@MediaPlayerActivity, media.file)
+                Haptics.success(this@MediaPlayerActivity)
+                Toast.makeText(
+                    this@MediaPlayerActivity,
+                    "Pós-processamento de fluidez iniciado. O original será preservado.",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
         trimMediaButton.apply {
