@@ -1,95 +1,14 @@
 package com.steadyvault.camera.processing.model
 
-enum class OptimizationPreset(
-    val displayName: String,
-    val description: String
-) {
-    REPAIR_ONLY(
-        "Reparar fluidez sem mudar a imagem",
-        "Regulariza a cadência e evita filtros visuais desnecessários."
-    ),
-    HIGH_QUALITY(
-        "Qualidade máxima visual",
-        "Usa mais bitrate e processamento para preservar detalhes."
-    ),
-    BALANCED(
-        "Equilibrar qualidade e tamanho",
-        "Mantém boa qualidade com carga e tamanho moderados."
-    ),
-    SMALL_FILE(
-        "Reduzir tamanho do arquivo",
-        "Usa HEVC e limita vídeos grandes a 1080p."
-    ),
-    VERY_FAST_1080P(
-        "Very Fast 1080p",
-        "AVC 1080p com processamento rápido, boa compatibilidade e FPS original."
-    ),
-    FAST_1080P(
-        "Fast 1080p",
-        "AVC 1080p equilibrado para uso geral, mantendo o FPS original."
-    ),
-    HQ_1080P(
-        "HQ 1080p",
-        "AVC 1080p com qualidade constante e bitrate maior para preservar detalhes."
-    ),
-    FAST_720P(
-        "Fast 720p",
-        "AVC 720p rápido e compatível para telas menores e compartilhamento."
-    ),
-    HQ_720P(
-        "HQ 720p",
-        "AVC 720p com prioridade para qualidade e áudio original."
-    ),
-    CREATOR_2160P_4K(
-        "Creator 2160p 4K",
-        "AVC até 4K com alta qualidade para plataformas que recodificam o envio."
-    ),
-    CREATOR_1080P(
-        "Creator 1080p",
-        "AVC 1080p de alta qualidade para publicação e nova recodificação."
-    ),
-    SOCIAL_720P(
-        "Social 720p",
-        "AVC 720p com tamanho moderado para redes sociais e mensageiros."
-    ),
-    APPLE_2160P_4K_HEVC(
-        "Apple 2160p 4K HEVC",
-        "HEVC até 4K com qualidade constante e áudio AAC original."
-    ),
-    APPLE_1080P_SURROUND(
-        "Apple 1080p Surround",
-        "AVC 1080p compatível; preserva a faixa AAC original, inclusive multicanal quando já existir."
-    ),
-    ANDROID_1080P(
-        "Android 1080p",
-        "AVC 1080p para aparelhos atuais, mantendo áudio e FPS originais."
-    ),
-    ANDROID_720P(
-        "Android 720p",
-        "AVC 720p para ampla compatibilidade e arquivo moderado."
-    ),
-    WEB_1080P(
-        "Web 1080p",
-        "AVC 1080p com VBR para envio e reprodução em navegadores."
-    ),
-    ARCHIVE_4K(
-        "Arquivo 4K de alta qualidade",
-        "HEVC até 4K com prioridade para detalhes e áudio original."
-    ),
-    SMART(
-        "Escolher automaticamente",
-        "Analisa o vídeo no aparelho e escolhe ajustes conservadores."
-    ),
-    CUSTOM(
-        "Configuração manual",
-        "Mantém exatamente os controles escolhidos nesta tela."
-    );
+enum class OptimizationPreset {
+    REPAIR_ONLY,
+    HIGH_QUALITY;
 
     companion object {
-        fun from(value: String?): OptimizationPreset = entries.firstOrNull { it.name == value } ?: BALANCED
+        fun from(value: String?): OptimizationPreset =
+            entries.firstOrNull { it.name == value } ?: REPAIR_ONLY
     }
 }
-
 enum class FrameRepairMode {
     NONE,
     SMOOTH_TIMELINE,
@@ -124,7 +43,7 @@ enum class OutputCodec {
 }
 
 data class OptimizationConfig(
-    val preset: OptimizationPreset = OptimizationPreset.BALANCED,
+    val preset: OptimizationPreset = OptimizationPreset.REPAIR_ONLY,
     val frameRepair: FrameRepairMode = FrameRepairMode.SMOOTH_TIMELINE,
     val codec: OutputCodec = OutputCodec.HEVC,
     val rateMode: OptimizationRateMode = OptimizationRateMode.AUTO,
