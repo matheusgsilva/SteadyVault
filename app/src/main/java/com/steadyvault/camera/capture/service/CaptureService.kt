@@ -1552,6 +1552,9 @@ class CaptureService : Service() {
 
         runCatching {
             armRecorderForFirstFrame(token)
+            requests.firstOrNull()?.let {
+                logEffectiveCaptureConfiguration(profile, it, "high_speed")
+            }
             session.setRepeatingBurst(requests, null, mainHandler)
             commitRecorderStart(profile, token, highSpeed = true)
         }.onFailure {
@@ -1585,6 +1588,7 @@ class CaptureService : Service() {
             // exatamente [60,60]. O AE permanece ligado para ajustar exposição/ISO,
             // sem trocar para SENSOR_FRAME_DURATION/ISO manual depois que o MP4 começou.
             // Isso evita a transição AE -> sensor manual observada no início dos raws.
+            logEffectiveCaptureConfiguration(profile, request, "regular")
             session.setRepeatingRequest(request, null, mainHandler)
             commitRecorderStart(profile, token, highSpeed = false)
         }.onFailure {
@@ -1629,6 +1633,7 @@ class CaptureService : Service() {
 
             runCatching {
                 armRecorderForFirstFrame(token)
+                logEffectiveCaptureConfiguration(profile, request, "ae_awb_locked")
                 session.setRepeatingRequest(request, null, mainHandler)
                 commitRecorderStart(profile, token, highSpeed = false)
             }.onFailure {
@@ -1807,7 +1812,9 @@ class CaptureService : Service() {
 
             runCatching {
                 armRecorderForFirstFrame(token)
-                session.setRepeatingRequest(lockedRequest ?: warmupRequest, null, mainHandler)
+                val finalRequest = lockedRequest ?: warmupRequest
+                logEffectiveCaptureConfiguration(profile, finalRequest, "focus_locked")
+                session.setRepeatingRequest(finalRequest, null, mainHandler)
                 commitRecorderStart(profile, token, highSpeed = false)
             }.onFailure {
                 failSelectedConfigurationFromWorker(
@@ -3098,6 +3105,132 @@ class CaptureService : Service() {
         super.onDestroy()
     }
 
+    private fun logEffectiveCaptureConfiguration(
+        profile: CameraProfile,
+        request: CaptureRequest,
+        path: String
+    ) {
+        val thermalStatus = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                getSystemService(PowerManager::class.java).currentThermalStatus
+            }.getOrDefault(-1)
+        } else {
+            -1
+        }
+
+        val encoder = selectedEncoder
+        val backend = synchronized(resourceLock) { professionalRecorder }
+
+        fun intName(value: Int?, names: Map<Int, String>): String =
+            value?.let { names[it] ?: it.toString() } ?: "null"
+
+        val stabilization = requestedStabilizationMode(profile)
+        val aeMode = request.get(CaptureRequest.CONTROL_AE_MODE)
+        val aeLock = request.get(CaptureRequest.CONTROL_AE_LOCK)
+        val awbMode = request.get(CaptureRequest.CONTROL_AWB_MODE)
+        val awbLock = request.get(CaptureRequest.CONTROL_AWB_LOCK)
+        val afMode = request.get(CaptureRequest.CONTROL_AF_MODE)
+        val eisMode = request.get(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE)
+        val oisMode = runCatching {
+            request.get(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE)
+        }.getOrNull()
+        val fpsRange = request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE)
+        val exposureNs = request.get(CaptureRequest.SENSOR_EXPOSURE_TIME)
+        val sensitivityIso = request.get(CaptureRequest.SENSOR_SENSITIVITY)
+        val frameDurationNs = request.get(CaptureRequest.SENSOR_FRAME_DURATION)
+        val noiseMode = request.get(CaptureRequest.NOISE_REDUCTION_MODE)
+        val edgeMode = request.get(CaptureRequest.EDGE_MODE)
+        val antibandingMode = request.get(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE)
+        val focusDistance = request.get(CaptureRequest.LENS_FOCUS_DISTANCE)
+        val zoomRatio = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            request.get(CaptureRequest.CONTROL_ZOOM_RATIO)
+        } else {
+            null
+        }
+
+        val info = buildString {
+            append("path=").append(path)
+            append(" • cameraId=").append(profile.cameraId)
+            append(" • size=").append(profile.videoSize.width).append('x').append(profile.videoSize.height)
+            append(" • fpsTarget=").append(profile.targetFps)
+            append(" • fpsRequest=").append(fpsRange?.let { "${it.lower}-${it.upper}" } ?: "null")
+            append(" • codec=").append(encoder?.mime ?: activeRecorderMime ?: "null")
+            append(" • codecComponent=").append(encoder?.codecName ?: "null")
+            append(" • backend=").append(backend?.backendName ?: activeRecorderBackendName.ifBlank { "null" })
+            append(" • bitrate=").append(encoder?.bitrate ?: 0)
+            append(" • stabilizationRequested=").append(stabilizationModeLabel(stabilization))
+            append(" • EIS=").append(
+                intName(
+                    eisMode,
+                    mapOf(
+                        CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF to "OFF",
+                        CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON to "ON",
+                        CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION to "PREVIEW"
+                    )
+                )
+            )
+            append(" • OIS=").append(
+                intName(
+                    oisMode,
+                    mapOf(
+                        CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF to "OFF",
+                        CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON to "ON"
+                    )
+                )
+            )
+            append(" • AF=").append(
+                intName(
+                    afMode,
+                    mapOf(
+                        CameraMetadata.CONTROL_AF_MODE_OFF to "OFF",
+                        CameraMetadata.CONTROL_AF_MODE_AUTO to "AUTO",
+                        CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE to "CONTINUOUS_PICTURE",
+                        CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO to "CONTINUOUS_VIDEO"
+                    )
+                )
+            )
+            append(" • focusDiopters=").append(focusDistance ?: "null")
+            append(" • AE=").append(
+                intName(
+                    aeMode,
+                    mapOf(
+                        CameraMetadata.CONTROL_AE_MODE_OFF to "OFF",
+                        CameraMetadata.CONTROL_AE_MODE_ON to "ON"
+                    )
+                )
+            )
+            append(" • AELock=").append(aeLock)
+            append(" • exposureNs=").append(exposureNs ?: "null")
+            append(" • ISO=").append(sensitivityIso ?: "null")
+            append(" • frameDurationNs=").append(frameDurationNs ?: "null")
+            append(" • AWB=").append(
+                intName(
+                    awbMode,
+                    mapOf(
+                        CameraMetadata.CONTROL_AWB_MODE_OFF to "OFF",
+                        CameraMetadata.CONTROL_AWB_MODE_AUTO to "AUTO",
+                        CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT to "INCANDESCENT",
+                        CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT to "FLUORESCENT",
+                        CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT to "DAYLIGHT",
+                        CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT to "CLOUDY"
+                    )
+                )
+            )
+            append(" • AWBLock=").append(awbLock)
+            append(" • noise=").append(noiseMode ?: "null")
+            append(" • edge=").append(edgeMode ?: "null")
+            append(" • antibanding=").append(antibandingMode ?: "null")
+            append(" • zoom=").append(zoomRatio ?: recordingSettings.zoomRatio)
+            append(" • hdr=").append(profile.hdrHlg10)
+            append(" • thermal=").append(thermalStatus)
+            append(" • audio=").append(backend?.integratedAudio ?: false)
+            append(" • pipeline=").append(CAPTURE_PIPELINE_REVISION)
+        }
+
+        Log.i(LOG_TAG, "CAPTURE_EFFECTIVE_CONFIG • $info")
+        AppLogRepository.info(this, "capture_effective_config", info)
+    }
+
     private fun logRecordingStartup(profile: CameraProfile) {
         val requestedAt = recordingRequestedAtElapsedNs
         if (requestedAt <= 0L) return
@@ -3174,7 +3307,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-3a-lock-test-1.8.268"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-effective-config-log-1.8.269"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
