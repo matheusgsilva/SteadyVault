@@ -8,17 +8,15 @@ object AutoGapRepairSettings {
     data class Snapshot(
         val enabled: Boolean,
         val mode: FrameRepairMode,
-        val maxInterpolatedFramesPerGap: Int,
-        val aiAssisted: Boolean
+        val maxInterpolatedFramesPerGap: Int
     )
 
     private const val PREFS = "steadyvault_auto_gap_repair"
     private const val KEY_ENABLED = "enabled"
     private const val KEY_MODE = "mode"
     private const val KEY_MAX_FRAMES = "max_frames"
-    private const val KEY_AI_ASSISTED = "ai_assisted"
     private const val KEY_SCHEMA = "schema"
-    private const val SCHEMA = 4
+    private const val SCHEMA = 5
 
     fun snapshot(context: Context): Snapshot {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -56,8 +54,7 @@ object AutoGapRepairSettings {
         return Snapshot(
             enabled = prefs.getBoolean(KEY_ENABLED, false),
             mode = safeMode,
-            maxInterpolatedFramesPerGap = storedMaxFrames.coerceIn(1, 16),
-            aiAssisted = prefs.getBoolean(KEY_AI_ASSISTED, false)
+            maxInterpolatedFramesPerGap = storedMaxFrames.coerceIn(1, 16)
         )
     }
 
@@ -82,8 +79,4 @@ object AutoGapRepairSettings {
             .edit().putInt(KEY_MAX_FRAMES, value.coerceIn(1, 16)).apply()
     }
 
-    fun setAiAssisted(context: Context, enabled: Boolean) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_AI_ASSISTED, enabled).apply()
-    }
 }
