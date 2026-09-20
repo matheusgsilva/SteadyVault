@@ -207,6 +207,7 @@ object OpenCvMotionEstimator {
                 (meanConfidence * (1f - lowConfidenceRatio * 0.45f)).coerceIn(0.18f, 1f)
             }
 
+            val meanMotionPixels = (motionSum / pixels.coerceAtLeast(1).toDouble()).toFloat()
             val globalForwardX = if (forwardWeight > 0.0) (forwardWeightedX / forwardWeight).toFloat() else 0f
             val globalForwardY = if (forwardWeight > 0.0) (forwardWeightedY / forwardWeight).toFloat() else 0f
             val globalBackwardX = if (backwardWeight > 0.0) (backwardWeightedX / backwardWeight).toFloat() else 0f
@@ -231,7 +232,7 @@ object OpenCvMotionEstimator {
                 flowScaleX = maxFlow / width.toFloat(),
                 flowScaleY = maxFlow / height.toFloat(),
                 meanConfidence = meanConfidence,
-                meanMotionPixels = (motionSum / pixels.coerceAtLeast(1).toDouble()).toFloat(),
+                meanMotionPixels = meanMotionPixels,
                 globalReliability = globalReliability,
                 sceneChangeLikely = sceneChangeLikely,
                 globalForwardUvX = globalForwardX / width.toFloat(),
