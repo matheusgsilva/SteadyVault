@@ -64,6 +64,8 @@ import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.DynamicRangeProfiles
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.camera2.params.ColorSpaceTransform
+import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.params.TonemapCurve
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -667,6 +669,7 @@ class CaptureService : Service() {
         allowHdr,
         recordingSettings.stabilization,
         recordingSettings.focusMode,
+        recordingSettings.lockAeAwbForCadence,
         preferredCameraId.orEmpty()
     ).joinToString("|")
 
@@ -1427,6 +1430,13 @@ class CaptureService : Service() {
                                     profile = profile,
                                     token = token
                                 )
+                            } else if (recordingSettings.lockAeAwbForCadence) {
+                                startLocked3ARecording(
+                                    session = session,
+                                    warmupRequest = request,
+                                    profile = profile,
+                                    token = token
+                                )
                             } else if (
                                 recordingSettings.focusMode == CaptureSettings.FOCUS_LOCKED
                             ) {
@@ -1580,6 +1590,190 @@ class CaptureService : Service() {
         }.onFailure {
             failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}")
         }
+    }
+
+    private fun startLocked3ARecording(
+        session: CameraCaptureSession,
+        warmupRequest: CaptureRequest,
+        profile: CameraProfile,
+        token: Int
+    ) {
+        if (!isAttemptValid(token)) return
+
+        val completed = AtomicBoolean(false)
+        val frames = AtomicInteger(0)
+        var lastExposureNs: Long? = null
+        var lastSensitivityIso: Int? = null
+        var lastFocusDistance: Float? = null
+        var lastGains: RggbChannelVector? = null
+        var lastTransform: ColorSpaceTransform? = null
+
+        fun finish() {
+            if (!completed.compareAndSet(false, true) || !isAttemptValid(token)) return
+
+            val exposureNs = lastExposureNs
+            val sensitivityIso = lastSensitivityIso
+            val plan = if (exposureNs != null && sensitivityIso != null) {
+                fixedCadencePlan(profile, exposureNs, sensitivityIso)
+            } else {
+                null
+            }
+
+            val request = buildLocked3ARequest(
+                profile = profile,
+                cadencePlan = plan,
+                gains = lastGains,
+                transform = lastTransform,
+                focusDistanceDiopters = lastFocusDistance
+            ) ?: warmupRequest
+
+            runCatching {
+                armRecorderForFirstFrame(token)
+                session.setRepeatingRequest(request, null, mainHandler)
+                commitRecorderStart(profile, token, highSpeed = false)
+            }.onFailure {
+                failSelectedConfigurationFromWorker(
+                    token,
+                    "não foi possível congelar AE/AWB antes da gravação: ${errorText(it)}"
+                )
+            }
+        }
+
+        val callback = object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                captureSession: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                if (!isAttemptValid(token) || completed.get()) return
+
+                result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let {
+                    lastExposureNs = it
+                }
+                result.get(CaptureResult.SENSOR_SENSITIVITY)?.let {
+                    lastSensitivityIso = it
+                }
+                result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let {
+                    lastFocusDistance = it
+                    Camera3AStateStore.updateFocus(profile.cameraId, it)
+                }
+                result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let {
+                    lastGains = it
+                }
+                result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let {
+                    lastTransform = it
+                }
+
+                val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+                val awbState = result.get(CaptureResult.CONTROL_AWB_STATE)
+                val afState = result.get(CaptureResult.CONTROL_AF_STATE)
+
+                val aeReady = aeState == null ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_LOCKED
+                val awbReady = awbState == null ||
+                    awbState == CaptureResult.CONTROL_AWB_STATE_CONVERGED ||
+                    awbState == CaptureResult.CONTROL_AWB_STATE_LOCKED
+                val focusReady =
+                    recordingSettings.focusMode != CaptureSettings.FOCUS_LOCKED ||
+                    afState == null ||
+                    afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED ||
+                    afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
+
+                val enoughFrames = frames.incrementAndGet() >= THREE_A_LOCK_MIN_WARMUP_FRAMES
+                if (enoughFrames && aeReady && awbReady && focusReady) {
+                    finish()
+                } else if (frames.get() >= THREE_A_LOCK_MAX_WARMUP_FRAMES) {
+                    finish()
+                }
+            }
+        }
+
+        runCatching {
+            session.setRepeatingRequest(warmupRequest, callback, mainHandler)
+        }.onFailure {
+            finish()
+        }
+
+        mainHandler.postDelayed(
+            { if (!completed.get()) finish() },
+            THREE_A_LOCK_MAX_WARMUP_MS
+        )
+    }
+
+    private fun buildLocked3ARequest(
+        profile: CameraProfile,
+        cadencePlan: SensorCadencePolicy.Plan?,
+        gains: RggbChannelVector?,
+        transform: ColorSpaceTransform?,
+        focusDistanceDiopters: Float?
+    ): CaptureRequest? {
+        val camera = synchronized(resourceLock) { cameraDevice } ?: return null
+        val surface = synchronized(resourceLock) { recorderSurface } ?: return null
+
+        return runCatching {
+            createRecordRequestBuilder(camera).apply {
+                addTarget(surface)
+                configureCaptureRequest(this, profile, cadencePlan)
+
+                val awbModes = profile.characteristics.get(
+                    CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES
+                ) ?: intArrayOf()
+                val capabilities = profile.characteristics.get(
+                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES
+                ) ?: intArrayOf()
+                val manualPost = capabilities.contains(
+                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING
+                )
+                val canUseMeasuredWhiteBalance =
+                    gains != null &&
+                    transform != null &&
+                    manualPost &&
+                    awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF)
+
+                if (canUseMeasuredWhiteBalance) {
+                    set(CaptureRequest.CONTROL_AWB_LOCK, false)
+                    set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+                    set(
+                        CaptureRequest.COLOR_CORRECTION_MODE,
+                        CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX
+                    )
+                    set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, transform)
+                    set(CaptureRequest.COLOR_CORRECTION_GAINS, gains)
+                } else if (
+                    profile.characteristics.get(
+                        CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE
+                    ) == true
+                ) {
+                    set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                }
+
+                if (cadencePlan == null &&
+                    profile.characteristics.get(
+                        CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE
+                    ) == true
+                ) {
+                    set(CaptureRequest.CONTROL_AE_LOCK, true)
+                }
+
+                if (
+                    recordingSettings.focusMode == CaptureSettings.FOCUS_LOCKED &&
+                    focusDistanceDiopters != null
+                ) {
+                    val minimumFocusDistance = profile.characteristics.get(
+                        CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE
+                    ) ?: 0f
+                    if (minimumFocusDistance > 0f) {
+                        set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                        set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
+                        set(
+                            CaptureRequest.LENS_FOCUS_DISTANCE,
+                            focusDistanceDiopters.coerceIn(0f, minimumFocusDistance)
+                        )
+                    }
+                }
+            }.build()
+        }.getOrNull()
     }
 
     private fun startLockedFocusRecording(
@@ -2941,6 +3135,9 @@ class CaptureService : Service() {
     companion object {
         private const val FOCUS_LOCK_MAX_WARMUP_FRAMES = 8
         private const val FOCUS_LOCK_MAX_WARMUP_MS = 250L
+        private const val THREE_A_LOCK_MIN_WARMUP_FRAMES = 4
+        private const val THREE_A_LOCK_MAX_WARMUP_FRAMES = 10
+        private const val THREE_A_LOCK_MAX_WARMUP_MS = 350L
 
         const val ACTION_RECORDING_VISUAL_FINISHED =
             "com.steadyvault.camera.RECORDING_VISUAL_FINISHED"
@@ -2977,7 +3174,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-cadence-controls-1.8.267"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-3a-lock-test-1.8.268"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"

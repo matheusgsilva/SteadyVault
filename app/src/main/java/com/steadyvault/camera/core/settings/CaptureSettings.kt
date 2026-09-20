@@ -78,6 +78,7 @@ object CaptureSettings {
         val whiteBalanceMode: String,
         val yellowReduction: String,
         val lockWhiteBalance: Boolean,
+        val lockAeAwbForCadence: Boolean,
         val previewMode: String,
         val exposureCompensation: Int,
         val selectedCameraId: String?,
@@ -159,6 +160,7 @@ object CaptureSettings {
             whiteBalanceMode = prefs.getString("white_balance_mode", WHITE_BALANCE_AUTO)?.takeIf { it in supportedWhiteBalanceValues } ?: WHITE_BALANCE_AUTO,
             yellowReduction = prefs.getString("yellow_reduction", YELLOW_REDUCTION_AUTO)?.takeIf { it in supportedYellowReductionValues } ?: YELLOW_REDUCTION_AUTO,
             lockWhiteBalance = prefs.getBoolean("lock_white_balance", true),
+            lockAeAwbForCadence = prefs.getBoolean("lock_ae_awb_for_cadence", false),
             previewMode = prefs.getString("preview_mode", PREVIEW_OFF)?.takeIf { it in supportedPreviewValues } ?: PREVIEW_OFF,
             exposureCompensation = prefs.getInt("exposure_compensation", 0).coerceIn(-12, 12),
             selectedCameraId = prefs.getString("selected_camera_id", null)?.takeIf { it.isNotBlank() },
@@ -201,6 +203,7 @@ object CaptureSettings {
             .putString("white_balance_mode", normalized.whiteBalanceMode)
             .putString("yellow_reduction", normalized.yellowReduction)
             .putBoolean("lock_white_balance", normalized.lockWhiteBalance)
+            .putBoolean("lock_ae_awb_for_cadence", normalized.lockAeAwbForCadence)
             .putString("preview_mode", normalized.previewMode)
             .putInt("exposure_compensation", normalized.exposureCompensation)
             .putString("selected_camera_id", normalized.selectedCameraId)

@@ -106,6 +106,7 @@ class SettingsActivity : FragmentActivity() {
     private lateinit var whiteBalance: Spinner
     private lateinit var yellowReduction: Spinner
     private lateinit var lockWhiteBalance: Switch
+    private lateinit var lockAeAwbForCadence: Switch
     private lateinit var previewMode: Spinner
     private lateinit var intelligentPlayback: Switch
     private lateinit var dropLateFrames: Switch
@@ -384,6 +385,11 @@ class SettingsActivity : FragmentActivity() {
             "Depois que a câmera estabiliza, impede mudanças de amarelo para azul no meio do vídeo.",
             snapshot.lockWhiteBalance
         )
+        lockAeAwbForCadence = addSwitch(
+            "Teste de cadência: travar exposição e cor antes do MP4",
+            "Faz um warm-up curto antes da gravação, congela AE/AWB usando os valores medidos e só então inicia o MP4. Durante o vídeo não há callback por quadro nem troca de request.",
+            snapshot.lockAeAwbForCadence
+        )
         previewMode = addSpinner(
             "Visualização da câmera antes de capturar",
             listOf(
@@ -410,7 +416,8 @@ class SettingsActivity : FragmentActivity() {
                 stabilization = CaptureSettings.STABILIZATION_OFF,
                 focusMode = CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
                 noiseReduction = CaptureSettings.PROCESSING_AUTO,
-                edgeMode = CaptureSettings.PROCESSING_AUTO
+                edgeMode = CaptureSettings.PROCESSING_AUTO,
+                lockAeAwbForCadence = false
             )
             CaptureSettings.saveResolutionForFps(
                 this,
@@ -1348,6 +1355,7 @@ class SettingsActivity : FragmentActivity() {
         whiteBalanceMode = selected(whiteBalance),
         yellowReduction = selected(yellowReduction),
         lockWhiteBalance = lockWhiteBalance.isChecked,
+        lockAeAwbForCadence = lockAeAwbForCadence.isChecked,
         previewMode = CaptureSettings.PREVIEW_OFF,
         exposureCompensation = selected(exposure).toIntOrNull()?.coerceIn(-12, 12) ?: 0,
         thermalProtection = thermal.isChecked,
