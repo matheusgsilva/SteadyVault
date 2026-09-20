@@ -435,6 +435,36 @@ class SettingsActivity : FragmentActivity() {
             ).show()
         }
         addInfo("Esse botão só altera as opções quando você toca nele. Depois, qualquer ajuste manual continua sendo respeitado normalmente.")
+
+        addSmallButton("Testar 4K60 com AE/AWB travados + OIS") {
+            val current = CaptureSettings.snapshot(this)
+            val testProfile = current.copy(
+                resolution = CaptureSettings.RESOLUTION_4K,
+                fps = CaptureModeStore.FPS_60,
+                hdrHlg10 = false,
+                stabilization = CaptureSettings.STABILIZATION_OIS,
+                focusMode = CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
+                noiseReduction = CaptureSettings.PROCESSING_AUTO,
+                edgeMode = CaptureSettings.PROCESSING_AUTO,
+                lockAeAwbForCadence = true
+            )
+            CaptureSettings.saveResolutionForFps(
+                this,
+                CaptureModeStore.FPS_60,
+                CaptureSettings.RESOLUTION_4K
+            )
+            CaptureSettings.save(this, testProfile)
+            CaptureStateStore.clearEffectiveMode(this)
+            editingFps = CaptureModeStore.FPS_60
+            buildFormPreservingScroll(testProfile)
+            Toast.makeText(
+                this,
+                "Teste aplicado: 4K60 SDR • AE/AWB travados • OIS",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        addInfo("Este teste mantém AE/AWB travados e troca apenas a estabilização para OIS para comparar a cadência visual.")
+
         thermal = addSwitch(
             "Proteção contra temperatura crítica",
             "Antes de iniciar, verifica a condição térmica do aparelho para evitar começar uma captura quando o sistema já está em estado crítico.",
