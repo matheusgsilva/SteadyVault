@@ -29,7 +29,7 @@ import com.steadyvault.camera.processing.model.OutputCodec
 import com.steadyvault.camera.processing.model.VideoFilterConfig
 import com.steadyvault.camera.processing.validation.VideoValidator
 import com.steadyvault.camera.storage.vault.VaultRepository
-import com.steadyvault.camera.ui.vault.VideoOptimizationActivity
+import com.steadyvault.camera.ui.vault.MediaPlayerActivity
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -66,7 +66,7 @@ class VideoOptimizationService : Service() {
             ACTION_CANCEL -> {
                 if (running.get()) {
                     cancelled.set(true)
-                    publishProgress(currentProgress, "Cancelando otimização…", forceNotification = true)
+                    publishProgress(currentProgress, "Cancelando processamento…", forceNotification = true)
                 } else {
                     val snapshot = OptimizationStateStore.snapshot(this)
                     snapshot.sourcePath.takeIf { it.isNotBlank() }?.let { path ->
@@ -77,7 +77,7 @@ class VideoOptimizationService : Service() {
                             source,
                             OptimizationStateStore.STATE_CANCELLED,
                             snapshot.progress,
-                            "Otimização cancelada"
+                            "Processamento cancelado"
                         )
                     }
                     clearProcessingNotification()
@@ -90,7 +90,7 @@ class VideoOptimizationService : Service() {
                 if (running.compareAndSet(false, true)) {
                     startOptimization(intent)
                 } else {
-                    publishProgress(currentProgress, "Já existe uma otimização em andamento", forceNotification = true)
+                    publishProgress(currentProgress, "Já existe um processamento em andamento", forceNotification = true)
                 }
             }
         }
@@ -219,7 +219,7 @@ class VideoOptimizationService : Service() {
 
                 val saved = result.inputBytes - result.outputBytes
                 val message = buildString {
-                    append(if (replacementDeferred) "Vídeo corrigido e validado" else "Vídeo otimizado e validado")
+                    append(if (replacementDeferred) "Vídeo corrigido e validado" else "Vídeo processado e validado")
                     append(" • ").append(validation.width).append('×').append(validation.height)
                     append(" • cadência ").append(result.analysis.cadenceScore).append("/100")
                     if (result.repairedGaps > 0) append(" • ${result.repairedGaps} irregularidades tratadas")
@@ -242,9 +242,9 @@ class VideoOptimizationService : Service() {
                 output?.takeIf { it.exists() }?.delete()
                 val wasCancelled = cancelled.get() || throwable is InterruptedException
                 val message = if (wasCancelled) {
-                    "Otimização cancelada"
+                    "Processamento cancelado"
                 } else {
-                    throwable.message ?: "Falha ao otimizar vídeo"
+                    throwable.message ?: "Falha ao processar vídeo"
                 }
                 publishTerminal(
                     state = if (wasCancelled) OptimizationStateStore.STATE_CANCELLED else OptimizationStateStore.STATE_ERROR,
@@ -375,7 +375,7 @@ class VideoOptimizationService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(identity.smallIcon)
             .setColor(AppearanceStore.palette(this).accent)
-            .setContentTitle(VisualIdentityStore.notificationTitle(this, "Otimização $safeProgress%"))
+            .setContentTitle(VisualIdentityStore.notificationTitle(this, "Processamento $safeProgress%"))
             .setContentText(VisualIdentityStore.notificationText(this, text))
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setSubText("$safeProgress%")
@@ -403,7 +403,7 @@ class VideoOptimizationService : Service() {
                 OptimizationStateStore.STATE_ERROR,
                 STATE_ERROR,
                 currentProgress,
-                "O Android encerrou a otimização por limite de processamento",
+                "O Android encerrou o processamento por limite de tempo",
                 source,
                 null
             )
@@ -423,7 +423,7 @@ class VideoOptimizationService : Service() {
 
     companion object {
         @Volatile private var capturePriorityRequested = false
-        const val ACTION_STATE = "com.steadyvault.camera.OPTIMIZATION_STATE"
+        const val ACTION_STATE = "com.steadyvault.camera.VIDEO_PROCESSING_STATE"
         const val STATE_PROGRESS = "progress"
         const val STATE_SUCCESS = "success"
         const val STATE_ERROR = "error"
@@ -457,9 +457,9 @@ class VideoOptimizationService : Service() {
         const val EXTRA_STATE = "state"
         const val EXTRA_MESSAGE = "message"
         const val EXTRA_PROGRESS = "progress"
-        private const val ACTION_START = "com.steadyvault.camera.OPTIMIZE_START"
-        private const val ACTION_CANCEL = "com.steadyvault.camera.OPTIMIZE_CANCEL"
-        private const val CHANNEL_ID = "steadyvault_video_optimization"
+        private const val ACTION_START = "com.steadyvault.camera.VIDEO_PROCESSING_START"
+        private const val ACTION_CANCEL = "com.steadyvault.camera.VIDEO_PROCESSING_CANCEL"
+        private const val CHANNEL_ID = "steadyvault_video_processing"
         private const val NOTIFICATION_ID = 4007
         private const val MAX_WAKE_LOCK_MS = 5L * 60L * 60L * 1_000L
         private const val THERMAL_CHECK_INTERVAL_MS = 2_000L
