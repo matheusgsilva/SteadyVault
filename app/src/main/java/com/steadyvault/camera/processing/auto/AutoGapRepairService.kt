@@ -273,7 +273,7 @@ class AutoGapRepairService : Service() {
                     maxInterpolatedFramesPerGap = settings.maxInterpolatedFramesPerGap,
                     thermalProtection = true,
                     smartAutoTune = false,
-                    aiAssisted = settings.aiAssisted && !analysis.hdrHlg10 && mode == FrameRepairMode.MOTION_COMPENSATED
+                    aiAssisted = false
                 ).normalized()
 
                 val attempt = runCatching {
