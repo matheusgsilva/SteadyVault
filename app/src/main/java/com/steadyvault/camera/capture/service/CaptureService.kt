@@ -252,19 +252,6 @@ class CaptureService : Service() {
         // the next recording naturally gives GPU/codec work time to unwind.
         AutoGapRepairService.pauseForCapture(this)
         VideoOptimizationService.pauseForCapture(this)
-
-        // O reparo robusto pode estar usando MediaCodec/GPU. O flag de cancelamento
-        // é imediato, mas liberar codec/EGL leva alguns ciclos. Não prepare o encoder
-        // da câmera enquanto o pós-processamento ainda está desmontando recursos.
-        val repairReleased = AutoGapRepairService.awaitReleasedForCapture()
-        if (!repairReleased) {
-            AppLogRepository.warn(
-                this,
-                "capture_priority",
-                "Pós-processamento ainda liberando recursos; captura seguirá após o limite de espera"
-            )
-        }
-
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
         MediaThumbnailRepository.prepareForCapture()
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
@@ -301,18 +288,7 @@ class CaptureService : Service() {
         // A configuração atualmente salva é a fonte da verdade. Não recarregue um
         // perfil histórico da câmera no instante em que o usuário toca em Gravar.
         CameraProfileStore.setActiveMode(this, CameraProfileStore.FunctionMode.VIDEO)
-        recordingSettings = currentSettings.copy(
-            selectedCameraId = profileCameraId,
-            zoomRatio = profileZoomRatio,
-            hdrHlg10 = false
-        )
-        if (currentSettings.hdrHlg10) {
-            AppLogRepository.info(
-                this,
-                "recording_hdr",
-                "Preferência HLG10 antiga ignorada; novas gravações usam SDR BT.709 nesta branch"
-            )
-        }
+        recordingSettings = currentSettings.copy(selectedCameraId = profileCameraId, zoomRatio = profileZoomRatio)
 
         if (recordingSettings.thermalProtection && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val thermalStatus = getSystemService(PowerManager::class.java).currentThermalStatus
@@ -412,10 +388,15 @@ class CaptureService : Service() {
             selectedCamera = cameraProfile
             selectedEncoder = encoderProfile
             if (!validateStorageForRecording(cameraProfile, encoderProfile)) return
-            // Headless (widget/tela preta) usa a mesma ordem determinística do app:
-            // prepara o encoder primeiro e só depois assume/abre a câmera. Continua
-            // encoder-only, sem Surface de preview; apenas deixa de correr abertura da
-            // câmera e preparação do codec em paralelo, que mudava o estado inicial da HAL.
+            if (headlessCaptureRequested) {
+                prepareHeadlessInParallel(
+                    cameraProfile = cameraProfile,
+                    encoderProfile = encoderProfile,
+                    token = token,
+                    requestCameraOwnership = true
+                )
+                return
+            }
             try {
                 prepareOutputAndRecorder(cameraProfile, encoderProfile)
             } catch (throwable: Throwable) {
@@ -1621,21 +1602,6 @@ class CaptureService : Service() {
 
         val completed = AtomicBoolean(false)
         val frames = AtomicInteger(0)
-        val minWarmupFrames = if (headlessCaptureRequested) {
-            THREE_A_HEADLESS_MIN_WARMUP_FRAMES
-        } else {
-            THREE_A_LOCK_MIN_WARMUP_FRAMES
-        }
-        val maxWarmupFrames = if (headlessCaptureRequested) {
-            THREE_A_HEADLESS_MAX_WARMUP_FRAMES
-        } else {
-            THREE_A_LOCK_MAX_WARMUP_FRAMES
-        }
-        val maxWarmupMs = if (headlessCaptureRequested) {
-            THREE_A_HEADLESS_MAX_WARMUP_MS
-        } else {
-            THREE_A_LOCK_MAX_WARMUP_MS
-        }
         var lastExposureNs: Long? = null
         var lastSensitivityIso: Int? = null
         var lastFocusDistance: Float? = null
@@ -1714,10 +1680,10 @@ class CaptureService : Service() {
                     afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED ||
                     afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED
 
-                val enoughFrames = frames.incrementAndGet() >= minWarmupFrames
+                val enoughFrames = frames.incrementAndGet() >= THREE_A_LOCK_MIN_WARMUP_FRAMES
                 if (enoughFrames && aeReady && awbReady && focusReady) {
                     finish()
-                } else if (frames.get() >= maxWarmupFrames) {
+                } else if (frames.get() >= THREE_A_LOCK_MAX_WARMUP_FRAMES) {
                     finish()
                 }
             }
@@ -1731,7 +1697,7 @@ class CaptureService : Service() {
 
         mainHandler.postDelayed(
             { if (!completed.get()) finish() },
-            maxWarmupMs
+            THREE_A_LOCK_MAX_WARMUP_MS
         )
     }
 
@@ -3172,9 +3138,6 @@ class CaptureService : Service() {
         private const val THREE_A_LOCK_MIN_WARMUP_FRAMES = 4
         private const val THREE_A_LOCK_MAX_WARMUP_FRAMES = 10
         private const val THREE_A_LOCK_MAX_WARMUP_MS = 350L
-        private const val THREE_A_HEADLESS_MIN_WARMUP_FRAMES = 8
-        private const val THREE_A_HEADLESS_MAX_WARMUP_FRAMES = 30
-        private const val THREE_A_HEADLESS_MAX_WARMUP_MS = 1_000L
 
         const val ACTION_RECORDING_VISUAL_FINISHED =
             "com.steadyvault.camera.RECORDING_VISUAL_FINISHED"
@@ -3211,7 +3174,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-headless-parity-1.8.269"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-3a-lock-test-1.8.268"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
