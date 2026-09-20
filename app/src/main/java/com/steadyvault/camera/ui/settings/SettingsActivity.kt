@@ -389,8 +389,8 @@ class SettingsActivity : FragmentActivity() {
             snapshot.lockWhiteBalance
         )
         lockAeAwbForCadence = addSwitch(
-            "Teste de cadência: travar exposição e cor antes do MP4",
-            "Faz um warm-up curto antes da gravação, congela AE/AWB usando os valores medidos e só então inicia o MP4. Durante o vídeo não há callback por quadro nem troca de request.",
+            "AE híbrido para preservar cadência",
+            "Faz warm-up determinístico e grava com AE/AWB travados. A cada ~2 s faz uma sonda curta; só abre AE por poucos frames quando a exposição medida muda bastante e relocka em seguida.",
             snapshot.lockAeAwbForCadence
         )
         previewMode = addSpinner(
@@ -466,11 +466,11 @@ class SettingsActivity : FragmentActivity() {
             buildFormPreservingScroll(stableProfile)
             Toast.makeText(
                 this,
-                "Perfil estável aplicado: 4K60 AVC 200 Mbps, SDR, OIS, foco contínuo e AE/AWB travados",
+                "Perfil híbrido aplicado: 4K60 AVC 200 Mbps, SDR, OIS, foco contínuo e AE híbrido",
                 Toast.LENGTH_LONG
             ).show()
         }
-        addInfo("Perfil estável baseado no melhor teste de cadência: 4K60, H.264/AVC, 200 Mbps, SDR, OIS, foco contínuo, ruído/nitidez/antibanding/WB em Auto, exposição 0 e zoom 1x.")
+        addInfo("Perfil baseado no melhor teste de cadência: 4K60, H.264/AVC, 200 Mbps, SDR, OIS, foco contínuo, ruído/nitidez/antibanding/WB em Auto, exposição 0 e zoom 1x. Nesta branch o AE fica travado quase todo o tempo e só corrige mudanças grandes de luz em janelas curtas.")
 
         addInfo("Esse botão só altera as opções quando você toca nele. Depois, qualquer ajuste manual continua sendo respeitado normalmente.")
         thermal = addSwitch(

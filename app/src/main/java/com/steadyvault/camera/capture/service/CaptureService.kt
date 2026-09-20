@@ -191,6 +191,12 @@ class CaptureService : Service() {
     private var activeRecorderMime: String? = null
 
     @Volatile
+    private var hybridAeBaselineExposureProduct = 0.0
+
+    @Volatile
+    private var hybridAeProbeInFlight = false
+
+    @Volatile
     private var foregroundNotificationStarted = false
 
 
@@ -328,6 +334,8 @@ class CaptureService : Service() {
         stopping.set(false)
         recorderStarted = false
         recorderArmed = false
+        hybridAeBaselineExposureProduct = 0.0
+        hybridAeProbeInFlight = false
         recordingStartedAtMs = 0L
         recordingStartedAtElapsedMs = 0L
         fpsFallbackWarningLogged = false
@@ -1586,24 +1594,33 @@ class CaptureService : Service() {
         val completed = AtomicBoolean(false)
         val frames = AtomicInteger(0)
         val consecutiveStableFrames = AtomicInteger(0)
+        var lastExposureNs: Long? = null
+        var lastSensitivityIso: Int? = null
 
         fun finish() {
             if (!completed.compareAndSet(false, true) || !isAttemptValid(token)) return
 
-            // Importante para o S25 Ultra:
-            // não converta a medição de AE para SENSOR_FRAME_DURATION /
-            // SENSOR_EXPOSURE_TIME / SENSOR_SENSITIVITY. Essa troca para sensor
-            // manual foi o único ponto que ainda podia colocar a HAL em cadências
-            // diferentes entre execuções. Mantemos AE/AWB automáticos, travamos os
-            // dois e preservamos exclusivamente CONTROL_AE_TARGET_FPS_RANGE [60,60].
-            val request = buildLockedAuto3ARequest(profile) ?: warmupRequest
+            lastExposureNs?.let { exposure ->
+                lastSensitivityIso?.let { iso ->
+                    hybridAeBaselineExposureProduct = exposure.toDouble() * iso.toDouble()
+                }
+            }
+
+            val lockedRequest = buildLockedAuto3ARequest(profile) ?: warmupRequest
 
             runCatching {
-                // Instala primeiro o request final estático. Só depois o arquivo é
-                // considerado iniciado; durante o MP4 não existe callback por frame.
-                session.setRepeatingRequest(request, null, mainHandler)
+                session.setRepeatingRequest(lockedRequest, null, mainHandler)
                 armRecorderForFirstFrame(token)
                 commitRecorderStart(profile, token, highSpeed = false)
+
+                // O monitor híbrido só existe depois que o MP4 já começou.
+                // Ele não cria superfície extra e não decodifica frames.
+                scheduleHybridAeProbe(
+                    session = session,
+                    profile = profile,
+                    lockedRequest = lockedRequest,
+                    token = token
+                )
             }.onFailure {
                 failSelectedConfigurationFromWorker(
                     token,
@@ -1619,6 +1636,9 @@ class CaptureService : Service() {
                 result: TotalCaptureResult
             ) {
                 if (!isAttemptValid(token) || completed.get()) return
+
+                result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { lastExposureNs = it }
+                result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { lastSensitivityIso = it }
 
                 result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let {
                     Camera3AStateStore.updateFocus(profile.cameraId, it)
@@ -1678,6 +1698,212 @@ class CaptureService : Service() {
         mainHandler.postDelayed(
             { if (!completed.get()) finish() },
             THREE_A_DETERMINISTIC_MAX_WARMUP_MS
+        )
+    }
+
+    private fun buildHybridAeProbeRequest(profile: CameraProfile): CaptureRequest? {
+        val camera = synchronized(resourceLock) { cameraDevice } ?: return null
+        val surface = synchronized(resourceLock) { recorderSurface } ?: return null
+
+        return runCatching {
+            createRecordRequestBuilder(camera).apply {
+                addTarget(surface)
+                configureCaptureRequest(this, profile)
+                setSafely(this, CaptureRequest.CONTROL_AE_LOCK, false)
+                if (
+                    profile.characteristics.get(
+                        CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE
+                    ) == true
+                ) {
+                    setSafely(this, CaptureRequest.CONTROL_AWB_LOCK, true)
+                }
+                setSafely(
+                    this,
+                    CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                    profile.fpsRange
+                )
+            }.build()
+        }.getOrNull()
+    }
+
+    private fun scheduleHybridAeProbe(
+        session: CameraCaptureSession,
+        profile: CameraProfile,
+        lockedRequest: CaptureRequest,
+        token: Int
+    ) {
+        mainHandler.postDelayed(
+            {
+                if (
+                    !isAttemptValid(token) ||
+                    !recorderStarted ||
+                    stopping.get() ||
+                    hybridAeProbeInFlight
+                ) {
+                    return@postDelayed
+                }
+                runHybridAeProbe(session, profile, lockedRequest, token)
+            },
+            HYBRID_AE_PROBE_INTERVAL_MS
+        )
+    }
+
+    private fun runHybridAeProbe(
+        session: CameraCaptureSession,
+        profile: CameraProfile,
+        lockedRequest: CaptureRequest,
+        token: Int
+    ) {
+        if (!isAttemptValid(token) || !recorderStarted || stopping.get()) return
+        val probeRequest = buildHybridAeProbeRequest(profile) ?: run {
+            scheduleHybridAeProbe(session, profile, lockedRequest, token)
+            return
+        }
+
+        hybridAeProbeInFlight = true
+        val samples = AtomicInteger(0)
+        var newestProduct = 0.0
+
+        fun finishProbe() {
+            if (!hybridAeProbeInFlight) return
+            hybridAeProbeInFlight = false
+            if (!isAttemptValid(token) || !recorderStarted || stopping.get()) return
+
+            val baseline = hybridAeBaselineExposureProduct
+            val ratio = if (baseline > 0.0 && newestProduct > 0.0) {
+                maxOf(newestProduct / baseline, baseline / newestProduct)
+            } else {
+                1.0
+            }
+
+            if (ratio >= HYBRID_AE_SIGNIFICANT_RATIO) {
+                runHybridAeCorrectionWindow(
+                    session = session,
+                    profile = profile,
+                    lockedRequest = lockedRequest,
+                    token = token
+                )
+            } else {
+                // O repeating request travado nunca foi removido; após o burst
+                // de sonda a sessão volta automaticamente para ele.
+                scheduleHybridAeProbe(session, profile, lockedRequest, token)
+            }
+        }
+
+        val callback = object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                captureSession: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                if (!isAttemptValid(token) || !hybridAeProbeInFlight) return
+
+                val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                if (exposure != null && iso != null) {
+                    newestProduct = exposure.toDouble() * iso.toDouble()
+                }
+
+                if (samples.incrementAndGet() >= HYBRID_AE_PROBE_FRAMES) {
+                    finishProbe()
+                }
+            }
+
+            override fun onCaptureSequenceAborted(
+                session: CameraCaptureSession,
+                sequenceId: Int
+            ) {
+                finishProbe()
+            }
+        }
+
+        runCatching {
+            session.captureBurst(
+                List(HYBRID_AE_PROBE_FRAMES) { probeRequest },
+                callback,
+                mainHandler
+            )
+        }.onFailure {
+            hybridAeProbeInFlight = false
+            scheduleHybridAeProbe(session, profile, lockedRequest, token)
+        }
+
+        mainHandler.postDelayed(
+            {
+                if (hybridAeProbeInFlight && isAttemptValid(token)) {
+                    finishProbe()
+                }
+            },
+            HYBRID_AE_PROBE_TIMEOUT_MS
+        )
+    }
+
+    private fun runHybridAeCorrectionWindow(
+        session: CameraCaptureSession,
+        profile: CameraProfile,
+        lockedRequest: CaptureRequest,
+        token: Int
+    ) {
+        if (!isAttemptValid(token) || !recorderStarted || stopping.get()) return
+        val adaptiveRequest = buildHybridAeProbeRequest(profile) ?: run {
+            scheduleHybridAeProbe(session, profile, lockedRequest, token)
+            return
+        }
+
+        val frames = AtomicInteger(0)
+        val finished = AtomicBoolean(false)
+        var newestProduct = hybridAeBaselineExposureProduct
+
+        fun relock() {
+            if (!finished.compareAndSet(false, true)) return
+            if (!isAttemptValid(token) || !recorderStarted || stopping.get()) return
+            runCatching {
+                session.setRepeatingRequest(lockedRequest, null, mainHandler)
+            }
+            if (newestProduct > 0.0) {
+                hybridAeBaselineExposureProduct = newestProduct
+            }
+            scheduleHybridAeProbe(session, profile, lockedRequest, token)
+        }
+
+        val callback = object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                captureSession: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                if (!isAttemptValid(token) || finished.get()) return
+
+                val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                if (exposure != null && iso != null) {
+                    newestProduct = exposure.toDouble() * iso.toDouble()
+                }
+
+                val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+                val converged =
+                    aeState == null ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED
+
+                val seen = frames.incrementAndGet()
+                if (
+                    seen >= HYBRID_AE_MIN_CORRECTION_FRAMES && converged ||
+                    seen >= HYBRID_AE_MAX_CORRECTION_FRAMES
+                ) {
+                    relock()
+                }
+            }
+        }
+
+        runCatching {
+            session.setRepeatingRequest(adaptiveRequest, callback, mainHandler)
+        }.onFailure {
+            relock()
+        }
+
+        mainHandler.postDelayed(
+            { if (!finished.get() && isAttemptValid(token)) relock() },
+            HYBRID_AE_CORRECTION_TIMEOUT_MS
         )
     }
 
@@ -3161,6 +3387,13 @@ class CaptureService : Service() {
         private const val THREE_A_DETERMINISTIC_STABLE_FRAMES = 6
         private const val THREE_A_DETERMINISTIC_MAX_WARMUP_FRAMES = 30
         private const val THREE_A_DETERMINISTIC_MAX_WARMUP_MS = 900L
+        private const val HYBRID_AE_PROBE_INTERVAL_MS = 2_000L
+        private const val HYBRID_AE_PROBE_FRAMES = 3
+        private const val HYBRID_AE_PROBE_TIMEOUT_MS = 350L
+        private const val HYBRID_AE_SIGNIFICANT_RATIO = 1.65
+        private const val HYBRID_AE_MIN_CORRECTION_FRAMES = 4
+        private const val HYBRID_AE_MAX_CORRECTION_FRAMES = 6
+        private const val HYBRID_AE_CORRECTION_TIMEOUT_MS = 250L
 
         const val ACTION_RECORDING_VISUAL_FINISHED =
             "com.steadyvault.camera.RECORDING_VISUAL_FINISHED"
@@ -3197,7 +3430,7 @@ class CaptureService : Service() {
             "requested_at_elapsed_ns"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-deterministic-3a-1.8.270"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-hybrid-ae-probe-1.8.272"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
