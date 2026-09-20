@@ -1,8 +1,10 @@
 package com.steadyvault.camera.widgets
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.widget.Toast
 import com.steadyvault.camera.capture.service.RecordingServiceRouter
 import com.steadyvault.camera.core.feedback.Haptics
@@ -13,6 +15,7 @@ import com.steadyvault.camera.core.state.OptimizationStateStore
 import com.steadyvault.camera.core.state.PhotoCaptureStateStore
 import com.steadyvault.camera.processing.service.VideoOptimizationService
 import com.steadyvault.camera.core.storage.RecordingStorageGuard
+import com.steadyvault.camera.ui.capture.CaptureActivity
 
 class WidgetStartReceiver : BroadcastReceiver() {
 
@@ -24,6 +27,30 @@ class WidgetStartReceiver : BroadcastReceiver() {
             PhotoCaptureStateStore.isBusy(context)
         ) {
             WidgetRenderer.updateRecordingControls(context)
+            return
+        }
+
+        val cameraGranted =
+            context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        val audioGranted =
+            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (!cameraGranted || !audioGranted) {
+            CaptureStateStore.update(
+                context,
+                "Libere câmera e microfone para gravar com áudio"
+            )
+            WidgetRenderer.updateRecordingControls(context)
+            runCatching {
+                context.startActivity(
+                    Intent(context, CaptureActivity::class.java)
+                        .setAction(CaptureActivity.ACTION_WIDGET_REQUEST_PERMISSIONS)
+                        .putExtra(
+                            CaptureActivity.EXTRA_WIDGET_PERMISSION_MODE,
+                            CaptureActivity.WIDGET_PERMISSION_VIDEO
+                        )
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                )
+            }
             return
         }
 

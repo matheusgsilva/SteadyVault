@@ -337,7 +337,7 @@ class CaptureService : Service() {
         val token = attemptToken
 
         if (!hasRequiredPermissions()) {
-            sendState("Falha: permissão de câmera é obrigatória")
+            sendState("Falha: permissões de câmera e microfone são obrigatórias para gravar com áudio")
             serviceActive.set(false)
             AutoGapRepairService.resumeAfterCapture(this)
             VideoOptimizationService.resumeAfterCapture()
@@ -388,15 +388,10 @@ class CaptureService : Service() {
             selectedCamera = cameraProfile
             selectedEncoder = encoderProfile
             if (!validateStorageForRecording(cameraProfile, encoderProfile)) return
-            if (headlessCaptureRequested) {
-                prepareHeadlessInParallel(
-                    cameraProfile = cameraProfile,
-                    encoderProfile = encoderProfile,
-                    token = token,
-                    requestCameraOwnership = true
-                )
-                return
-            }
+            // App, preview, widget e atalhos usam exatamente a mesma sequência:
+            // 1) prepara encoder/áudio; 2) assume a câmera; 3) abre a sessão;
+            // 4) faz o warm-up 3A; 5) instala o request final estático.
+            // A origem só muda a UI, nunca a captura efetiva.
             try {
                 prepareOutputAndRecorder(cameraProfile, encoderProfile)
             } catch (throwable: Throwable) {
@@ -1063,16 +1058,12 @@ class CaptureService : Service() {
 
         val backend: RecordingBackend =
             if (preferDirectCodec) {
-                val integratedAudio = hasAudioPermission() && runCatching {
-                    startForegroundNow(
-                        "Preparando gravação direta…",
-                        includeMicrophone = true
-                    )
-                    true
-                }.getOrElse {
-                    Log.w(LOG_TAG, "Microfone indisponível; gravando vídeo sem áudio", it)
-                    false
-                }
+                check(hasAudioPermission()) { "permissão de microfone necessária para gravar com áudio" }
+                startForegroundNow(
+                    "Preparando gravação direta com áudio…",
+                    includeMicrophone = true
+                )
+                val integratedAudio = true
 
                 DirectMediaCodecBackend(
                     outputFile = finalFile,
@@ -1103,20 +1094,12 @@ class CaptureService : Service() {
                     }
                 )
             } else {
-                val integratedAudio = hasAudioPermission() && runCatching {
-                    startForegroundNow(
-                        "Preparando gravação direta…",
-                        includeMicrophone = true
-                    )
-                    true
-                }.getOrElse {
-                    Log.w(
-                        LOG_TAG,
-                        "Áudio indisponível nesta tentativa; gravando vídeo puro",
-                        it
-                    )
-                    false
-                }
+                check(hasAudioPermission()) { "permissão de microfone necessária para gravar com áudio" }
+                startForegroundNow(
+                    "Preparando gravação direta com áudio…",
+                    includeMicrophone = true
+                )
+                val integratedAudio = true
 
                 DirectMediaRecorderBackend(
                     context = this,
@@ -2779,7 +2762,8 @@ class CaptureService : Service() {
     }
 
     private fun hasRequiredPermissions(): Boolean =
-        checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
     private fun hasAudioPermission(): Boolean =
         checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED

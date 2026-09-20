@@ -2974,11 +2974,7 @@ class CaptureActivity : ComponentActivity() {
                             widgetPermissionRequestMode = null
                             Toast.makeText(
                                 this,
-                                if (hasAudioPermission()) {
-                                    "Câmera e microfone já estão liberados."
-                                } else {
-                                    "Câmera liberada; a gravação funcionará sem áudio."
-                                },
+                                "Câmera e microfone já estão liberados.",
                                 Toast.LENGTH_SHORT
                             ).show()
                             ExpandedControlWidget.updateAll(this)
@@ -4058,6 +4054,9 @@ class CaptureActivity : ComponentActivity() {
         if (!hasCameraPermission()) {
             missing += Manifest.permission.CAMERA
         }
+        if (!hasAudioPermission()) {
+            missing += Manifest.permission.RECORD_AUDIO
+        }
 
         return missing.toTypedArray()
     }
@@ -4078,7 +4077,7 @@ class CaptureActivity : ComponentActivity() {
                 ) == PackageManager.PERMISSION_GRANTED
 
     private fun hasRecordingPermissions(): Boolean =
-        hasCameraPermission()
+        hasCameraPermission() && hasAudioPermission()
 
     private fun requestAppPermissions(
         permissions: Array<String>,
@@ -4109,7 +4108,7 @@ class CaptureActivity : ComponentActivity() {
 
     private fun showPermissionDialog(forVideo: Boolean) {
         val message = if (forVideo) {
-            "O SteadyVault precisa apenas da Câmera para começar a gravar. Sem acesso ao Microfone, o vídeo é salvo normalmente sem áudio; notificações também são opcionais."
+            "O SteadyVault precisa da Câmera e do Microfone para gravar vídeo com áudio. As notificações continuam opcionais."
         } else {
             "O SteadyVault precisa da Câmera para tirar fotos."
         }

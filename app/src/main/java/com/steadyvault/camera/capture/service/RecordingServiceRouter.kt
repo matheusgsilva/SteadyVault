@@ -30,10 +30,10 @@ object RecordingServiceRouter {
     }
 
     /**
-     * Caminho dedicado para widget, tela preta e atalhos sem preview.
+     * Entrada usada por widget, tela preta e atalhos.
      *
-     * Este método existe para impedir regressão acidental: a origem nunca é marcada
-     * como preview e o CaptureService recebe explicitamente o contrato encoder-only.
+     * O flag headless controla somente a UI/origem. O CaptureService aplica a mesma
+     * sequência real de câmera, 3A, encoder e áudio usada pelo botão interno.
      */
     fun startHeadless(context: Context, targetFps: Int, preferredCameraId: String? = null) {
         val settings = CaptureSettings.snapshot(context)
