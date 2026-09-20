@@ -27,7 +27,11 @@ object OpenCvMotionEstimator {
         val meanConfidence: Float,
         val meanMotionPixels: Float,
         val globalReliability: Float,
-        val sceneChangeLikely: Boolean
+        val sceneChangeLikely: Boolean,
+        val globalForwardUvX: Float,
+        val globalForwardUvY: Float,
+        val globalBackwardUvX: Float,
+        val globalBackwardUvY: Float
     )
 
     @Volatile
@@ -103,6 +107,12 @@ object OpenCvMotionEstimator {
             var motionSum = 0.0
             var photoDifferenceSum = 0.0
             var lowConfidencePixels = 0
+            var forwardWeightedX = 0.0
+            var forwardWeightedY = 0.0
+            var forwardWeight = 0.0
+            var backwardWeightedX = 0.0
+            var backwardWeightedY = 0.0
+            var backwardWeight = 0.0
 
             for (y in 0 until height) {
                 for (x in 0 until width) {
@@ -155,6 +165,22 @@ object OpenCvMotionEstimator {
                     val previousValue = previousLuma[index].toInt() and 0xff
                     val currentValue = currentLuma[index].toInt() and 0xff
                     photoDifferenceSum += abs(previousValue - currentValue).toDouble() / 255.0
+
+                    // Movimento global robusto: só regiões com confiança razoável
+                    // contribuem. Serve de fallback para áreas borradas/sem textura.
+                    if (forwardConfidence > 0.28f) {
+                        val w = forwardConfidence.toDouble() * forwardConfidence.toDouble()
+                        forwardWeightedX += fdx.toDouble() * w
+                        forwardWeightedY += fdy.toDouble() * w
+                        forwardWeight += w
+                    }
+                    if (backwardConfidence > 0.28f) {
+                        val w = backwardConfidence.toDouble() * backwardConfidence.toDouble()
+                        backwardWeightedX += bdx.toDouble() * w
+                        backwardWeightedY += bdy.toDouble() * w
+                        backwardWeight += w
+                    }
+
                     motionSum += (
                         hypot(fdx.toDouble(), fdy.toDouble()) +
                             hypot(bdx.toDouble(), bdy.toDouble())
@@ -187,7 +213,11 @@ object OpenCvMotionEstimator {
                 meanConfidence = meanConfidence,
                 meanMotionPixels = (motionSum / pixels.coerceAtLeast(1).toDouble()).toFloat(),
                 globalReliability = globalReliability,
-                sceneChangeLikely = sceneChangeLikely
+                sceneChangeLikely = sceneChangeLikely,
+                globalForwardUvX = if (forwardWeight > 0.0) (forwardWeightedX / forwardWeight / width.toDouble()).toFloat() else 0f,
+                globalForwardUvY = if (forwardWeight > 0.0) (forwardWeightedY / forwardWeight / height.toDouble()).toFloat() else 0f,
+                globalBackwardUvX = if (backwardWeight > 0.0) (backwardWeightedX / backwardWeight / width.toDouble()).toFloat() else 0f,
+                globalBackwardUvY = if (backwardWeight > 0.0) (backwardWeightedY / backwardWeight / height.toDouble()).toFloat() else 0f
             )
         } finally {
             previous.release()
