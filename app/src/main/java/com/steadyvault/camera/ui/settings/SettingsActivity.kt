@@ -1306,7 +1306,7 @@ class SettingsActivity : FragmentActivity() {
     private fun refreshDependentControls() {
         if (!::hdr.isInitialized) return
         val hdrSupport = selectedCameraFeatures()?.hdrHlg10 ?: Support.UNVERIFIED
-        val hdrHardwareSelectable = HardwareSupportPolicy.isSelectable(hdrSupport)
+        val hdrHardwareSelectable = hdrSupport == Support.SUPPORTED
         hdr.isEnabled = selected(codec) != CaptureSettings.CODEC_AVC && hdrHardwareSelectable
         hdr.alpha = if (hdr.isEnabled) 1f else 0.45f
         colorProfile.isEnabled = !hdr.isChecked
@@ -1345,7 +1345,8 @@ class SettingsActivity : FragmentActivity() {
         codec = selected(codec),
         bitrateMbps = selected(bitrate).toIntOrNull()?.coerceIn(4, 240) ?: base.bitrateMbps,
         iFrameIntervalSeconds = selected(iframe).toIntOrNull()?.coerceIn(1, 10) ?: base.iFrameIntervalSeconds,
-        hdrHlg10 = hdr.isChecked,
+        hdrHlg10 = hdr.isChecked &&
+            selectedCameraFeatures()?.hdrHlg10 == Support.SUPPORTED,
         colorProfile = selected(colorProfile),
         stabilization = selected(stabilization),
         focusMode = selected(focus),
@@ -2152,10 +2153,9 @@ class SettingsActivity : FragmentActivity() {
 
         val features = selectedCameraFeatures()
         val hdrSupport = features?.hdrHlg10 ?: Support.UNVERIFIED
-        if (hdrSupport == Support.UNSUPPORTED && hdr.isChecked) hdr.isChecked = false
-        hdr.visibility = if (
-            HardwareSupportPolicy.shouldExpose(hdrSupport)
-        ) View.VISIBLE else View.GONE
+        val hdrVerified = hdrSupport == Support.SUPPORTED
+        if (!hdrVerified && hdr.isChecked) hdr.isChecked = false
+        hdr.visibility = if (hdrVerified) View.VISIBLE else View.GONE
 
         val exposureVisible = features?.exposureCompensationSupported != false
         exposure.visibility = if (exposureVisible) View.VISIBLE else View.GONE

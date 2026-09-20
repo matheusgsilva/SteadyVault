@@ -193,26 +193,29 @@ class AutoGapRepairService : Service() {
             if (cancelledForCaptureOrUser()) return pauseJob(job, pauseReason())
 
             val analysis = VideoAnalysis.read(source)
-            if (!analysis.hasCadenceProblems || analysis.estimatedMissingFrames <= 0) {
+            if (!analysis.hasRepairableProblems) {
                 AutoGapRepairQueueStore.markSkipped(
                     this,
                     job.id,
-                    "Cadência analisada: nenhum quadro ausente precisa ser preenchido"
+                    "Vídeo validado: cadência e sincronismo já estão dentro dos limites"
                 )
-                publish(100, "Sem gaps para reparar em ${source.name}")
+                publish(100, "Nenhum problema temporal detectado em ${source.name}")
                 return true
             }
 
             val settings = AutoGapRepairSettings.snapshot(this)
-            val requestedMode = if (analysis.hdrHlg10) {
+            val needsFrameSynthesis = analysis.estimatedMissingFrames > 0
+            val requestedMode = if (analysis.hdrHlg10 || !needsFrameSynthesis) {
                 // O transcoder atual não faz tone mapping HDR. Corrigir somente timestamps
                 // preserva os pixels HLG10 sem transformar o original em SDR.
                 FrameRepairMode.SMOOTH_TIMELINE
             } else {
                 settings.mode
             }
-            val modes = if (analysis.hdrHlg10) {
-                // HDR HLG10: preserve os pixels e apenas regularize timestamps.
+            val modes = if (analysis.hdrHlg10 || !needsFrameSynthesis) {
+                // HDR não passa pelo transcoder SDR. Para jitter, PTS duplicado ou
+                // desalinhamento A/V sem frame ausente, remuxar a timeline é suficiente
+                // e não recodifica os pixels.
                 listOf(FrameRepairMode.SMOOTH_TIMELINE)
             } else {
                 // SDR: um reparo automático de gap só é considerado concluído se
@@ -261,7 +264,11 @@ class AutoGapRepairService : Service() {
                 }
                 publish(
                     (4 + index * 3).coerceAtMost(12),
-                    "Reparando ${analysis.estimatedMissingFrames} quadro(s) ausente(s) com $modeLabel"
+                    if (needsFrameSynthesis) {
+                        "Reparando ${analysis.estimatedMissingFrames} quadro(s) ausente(s) com $modeLabel"
+                    } else {
+                        "Normalizando cadência, timestamps e sincronismo com $modeLabel"
+                    }
                 )
 
                 val config = OptimizationConfig(
@@ -302,7 +309,10 @@ class AutoGapRepairService : Service() {
                     if (cancelledForCaptureOrUser()) throw InterruptedException("Reparo pausado para captura")
                     require(result.output.isFile && result.output.length() > 0L) { "O reparo não produziu arquivo válido" }
                     publish(98, "Validando a cópia reparada…")
-                    VideoValidator.validate(result.output, result.analysis)
+                    val repairedAnalysis = VideoValidator.validateRepair(result.output, result.analysis)
+                    require(repairedAnalysis.cadenceScore >= 90) {
+                        "A saída ainda não atingiu a qualidade mínima de cadência"
+                    }
                     val finalFile = VaultRepository.commitOptimizedFile(
                         this,
                         result.output,
@@ -323,6 +333,9 @@ class AutoGapRepairService : Service() {
                         buildString {
                             append("Cópia reparada criada; original preservado")
                             if (result.repairedGaps > 0) append(" • ").append(result.repairedGaps).append(" gap(s) tratado(s)")
+                            if (analysis.duplicateTimestampCount > 0) append(" • timestamps duplicados corrigidos")
+                            if (analysis.shortIntervalCount > 0) append(" • intervalos curtos normalizados")
+                            if (analysis.hasAvSyncProblem) append(" • sincronismo A/V normalizado")
                             if (result.blendedFrames > 0) append(" • ").append(result.blendedFrames).append(" quadro(s) reconstruído(s)")
                             val repeated = (result.createdFrames - result.blendedFrames).coerceAtLeast(0)
                             if (repeated > 0) append(" • ").append(repeated).append(" posição(ões) CFR preenchida(s)")

@@ -27,6 +27,9 @@ data class VideoAnalysis(
     val largeGapCount: Int,
     val duplicateTimestampCount: Int,
     val estimatedMissingFrames: Int,
+    val shortIntervalCount: Int = 0,
+    val audioDurationUs: Long = 0L,
+    val audioVideoDurationDeltaUs: Long = 0L,
     val minimumFrameDeltaUs: Long,
     val maximumFrameDeltaUs: Long,
     val frameJitterPercent: Int,
@@ -34,7 +37,16 @@ data class VideoAnalysis(
     val cadenceScore: Int
 ) {
     val hasCadenceProblems: Boolean
-        get() = largeGapCount > 0 || duplicateTimestampCount > 0 || frameJitterPercent >= 18
+        get() = largeGapCount > 0 ||
+            duplicateTimestampCount > 0 ||
+            shortIntervalCount > 0 ||
+            frameJitterPercent >= 10
+
+    val hasAvSyncProblem: Boolean
+        get() = hasAudio && audioDurationUs > 0L && audioVideoDurationDeltaUs > 250_000L
+
+    val hasRepairableProblems: Boolean
+        get() = hasCadenceProblems || hasAvSyncProblem
 
     val cadenceLabel: String
         get() = when {
@@ -60,6 +72,7 @@ data class VideoAnalysis(
                 var width = metadata.width
                 var height = metadata.height
                 var videoTrackDurationUs = 0L
+                var audioTrackDurationUs = 0L
 
                 for (index in 0 until extractor.trackCount) {
                     val format = extractor.getTrackFormat(index)
@@ -80,7 +93,15 @@ data class VideoAnalysis(
                             }.getOrDefault(0)
                             hdrHlg10 = transfer == MediaFormat.COLOR_TRANSFER_HLG
                         }
-                        mime.startsWith("audio/") -> hasAudio = true
+                        mime.startsWith("audio/") -> {
+                            hasAudio = true
+                            if (format.containsKey(MediaFormat.KEY_DURATION)) {
+                                audioTrackDurationUs = max(
+                                    audioTrackDurationUs,
+                                    runCatching { format.getLong(MediaFormat.KEY_DURATION) }.getOrDefault(0L)
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -176,9 +197,10 @@ data class VideoAnalysis(
                     else -> spanUs + nominalDeltaUs
                 }
 
-                val gaps = countGaps(file, videoTrack, nominalDeltaUs)
-                val largeGapCount = gaps.first
-                val estimatedMissingFrames = gaps.second
+                val timingIssues = countTimingIssues(file, videoTrack, nominalDeltaUs)
+                val largeGapCount = timingIssues.largeGapCount
+                val estimatedMissingFrames = timingIssues.estimatedMissingFrames
+                val shortIntervalCount = timingIssues.shortIntervalCount
 
                 val standardDeviation = if (deltaCount > 1) sqrt(deltaM2 / (deltaCount - 1).toDouble()) else 0.0
                 val frameJitterPercent = ((standardDeviation / nominalDeltaUs.toDouble()) * 100.0)
@@ -187,9 +209,14 @@ data class VideoAnalysis(
                 val sourceBitrateMbps = if (durationUs > 0L) {
                     file.length().toDouble() * 8.0 / durationUs.toDouble()
                 } else 0.0
+                val avDeltaUs = if (hasAudio && audioTrackDurationUs > 0L) {
+                    kotlin.math.abs(audioTrackDurationUs - durationUs)
+                } else 0L
                 val cadencePenalty = largeGapCount.coerceAtMost(30) * 2 +
                     duplicateTimestampCount.coerceAtMost(20) * 3 +
-                    (frameJitterPercent / 2).coerceAtMost(35)
+                    shortIntervalCount.coerceAtMost(20) * 2 +
+                    (frameJitterPercent / 2).coerceAtMost(35) +
+                    if (avDeltaUs > 250_000L) 8 else 0
                 val cadenceScore = (100 - cadencePenalty).coerceIn(0, 100)
 
                 return VideoAnalysis(
@@ -208,6 +235,9 @@ data class VideoAnalysis(
                     largeGapCount = largeGapCount,
                     duplicateTimestampCount = duplicateTimestampCount,
                     estimatedMissingFrames = estimatedMissingFrames,
+                    shortIntervalCount = shortIntervalCount,
+                    audioDurationUs = audioTrackDurationUs,
+                    audioVideoDurationDeltaUs = avDeltaUs,
                     minimumFrameDeltaUs = minimumDeltaUs.takeUnless { it == Long.MAX_VALUE } ?: nominalDeltaUs,
                     maximumFrameDeltaUs = maximumDeltaUs.takeIf { it > 0L } ?: nominalDeltaUs,
                     frameJitterPercent = frameJitterPercent,
@@ -219,7 +249,17 @@ data class VideoAnalysis(
             }
         }
 
-        private fun countGaps(file: File, videoTrack: Int, nominalDeltaUs: Long): Pair<Int, Int> {
+        private data class TimingIssues(
+            val largeGapCount: Int,
+            val estimatedMissingFrames: Int,
+            val shortIntervalCount: Int
+        )
+
+        private fun countTimingIssues(
+            file: File,
+            videoTrack: Int,
+            nominalDeltaUs: Long
+        ): TimingIssues {
             val extractor = MediaExtractor()
             try {
                 extractor.setDataSource(file.absolutePath)
@@ -227,6 +267,7 @@ data class VideoAnalysis(
                 var previousPts = -1L
                 var largeGapCount = 0
                 var estimatedMissingFrames = 0
+                var shortIntervalCount = 0
                 while (extractor.sampleTrackIndex >= 0) {
                     val pts = extractor.sampleTime
                     if (pts < 0L) break
@@ -237,12 +278,18 @@ data class VideoAnalysis(
                             estimatedMissingFrames += ((delta + nominalDeltaUs / 2L) / nominalDeltaUs - 1L)
                                 .coerceIn(1L, 240L)
                                 .toInt()
+                        } else if (delta in 1 until (nominalDeltaUs * 3L / 5L)) {
+                            shortIntervalCount++
                         }
                     }
                     previousPts = pts
                     if (!extractor.advance()) break
                 }
-                return largeGapCount to estimatedMissingFrames
+                return TimingIssues(
+                    largeGapCount = largeGapCount,
+                    estimatedMissingFrames = estimatedMissingFrames,
+                    shortIntervalCount = shortIntervalCount
+                )
             } finally {
                 extractor.release()
             }

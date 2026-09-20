@@ -67,6 +67,42 @@ object VideoValidator {
         }
     }
 
+    fun validateRepair(
+        output: File,
+        source: VideoAnalysis,
+        expectedDurationUs: Long? = null
+    ): VideoAnalysis {
+        val structural = validate(output, source, expectedDurationUs)
+        if (source.hasAudio) {
+            require(structural.hasAudio) { "A cópia reparada perdeu a faixa de áudio" }
+        }
+
+        val repaired = VideoAnalysis.read(output)
+        require(repaired.frameCount > 0) { "A cópia reparada não contém quadros válidos" }
+        require(repaired.duplicateTimestampCount == 0) {
+            "A cópia reparada ainda contém timestamps duplicados"
+        }
+        require(repaired.largeGapCount == 0) {
+            "A cópia reparada ainda contém ${repaired.largeGapCount} gap(s) de cadência"
+        }
+        require(repaired.shortIntervalCount == 0) {
+            "A cópia reparada ainda contém intervalos anormalmente curtos"
+        }
+        require(repaired.frameJitterPercent <= MAXIMUM_REPAIRED_JITTER_PERCENT) {
+            "A cópia reparada ainda apresenta jitter de ${repaired.frameJitterPercent}%"
+        }
+        require(!repaired.hasAvSyncProblem) {
+            "A cópia reparada ainda apresenta diferença excessiva entre áudio e vídeo"
+        }
+
+        val fpsError = kotlin.math.abs(repaired.exactFps - repaired.estimatedFps.toDouble()) /
+            repaired.estimatedFps.coerceAtLeast(1).toDouble()
+        require(fpsError <= MAXIMUM_REPAIRED_FPS_ERROR) {
+            "A cadência final divergiu do FPS nominal"
+        }
+        return repaired
+    }
+
     private fun metadataDurationUs(file: File): Long {
         val retriever = MediaMetadataRetriever()
         return try {
@@ -100,4 +136,6 @@ object VideoValidator {
     private const val MINIMUM_FILE_BYTES = 1_024L
     private const val MINIMUM_DURATION_FOR_TOLERANCE_US = 2_000_000L
     private const val MAXIMUM_DURATION_DIFFERENCE = 0.18
+    private const val MAXIMUM_REPAIRED_JITTER_PERCENT = 8
+    private const val MAXIMUM_REPAIRED_FPS_ERROR = 0.03
 }
