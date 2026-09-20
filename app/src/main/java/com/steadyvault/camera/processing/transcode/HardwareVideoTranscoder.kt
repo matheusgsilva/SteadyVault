@@ -632,6 +632,7 @@ class HardwareVideoTranscoder {
         private var globalBackwardUvY = 0f
         private var motionNearlyStatic = false
         private var globalMotionUnstable = false
+        private var localWarpSafe = false
         private var motionFieldDirty = true
         private var currentIndex = -1
         private var previousIndex = -1
@@ -812,6 +813,10 @@ class HardwareVideoTranscoder {
                 GLES20.glGetUniformLocation(motionInterpolateProgram, "uGlobalMotionUnstable"),
                 if (globalMotionUnstable) 1f else 0f
             )
+            GLES20.glUniform1f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uLocalWarpSafe"),
+                if (localWarpSafe) 1f else 0f
+            )
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             checkGl("interpolar movimento")
         }
@@ -837,6 +842,7 @@ class HardwareVideoTranscoder {
             globalBackwardUvY = field.globalBackwardUvY
             motionNearlyStatic = field.motionIsNearlyStatic
             globalMotionUnstable = field.globalMotionIsUnstable
+            localWarpSafe = field.localWarpSafe
             uploadMotionField(motionTextures[0], forwardMotionUpload, field.forwardRgba)
             uploadMotionField(motionTextures[1], backwardMotionUpload, field.backwardRgba)
             motionFieldDirty = false
@@ -1008,6 +1014,7 @@ uniform vec2 uGlobalBackward;
 uniform vec2 uMotionTexel;
 uniform float uMotionNearlyStatic;
 uniform float uGlobalMotionUnstable;
+uniform float uLocalWarpSafe;
 
 vec4 smoothFlow(sampler2D tex, vec2 uv){
     vec2 px=uMotionTexel;
@@ -1063,9 +1070,16 @@ void main(){
     // em vez de congelar ou dissolver no lugar errado.
     vec2 localForward=(forward.rg*2.0-1.0)*uFlowScale;
     vec2 localBackward=(backward.rg*2.0-1.0)*uFlowScale;
-    float globalTrust = (uGlobalMotionUnstable>0.5) ? 0.0 : 1.0;
-    vec2 effectiveForward=mix(localForward,mix(uGlobalForward,localForward,prevConfidence),globalTrust);
-    vec2 effectiveBackward=mix(localBackward,mix(uGlobalBackward,localBackward,currConfidence),globalTrust);
+    // Em campo local inseguro, abandona completamente a malha densa e usa
+    // apenas translação global. Isso evita uma região deformada isolada no meio
+    // do vídeo. Campo local só entra quando a análise global o aprovou.
+    float useLocal = step(0.5,uLocalWarpSafe);
+    vec2 safeGlobalForward = (uGlobalMotionUnstable>0.5) ? vec2(0.0) : uGlobalForward;
+    vec2 safeGlobalBackward = (uGlobalMotionUnstable>0.5) ? vec2(0.0) : uGlobalBackward;
+    vec2 locallyBlendedForward=mix(safeGlobalForward,localForward,prevConfidence);
+    vec2 locallyBlendedBackward=mix(safeGlobalBackward,localBackward,currConfidence);
+    vec2 effectiveForward=mix(safeGlobalForward,locallyBlendedForward,useLocal);
+    vec2 effectiveBackward=mix(safeGlobalBackward,locallyBlendedBackward,useLocal);
     prevUv=clamp(vTextureCoord-effectiveForward*a,vec2(0.0),vec2(1.0));
     currUv=clamp(vTextureCoord-effectiveBackward*(1.0-a),vec2(0.0),vec2(1.0));
 
@@ -1084,9 +1098,17 @@ void main(){
     // preserva cor, mas congela a posição aparente e causa o salto no frame
     // real seguinte. A confiança agora escolhe local vs movimento global acima;
     // aqui mantemos o warp como saída principal.
-    float warpWeight=(uGlobalMotionUnstable>0.5)
-        ? (0.55+0.25*reliability)
-        : (0.88+0.12*reliability);
+    float warpWeight;
+    if(uLocalWarpSafe>0.5){
+        warpWeight=0.90+0.10*reliability;
+    }else if(uGlobalMotionUnstable>0.5){
+        // Nenhum movimento espacial é confiável: dissolve suavemente e não
+        // deforma o frame. Melhor uma transição neutra que um quadro quebrado.
+        warpWeight=0.0;
+    }else{
+        // Global rígido é seguro para câmera/panorâmica e não dobra objetos.
+        warpWeight=0.92;
+    }
     gl_FragColor=mix(simple,warped,warpWeight);
 }"""
         }
