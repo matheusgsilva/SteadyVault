@@ -20,13 +20,11 @@ import com.steadyvault.camera.core.state.OptimizationStateStore
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.processing.engine.ProcessingPolicy
 import com.steadyvault.camera.processing.engine.VideoOptimizer
-import com.steadyvault.camera.processing.model.FilterStrength
 import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.processing.model.OptimizationConfig
 import com.steadyvault.camera.processing.model.OptimizationPreset
 import com.steadyvault.camera.processing.model.OptimizationRateMode
 import com.steadyvault.camera.processing.model.OutputCodec
-import com.steadyvault.camera.processing.model.VideoFilterConfig
 import com.steadyvault.camera.processing.validation.VideoValidator
 import com.steadyvault.camera.storage.vault.VaultRepository
 import com.steadyvault.camera.ui.vault.MediaPlayerActivity
@@ -117,16 +115,6 @@ class VideoOptimizationService : Service() {
             bitrateMbps = intent.getIntExtra(EXTRA_BITRATE_MBPS, 0),
             keepAudio = intent.getBooleanExtra(EXTRA_KEEP_AUDIO, true),
             replaceOriginal = intent.getBooleanExtra(EXTRA_REPLACE_ORIGINAL, false),
-            filters = VideoFilterConfig(
-                denoise = FilterStrength.from(intent.getStringExtra(EXTRA_DENOISE)),
-                sharpen = FilterStrength.from(intent.getStringExtra(EXTRA_SHARPEN)),
-                deblock = FilterStrength.from(intent.getStringExtra(EXTRA_DEBLOCK)),
-                brightness = intent.getIntExtra(EXTRA_BRIGHTNESS, 0),
-                contrast = intent.getIntExtra(EXTRA_CONTRAST, 100),
-                saturation = intent.getIntExtra(EXTRA_SATURATION, 100),
-                temperature = intent.getIntExtra(EXTRA_TEMPERATURE, 0),
-                tint = intent.getIntExtra(EXTRA_TINT, 0)
-            ),
             maxInterpolatedFramesPerGap = intent.getIntExtra(EXTRA_MAX_INTERPOLATED_FRAMES, 8),
             thermalProtection = intent.getBooleanExtra(EXTRA_THERMAL_PROTECTION, true),
             trimStartMs = intent.getLongExtra(EXTRA_TRIM_START_MS, 0L),
@@ -438,14 +426,6 @@ class VideoOptimizationService : Service() {
         const val EXTRA_BITRATE_MBPS = "bitrate_mbps"
         const val EXTRA_KEEP_AUDIO = "keep_audio"
         const val EXTRA_REPLACE_ORIGINAL = "replace_original"
-        const val EXTRA_DENOISE = "filter_denoise"
-        const val EXTRA_SHARPEN = "filter_sharpen"
-        const val EXTRA_DEBLOCK = "filter_deblock"
-        const val EXTRA_BRIGHTNESS = "filter_brightness"
-        const val EXTRA_CONTRAST = "filter_contrast"
-        const val EXTRA_SATURATION = "filter_saturation"
-        const val EXTRA_TEMPERATURE = "filter_temperature"
-        const val EXTRA_TINT = "filter_tint"
         const val EXTRA_MAX_INTERPOLATED_FRAMES = "max_interpolated_frames"
         const val EXTRA_THERMAL_PROTECTION = "thermal_protection"
         const val EXTRA_TRIM_START_MS = "trim_start_ms"
@@ -496,14 +476,6 @@ class VideoOptimizationService : Service() {
                 putExtra(EXTRA_BITRATE_MBPS, config.bitrateMbps)
                 putExtra(EXTRA_KEEP_AUDIO, config.keepAudio)
                 putExtra(EXTRA_REPLACE_ORIGINAL, config.replaceOriginal)
-                putExtra(EXTRA_DENOISE, config.filters.denoise.name)
-                putExtra(EXTRA_SHARPEN, config.filters.sharpen.name)
-                putExtra(EXTRA_DEBLOCK, config.filters.deblock.name)
-                putExtra(EXTRA_BRIGHTNESS, config.filters.brightness)
-                putExtra(EXTRA_CONTRAST, config.filters.contrast)
-                putExtra(EXTRA_SATURATION, config.filters.saturation)
-                putExtra(EXTRA_TEMPERATURE, config.filters.temperature)
-                putExtra(EXTRA_TINT, config.filters.tint)
                 putExtra(EXTRA_MAX_INTERPOLATED_FRAMES, config.maxInterpolatedFramesPerGap)
                 putExtra(EXTRA_THERMAL_PROTECTION, config.thermalProtection)
                 putExtra(EXTRA_TRIM_START_MS, config.trimStartMs)
