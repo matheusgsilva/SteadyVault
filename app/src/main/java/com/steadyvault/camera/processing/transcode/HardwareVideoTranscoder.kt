@@ -142,23 +142,8 @@ class HardwareVideoTranscoder {
                 if (appliedRateMode == MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ) {
                     encoderCapabilities?.qualityRange?.let { qualityRange ->
                         val fraction = when (request.preset) {
-                            OptimizationPreset.HIGH_QUALITY,
-                            OptimizationPreset.HQ_1080P,
-                            OptimizationPreset.HQ_720P,
-                            OptimizationPreset.CREATOR_2160P_4K,
-                            OptimizationPreset.CREATOR_1080P,
-                            OptimizationPreset.APPLE_2160P_4K_HEVC,
-                            OptimizationPreset.ARCHIVE_4K -> 0.90
-                            OptimizationPreset.APPLE_1080P_SURROUND -> 0.82
-                            OptimizationPreset.ANDROID_1080P,
-                            OptimizationPreset.ANDROID_720P,
-                            OptimizationPreset.WEB_1080P -> 0.76
-                            OptimizationPreset.FAST_1080P, OptimizationPreset.FAST_720P -> 0.72
-                            OptimizationPreset.VERY_FAST_1080P -> 0.60
-                            OptimizationPreset.SOCIAL_720P -> 0.56
-                            OptimizationPreset.BALANCED -> 0.72
-                            OptimizationPreset.SMALL_FILE -> 0.48
-                            else -> 0.70
+                            OptimizationPreset.HIGH_QUALITY -> 0.90
+                            OptimizationPreset.REPAIR_ONLY -> 0.70
                         }
                         val quality = qualityRange.lower + ((qualityRange.upper - qualityRange.lower) * fraction).toInt()
                         setInteger(MediaFormat.KEY_QUALITY, quality.coerceIn(qualityRange.lower, qualityRange.upper))
@@ -166,25 +151,9 @@ class HardwareVideoTranscoder {
                 }
                 encoderCapabilities?.complexityRange?.let { complexityRange ->
                     val complexity = when (request.preset) {
-                        OptimizationPreset.HIGH_QUALITY,
-                        OptimizationPreset.ARCHIVE_4K,
-                        OptimizationPreset.HQ_1080P,
-                        OptimizationPreset.HQ_720P,
-                        OptimizationPreset.CREATOR_2160P_4K,
-                        OptimizationPreset.CREATOR_1080P,
-                        OptimizationPreset.APPLE_2160P_4K_HEVC,
-                        OptimizationPreset.APPLE_1080P_SURROUND,
-                        OptimizationPreset.ANDROID_1080P,
-                        OptimizationPreset.ANDROID_720P,
-                        OptimizationPreset.WEB_1080P,
-                        OptimizationPreset.SMALL_FILE,
-                        OptimizationPreset.CUSTOM -> complexityRange.upper
-                        OptimizationPreset.VERY_FAST_1080P -> complexityRange.lower
-                        OptimizationPreset.FAST_1080P,
-                        OptimizationPreset.FAST_720P,
-                        OptimizationPreset.SOCIAL_720P ->
+                        OptimizationPreset.HIGH_QUALITY -> complexityRange.upper
+                        OptimizationPreset.REPAIR_ONLY ->
                             complexityRange.lower + (complexityRange.upper - complexityRange.lower) / 2
-                        else -> complexityRange.lower + (complexityRange.upper - complexityRange.lower) / 2
                     }
                     setInteger(MediaFormat.KEY_COMPLEXITY, complexity.coerceIn(complexityRange.lower, complexityRange.upper))
                 }
