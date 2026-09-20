@@ -358,24 +358,54 @@ class HardwareVideoTranscoder {
                                             loadedFrame = true
                                         } else {
                                             val intervalUs = (sourceRelative - previousSourceRelativePts).coerceAtLeast(1L)
-                                            val outputFramesInGap = ((intervalUs + frameIntervalUs - 1L) / frameIntervalUs).toInt()
+                                            val nominalSteps = kotlin.math.round(
+                                                intervalUs.toDouble() / frameIntervalUs.toDouble()
+                                            ).toInt().coerceAtLeast(1)
+                                            val missingFrames = (nominalSteps - 1).coerceAtLeast(0)
                                             val motionAllowed = request.frameRepair == FrameRepairMode.MOTION_COMPENSATED &&
-                                                    outputFramesInGap <= request.maxInterpolatedFramesPerGap + 1
+                                                missingFrames in 1..request.maxInterpolatedFramesPerGap
                                             val blendAllowed = request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND &&
-                                                    outputFramesInGap <= request.maxInterpolatedFramesPerGap + 1
-                                            while (nextFillPtsUs < sourceRelative) {
-                                                val alpha = ((nextFillPtsUs - previousSourceRelativePts).toDouble() / intervalUs.toDouble())
-                                                    .toFloat()
-                                                    .coerceIn(0f, 1f)
+                                                missingFrames in 1..request.maxInterpolatedFramesPerGap
+
+                                            if (missingFrames == 1) {
+                                                val midpointPtsUs = nextFillPtsUs
                                                 when {
-                                                    motionAllowed -> writeMotionFrame(nextFillPtsUs, alpha)
-                                                    blendAllowed -> writeBlendedFrame(nextFillPtsUs, alpha)
                                                     request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ->
-                                                        writeBlendedFrame(nextFillPtsUs, alpha)
-                                                    alpha < 0.5f -> writePreviousFrame(nextFillPtsUs)
-                                                    else -> writeCurrentFrame(nextFillPtsUs)
+                                                        writeMotionFrame(midpointPtsUs, 0.5f)
+                                                    request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND ->
+                                                        writeBlendedFrame(midpointPtsUs, 0.5f)
+                                                    else ->
+                                                        writeBlendedFrame(midpointPtsUs, 0.5f)
                                                 }
-                                                nextFillPtsUs += frameIntervalUs
+                                                val currentPtsUs = midpointPtsUs + frameIntervalUs
+                                                writeCurrentFrame(currentPtsUs)
+                                                nextFillPtsUs = currentPtsUs + frameIntervalUs
+                                            } else {
+                                                val currentGridPtsUs = (
+                                                    previousSourceRelativePts +
+                                                        nominalSteps.toLong() * frameIntervalUs
+                                                ).coerceAtLeast(nextFillPtsUs)
+
+                                                while (nextFillPtsUs < currentGridPtsUs) {
+                                                    val alpha = (
+                                                        (nextFillPtsUs - previousSourceRelativePts).toDouble() /
+                                                            intervalUs.toDouble()
+                                                        ).toFloat().coerceIn(0f, 1f)
+                                                    when {
+                                                        motionAllowed -> writeMotionFrame(nextFillPtsUs, alpha)
+                                                        blendAllowed -> writeBlendedFrame(nextFillPtsUs, alpha)
+                                                        request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ->
+                                                            writeBlendedFrame(nextFillPtsUs, alpha)
+                                                        alpha < 0.5f -> writePreviousFrame(nextFillPtsUs)
+                                                        else -> writeCurrentFrame(nextFillPtsUs)
+                                                    }
+                                                    nextFillPtsUs += frameIntervalUs
+                                                }
+
+                                                if (nextFillPtsUs <= currentGridPtsUs) {
+                                                    writeCurrentFrame(currentGridPtsUs)
+                                                    nextFillPtsUs = currentGridPtsUs + frameIntervalUs
+                                                }
                                             }
                                         }
                                         previousSourceRelativePts = max(previousSourceRelativePts, sourceRelative)
