@@ -24,7 +24,6 @@ import com.steadyvault.camera.processing.model.OptimizationConfig
 import com.steadyvault.camera.processing.model.OptimizationPreset
 import com.steadyvault.camera.processing.model.OptimizationRateMode
 import com.steadyvault.camera.processing.model.OutputCodec
-import com.steadyvault.camera.processing.model.VideoFilterConfig
 import com.steadyvault.camera.processing.validation.VideoValidator
 import com.steadyvault.camera.storage.vault.VaultRepository
 import com.steadyvault.camera.ui.settings.SettingsActivity
@@ -269,7 +268,6 @@ class AutoGapRepairService : Service() {
                     bitrateMbps = analysis.sourceBitrateMbps.roundToInt().coerceIn(4, 240),
                     keepAudio = true,
                     replaceOriginal = false,
-                    filters = VideoFilterConfig(),
                     maxInterpolatedFramesPerGap = settings.maxInterpolatedFramesPerGap,
                     thermalProtection = true
                 ).normalized()
