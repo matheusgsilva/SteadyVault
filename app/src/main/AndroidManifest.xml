@@ -56,7 +56,6 @@
         <activity android:name=".ui.vault.VaultTrashActivity" android:exported="false" android:label="Lixeira dos cofres" android:screenOrientation="portrait" />
         <activity android:name=".ui.vault.SecondaryVaultActivity" android:exported="false" android:label="Cofre secundário" android:screenOrientation="portrait" />
         <activity android:name=".ui.vault.TertiaryVaultActivity" android:exported="false" android:label="Cofre terciário" android:screenOrientation="portrait" />
-        <activity android:name=".ui.vault.VideoOptimizationActivity" android:exported="false" android:screenOrientation="portrait" />
         <activity android:name=".ui.vault.MediaPlayerActivity" android:exported="false" android:screenOrientation="portrait" />
         <activity android:name=".ui.vault.PrimaryVaultActivity" android:exported="false" android:launchMode="singleTop" android:screenOrientation="portrait" />
         <activity android:name=".ui.settings.SettingsActivity" android:exported="false" android:launchMode="singleTop" android:screenOrientation="portrait" />
