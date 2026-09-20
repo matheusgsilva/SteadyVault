@@ -138,7 +138,7 @@ class MediaPlayerActivity : ComponentActivity() {
     private lateinit var details: TextView
     private lateinit var exportButton: TextView
     private lateinit var deleteButton: TextView
-    private lateinit var optimizeButton: TextView
+    private lateinit var repairButton: TextView
     private lateinit var trimMediaButton: TextView
     private lateinit var viewerHeader: View
     private lateinit var viewerActions: View
@@ -252,7 +252,7 @@ class MediaPlayerActivity : ComponentActivity() {
             videoView.visibility = View.GONE
             imageView.visibility = View.VISIBLE
             videoControls.visibility = View.GONE
-            optimizeButton.visibility = View.GONE
+            repairButton.visibility = View.GONE
             updateViewerToolBarPosition(video = false)
             loadImageSafely(media.file)
         }
@@ -339,7 +339,7 @@ class MediaPlayerActivity : ComponentActivity() {
         details = findViewById(R.id.viewerDetails)
         exportButton = findViewById(R.id.exportMediaButton)
         deleteButton = findViewById(R.id.deleteMediaButton)
-        optimizeButton = findViewById(R.id.optimizeMediaButton)
+        repairButton = findViewById(R.id.repairMediaButton)
         trimMediaButton = findViewById(R.id.trimMediaButton)
         viewerHeader = findViewById(R.id.viewerHeader)
         viewerActions = findViewById(R.id.viewerActions)
@@ -391,7 +391,7 @@ class MediaPlayerActivity : ComponentActivity() {
     private fun bindActions() {
         exportButton.setOnClickListener { export() }
         deleteButton.setOnClickListener { confirmDelete() }
-        optimizeButton.apply {
+        repairButton.apply {
             text = "Reparar fluidez"
             visibility = if (item?.video == true) View.VISIBLE else View.GONE
             setOnClickListener {
@@ -876,7 +876,7 @@ class MediaPlayerActivity : ComponentActivity() {
         trimMediaButton.text = "Cortando"
         exportButton.isEnabled = false
         deleteButton.isEnabled = false
-        optimizeButton.isEnabled = false
+        repairButton.isEnabled = false
         seekBar.max = duration
         seekBar.progress = 0
         updateVideoTime(0, duration)
@@ -1408,10 +1408,10 @@ class MediaPlayerActivity : ComponentActivity() {
     private fun setActionButtonsEnabled(enabled: Boolean) {
         actionButtonsEnabled = enabled
         exportButton.isEnabled = enabled
-        optimizeButton.isEnabled = enabled
+        repairButton.isEnabled = enabled
         deleteButton.isEnabled = enabled
         exportButton.alpha = if (enabled) 1f else 0.45f
-        optimizeButton.alpha = if (enabled) 1f else 0.45f
+        repairButton.alpha = if (enabled) 1f else 0.45f
         deleteButton.alpha = if (enabled) 1f else 0.45f
         updateTrimButtonState()
     }
