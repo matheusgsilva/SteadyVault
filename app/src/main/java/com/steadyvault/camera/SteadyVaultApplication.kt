@@ -9,13 +9,11 @@ import android.content.IntentFilter
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import com.steadyvault.camera.storage.security.SecondaryVaultLock
 import com.steadyvault.camera.storage.security.PrimaryVaultLock
 import com.steadyvault.camera.storage.security.TertiaryVaultLock
 import com.steadyvault.camera.storage.security.VaultSecuritySettings
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
-import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.ui.capture.QuickCaptureLauncher
@@ -60,8 +58,9 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
     override fun onCreate() {
         super.onCreate()
         registerActivityLifecycleCallbacks(this)
-        runCatching { AppLogRepository.installCrashCapture(this) }
-            .onFailure { Log.e(TAG, "Falha ao instalar captura de diagnostico", it) }
+        // Remove resíduos de versões antigas que armazenavam logs persistentes.
+        runCatching { java.io.File(filesDir, "diagnostics").deleteRecursively() }
+        runCatching { getSharedPreferences("steadyvault_diagnostics", MODE_PRIVATE).edit().clear().apply() }
 
         protect("APP_STARTUP", "reconciliar gravacao interrompida") {
             CaptureStateStore.reconcileInterruptedRecording(this)
@@ -153,12 +152,6 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
     override fun onActivityDestroyed(activity: Activity) = Unit
 
     private inline fun protect(category: String, operation: String, block: () -> Unit) {
-        runCatching(block).onFailure { error ->
-            AppLogRepository.error(this, category, "Falha em $operation; app continuou em execucao", error)
-        }
-    }
-
-    companion object {
-        private const val TAG = "SteadyVaultApplication"
+        runCatching(block)
     }
 }

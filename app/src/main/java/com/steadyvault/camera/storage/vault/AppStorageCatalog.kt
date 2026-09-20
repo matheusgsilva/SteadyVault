@@ -1,7 +1,6 @@
 package com.steadyvault.camera.storage.vault
 
 import android.content.Context
-import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import java.io.File
 
 object AppStorageCatalog {
@@ -15,7 +14,6 @@ object AppStorageCatalog {
         val tertiary = TertiaryVaultRepository.directory(app)
         val trash = VaultTrashRepository.directory(app)
         val recovery = RecordingRecoveryRepository.directory(app)
-        val logFile = AppLogRepository.snapshot(app).file
         val thumbnailStats = MediaThumbnailRepository.cacheStats(app)
         val thumbnailDirectory = File(app.filesDir, THUMBNAIL_DIRECTORY)
         val importReports = File(app.filesDir, IMPORT_REPORTS_DIRECTORY)
@@ -23,7 +21,7 @@ object AppStorageCatalog {
         val preferences = File(app.applicationInfo.dataDir, "shared_prefs")
         val publicGallery = PublicMediaRegistry.metrics(app)
         val noBackup = app.noBackupFilesDir
-        val internalExcluded = listOf(primary, secondary, tertiary, trash, recovery, logFile, thumbnailDirectory, importReports)
+        val internalExcluded = listOf(primary, secondary, tertiary, trash, recovery, thumbnailDirectory, importReports)
         val otherInternal = metricsExcluding(app.filesDir, internalExcluded)
         val externalRoot = app.getExternalFilesDir(null)
         val otherExternal = externalRoot?.let(::metrics) ?: (0 to 0L)
@@ -35,7 +33,6 @@ object AppStorageCatalog {
                 category(ID_TERTIARY, "Cofre terciário", "Mídias do terceiro cofre", tertiary),
                 category(ID_TRASH, "Lixeira", "Mídias que ainda podem ser restauradas", trash),
                 category(ID_RECOVERY, "Vídeos com erro / recuperados", "Gravações interrompidas preservadas fora do cache", recovery),
-                fileCategory(ID_LOGS, "Logs", "Falhas e eventos técnicos do aplicativo", logFile),
                 Category(ID_THUMBNAILS, "Miniaturas", "Miniaturas persistentes da galeria; podem ser recriadas", thumbnailStats.diskFiles, thumbnailStats.diskBytes),
                 category(ID_IMPORT_REPORTS, "Relatórios legados", "Relatórios antigos de importação, quando existirem", importReports),
                 category(ID_DATABASES, "Índices e bancos locais", "Índice local da galeria; os arquivos dos cofres continuam sendo a fonte de verdade", databases),
@@ -57,7 +54,6 @@ object AppStorageCatalog {
             ID_TERTIARY -> clearDirectory(TertiaryVaultRepository.directory(app))
             ID_TRASH -> clearDirectory(VaultTrashRepository.directory(app))
             ID_RECOVERY -> clearDirectory(RecordingRecoveryRepository.directory(app))
-            ID_LOGS -> AppLogRepository.clear(app)
             ID_THUMBNAILS -> { MediaThumbnailRepository.clearAll(app); true }
             ID_IMPORT_REPORTS -> clearDirectory(File(app.filesDir, IMPORT_REPORTS_DIRECTORY))
             ID_DATABASES -> { VaultMediaIndex.reset(app); clearDirectory(File(app.applicationInfo.dataDir, "databases")) }
@@ -113,7 +109,7 @@ object AppStorageCatalog {
         val excluded = listOf(
             VaultRepository.primaryDirectory(context), SecondaryVaultRepository.directory(context), TertiaryVaultRepository.directory(context),
             VaultTrashRepository.directory(context), RecordingRecoveryRepository.directory(context),
-            AppLogRepository.snapshot(context).file, File(context.filesDir, THUMBNAIL_DIRECTORY), File(context.filesDir, IMPORT_REPORTS_DIRECTORY)
+            File(context.filesDir, THUMBNAIL_DIRECTORY), File(context.filesDir, IMPORT_REPORTS_DIRECTORY)
         ).map(::canonicalPath).toHashSet()
         return deleteExcluding(context.filesDir, excluded)
     }
@@ -145,7 +141,6 @@ object AppStorageCatalog {
     const val ID_TERTIARY = "tertiary"
     const val ID_TRASH = "trash"
     const val ID_RECOVERY = "recovery"
-    const val ID_LOGS = "logs"
     const val ID_THUMBNAILS = "thumbnails"
     const val ID_IMPORT_REPORTS = "import_reports"
     const val ID_DATABASES = "databases"

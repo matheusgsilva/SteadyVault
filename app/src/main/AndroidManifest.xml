@@ -59,7 +59,6 @@
         <activity android:name=".ui.vault.MediaPlayerActivity" android:exported="false" android:screenOrientation="portrait" />
         <activity android:name=".ui.vault.PrimaryVaultActivity" android:exported="false" android:launchMode="singleTop" android:screenOrientation="portrait" />
         <activity android:name=".ui.settings.SettingsActivity" android:exported="false" android:launchMode="singleTop" android:screenOrientation="portrait" />
-        <activity android:name=".ui.settings.DiagnosticsActivity" android:exported="false" android:screenOrientation="portrait" />
         <activity android:name=".ui.settings.StorageManagementActivity" android:exported="false" android:screenOrientation="portrait" />
         <activity android:name=".ui.vault.RecoveryActivity" android:exported="false" android:screenOrientation="portrait" />
         <activity

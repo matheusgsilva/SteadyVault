@@ -2,7 +2,6 @@ package com.steadyvault.camera.photo.service
 
 import com.steadyvault.camera.ui.theme.AppearanceStore
 import com.steadyvault.camera.core.feedback.Haptics
-import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import com.steadyvault.camera.core.diagnostics.PhotoPerformanceTracker
 import com.steadyvault.camera.photo.quality.PhotoQualityPolicy
 import com.steadyvault.camera.core.state.CaptureStateStore
@@ -223,7 +222,6 @@ class PhotoService : Service() {
 
         if (foregroundFailure != null) {
             val message = "Foto não capturada: falha ao iniciar serviço: ${errorText(foregroundFailure)}"
-            AppLogRepository.error(this, "photo", message)
             sendPhotoState(message)
             PhotoCaptureStateStore.finish(this, success = false, message = message)
             stopSelf()
@@ -555,7 +553,6 @@ class PhotoService : Service() {
         releaseCameraObjectsForRetry()
         val delayMs = CAMERA_OPEN_RETRY_DELAY_MS * cameraOpenRetryCount.toLong()
         val message = "Aguardando a câmera ficar disponível… tentativa ${cameraOpenRetryCount + 1}/${CAMERA_OPEN_RETRY_LIMIT + 1}"
-        AppLogRepository.warn(this, "photo", "$message • $reason")
         sendPhotoState(message)
         updateNotification(message)
         mainHandler.postDelayed(
@@ -1506,7 +1503,6 @@ class PhotoService : Service() {
 
         val fullMessage =
             "Foto não capturada: $message"
-        AppLogRepository.error(this, "photo", fullMessage)
 
         sendPhotoState(fullMessage)
         PhotoCaptureStateStore.finish(this, success = false, message = fullMessage)

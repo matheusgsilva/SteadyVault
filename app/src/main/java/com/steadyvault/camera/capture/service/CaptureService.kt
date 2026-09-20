@@ -10,7 +10,6 @@ import com.steadyvault.camera.capture.timing.StrictCaptureModePolicy
 import com.steadyvault.camera.capture.timing.SensorCadencePolicy
 
 import com.steadyvault.camera.core.feedback.Haptics
-import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import com.steadyvault.camera.core.camera.Camera3AStateStore
 import com.steadyvault.camera.core.camera.CameraLensCatalog
 import com.steadyvault.camera.core.camera.CameraZoom
@@ -1155,7 +1154,6 @@ class CaptureService : Service() {
             }
             val msg = "${backend.backendName} pronto: $description"
             Log.i(LOG_TAG, msg)
-            AppLogRepository.info(this, "recording_backend", msg)
         } catch (codecFailure: Throwable) {
             runCatching { backend.release() }
             runCatching { finalFile.delete() }
@@ -1166,11 +1164,6 @@ class CaptureService : Service() {
                 LOG_TAG,
                 "MediaCodec direto recusado; usando MediaRecorder como fallback",
                 codecFailure
-            )
-            AppLogRepository.error(
-                this,
-                "recording_backend",
-                "MediaCodec direto recusado; fallback MediaRecorder: ${errorText(codecFailure)}"
             )
 
             val fallbackFile = VaultRepository.createRecordingFile(this, profileLabel)
@@ -1307,11 +1300,6 @@ class CaptureService : Service() {
             createRecordingSession(camera, profile, token)
         }.onFailure { throwable ->
             Log.e(LOG_TAG, "Falha controlada criando sessão de gravação", throwable)
-            AppLogRepository.error(
-                this,
-                "recording_session",
-                "${sizeName(profile.videoSize)} ${profile.targetFps} FPS: ${errorText(throwable)}"
-            )
             failSelectedConfigurationFromWorker(
                 token,
                 "falha ao configurar câmera/estabilização: ${errorText(throwable)}"
@@ -2914,7 +2902,6 @@ class CaptureService : Service() {
 
     private fun failAndStop(message: String) {
         if (!serviceActive.get()) return
-        AppLogRepository.error(this, "recording", message)
         userRequestedStop = true
         stopping.set(true)
 
@@ -2938,7 +2925,6 @@ class CaptureService : Service() {
 
     private fun failAndStopFromWorker(message: String) {
         if (!serviceActive.get()) return
-        AppLogRepository.error(this, "recording", message)
         userRequestedStop = true
         stopping.set(true)
         val preserved = if (recorderStarted) {
@@ -3355,7 +3341,6 @@ class CaptureService : Service() {
         val cadenceMessage = "Gravação ${sizeName(profile.videoSize)} ${profile.targetFps} FPS iniciada em ${elapsedMs} ms • " +
             "cadênciaHAL=$cadence • minFrame=${if (minFrameDurationNs > 0L) minFrameDurationNs / 1_000_000.0 else -1.0}ms • câmera=${profile.cameraId}"
         Log.i(LOG_TAG, cadenceMessage)
-        AppLogRepository.info(this, "recording_fps", cadenceMessage)
     }
 
     private fun logFpsFallbackIfNeeded(profile: CameraProfile) {
@@ -3371,7 +3356,6 @@ class CaptureService : Service() {
         }
         fpsFallbackWarningLogged = true
         Log.i(LOG_TAG, info)
-        AppLogRepository.info(this, "recording_fps", info)
     }
 
     private fun requestedProfileLabel(): String =

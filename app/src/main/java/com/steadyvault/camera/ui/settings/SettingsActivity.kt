@@ -34,7 +34,6 @@ import com.steadyvault.camera.core.capability.HardwareSupportPolicy
 import com.steadyvault.camera.core.capability.HardwareSupportPolicy.Support
 import com.steadyvault.camera.core.capability.PowerPolicy
 import com.steadyvault.camera.core.feedback.Haptics
-import com.steadyvault.camera.core.diagnostics.AppLogRepository
 import com.steadyvault.camera.core.playback.PlaybackSettings
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
@@ -159,9 +158,7 @@ class SettingsActivity : FragmentActivity() {
         settingsScroll = findViewById(R.id.settingsScroll)
         container = findViewById(R.id.settingsContainer)
         runCatching { SystemBarInsets.applyTop(findViewById<View>(R.id.settingsScreenRoot)) }
-            .onFailure { AppLogRepository.warn(this, "SETTINGS_UI", "Falha ao aplicar insets", it) }
         runCatching { BottomNavigation.bind(this, BottomNavigation.TAB_SETTINGS) }
-            .onFailure { AppLogRepository.warn(this, "SETTINGS_UI", "Falha ao montar navegacao inferior", it) }
         rebuildSettingsSafely("abertura")
     }
 
@@ -194,7 +191,6 @@ class SettingsActivity : FragmentActivity() {
         building = true
         saveGeneration++
         mainHandler.removeCallbacksAndMessages(null)
-        AppLogRepository.error(this, "SETTINGS_UI", "Falha ao montar Configuracoes ($reason)", error)
         helperBySpinner.clear()
         labelBySpinner.clear()
         resolutionSelections.clear()
@@ -229,7 +225,6 @@ class SettingsActivity : FragmentActivity() {
     private fun runUiAction(name: String, action: () -> Unit) {
         if (isFinishing || isDestroyed) return
         runCatching(action).onFailure { error ->
-            AppLogRepository.error(this, "UI_ACTION", "Falha em $name", error)
             Haptics.error(this)
             Toast.makeText(this, error.message ?: "Não foi possível concluir esta ação agora.", Toast.LENGTH_LONG).show()
         }
@@ -239,7 +234,6 @@ class SettingsActivity : FragmentActivity() {
         if (formReady && !building && ::autoSaveStatus.isInitialized) {
             saveGeneration++
             runCatching { saveCurrent() }
-                .onFailure { AppLogRepository.error(this, "SETTINGS_SAVE", "Falha ao salvar ajustes no onPause", it) }
         }
         super.onPause()
     }
@@ -708,9 +702,6 @@ class SettingsActivity : FragmentActivity() {
         cacheUsageText = addInfo("USO DOS CACHES\nCalculando miniaturas, detalhes e temporários…")
         addSmallButton("Atualizar uso dos caches") { refreshCacheUsage() }
         addSmallButton("Limpar caches de mídia") { confirmCleanCacheAndDirtyData() }
-        addSmallButton("Diagnóstico, logs e armazenamento") {
-            startActivity(Intent(this, DiagnosticsActivity::class.java))
-        }
         addInfo("A limpeza não apaga fotos, vídeos, lixeira, álbuns nem configurações da câmera. Miniaturas e detalhes necessários são recriados automaticamente.")
 
 
@@ -767,7 +758,6 @@ class SettingsActivity : FragmentActivity() {
             formReady = true
             building = false
             runCatching { refreshCacheUsage() }
-                .onFailure { AppLogRepository.warn(this, "SETTINGS_UI", "Falha ao atualizar cache", it) }
         }
     }
 
@@ -1353,7 +1343,6 @@ class SettingsActivity : FragmentActivity() {
         val action = Runnable {
             if (generation != saveGeneration || isDestroyed || !formReady) return@Runnable
             runCatching { saveCurrent() }
-                .onFailure { AppLogRepository.error(this, "SETTINGS_SAVE", "Falha no salvamento automatico", it) }
         }
         if (immediate) action.run() else mainHandler.postDelayed(action, AUTO_SAVE_DELAY_MS)
     }
