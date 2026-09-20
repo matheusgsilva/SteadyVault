@@ -271,9 +271,7 @@ class AutoGapRepairService : Service() {
                     replaceOriginal = false,
                     filters = VideoFilterConfig(),
                     maxInterpolatedFramesPerGap = settings.maxInterpolatedFramesPerGap,
-                    thermalProtection = true,
-                    smartAutoTune = false,
-                    aiAssisted = false
+                    thermalProtection = true
                 ).normalized()
 
                 val attempt = runCatching {
