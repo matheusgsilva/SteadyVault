@@ -33,7 +33,8 @@ object OpenCvMotionEstimator {
         val globalBackwardUvX: Float,
         val globalBackwardUvY: Float,
         val motionIsNearlyStatic: Boolean,
-        val globalMotionIsUnstable: Boolean
+        val globalMotionIsUnstable: Boolean,
+        val localWarpSafe: Boolean
     )
 
     @Volatile
@@ -208,10 +209,14 @@ object OpenCvMotionEstimator {
             }
 
             val meanMotionPixels = (motionSum / pixels.coerceAtLeast(1).toDouble()).toFloat()
-            val globalForwardX = if (forwardWeight > 0.0) (forwardWeightedX / forwardWeight).toFloat() else 0f
-            val globalForwardY = if (forwardWeight > 0.0) (forwardWeightedY / forwardWeight).toFloat() else 0f
-            val globalBackwardX = if (backwardWeight > 0.0) (backwardWeightedX / backwardWeight).toFloat() else 0f
-            val globalBackwardY = if (backwardWeight > 0.0) (backwardWeightedY / backwardWeight).toFloat() else 0f
+
+            // Para movimento global, mediana por histograma é muito mais robusta
+            // que média ponderada: um objeto rápido ou vetor errado não arrasta a
+            // cena inteira e não cria um frame sintético "torto".
+            val globalForwardX = robustMedianComponent(forwardData, forwardEncoded, 0, maxFlow)
+            val globalForwardY = robustMedianComponent(forwardData, forwardEncoded, 1, maxFlow)
+            val globalBackwardX = robustMedianComponent(backwardData, backwardEncoded, 0, maxFlow)
+            val globalBackwardY = robustMedianComponent(backwardData, backwardEncoded, 1, maxFlow)
             val globalForwardMagnitude = hypot(globalForwardX.toDouble(), globalForwardY.toDouble()).toFloat()
             val globalBackwardMagnitude = hypot(globalBackwardX.toDouble(), globalBackwardY.toDouble()).toFloat()
             val motionIsNearlyStatic = meanMotionPixels < 0.45f &&
@@ -225,6 +230,16 @@ object OpenCvMotionEstimator {
                 globalForwardMagnitude > 0.2f &&
                 globalBackwardMagnitude > 0.2f &&
                 directionAgreement < 0.25f
+
+            // Warp denso só é permitido quando o campo é realmente estável.
+            // Se não passar, o shader usa apenas movimento global rígido, evitando
+            // deformações locais que aparecem como "frame bugado".
+            val localWarpSafe =
+                !sceneChangeLikely &&
+                !globalMotionIsUnstable &&
+                meanConfidence >= 0.40f &&
+                lowConfidenceRatio <= 0.38f &&
+                directionAgreement >= 0.45f
 
             return Field(
                 forwardRgba = forwardEncoded,
@@ -240,7 +255,8 @@ object OpenCvMotionEstimator {
                 globalBackwardUvX = globalBackwardX / width.toFloat(),
                 globalBackwardUvY = globalBackwardY / height.toFloat(),
                 motionIsNearlyStatic = motionIsNearlyStatic,
-                globalMotionIsUnstable = globalMotionIsUnstable
+                globalMotionIsUnstable = globalMotionIsUnstable,
+                localWarpSafe = localWarpSafe
             )
         } finally {
             previous.release()
@@ -250,6 +266,37 @@ object OpenCvMotionEstimator {
             forward.release()
             backward.release()
         }
+    }
+
+    private fun robustMedianComponent(
+        flow: FloatArray,
+        encoded: ByteArray,
+        channel: Int,
+        maxFlow: Float
+    ): Float {
+        val bins = IntArray(ROBUST_FLOW_BINS)
+        var accepted = 0
+        val pixels = encoded.size / 4
+        for (index in 0 until pixels) {
+            val confidence = (encoded[index * 4 + 2].toInt() and 0xff) / 255f
+            if (confidence < ROBUST_GLOBAL_CONFIDENCE) continue
+            val value = flow[index * 2 + channel].coerceIn(-maxFlow, maxFlow)
+            val normalized = ((value + maxFlow) / (2f * maxFlow)).coerceIn(0f, 1f)
+            val bin = (normalized * (ROBUST_FLOW_BINS - 1)).roundToInt()
+            bins[bin]++
+            accepted++
+        }
+        if (accepted < (pixels * 0.03f).toInt().coerceAtLeast(32)) return 0f
+        val target = (accepted + 1) / 2
+        var cumulative = 0
+        for (bin in bins.indices) {
+            cumulative += bins[bin]
+            if (cumulative >= target) {
+                val normalized = bin.toFloat() / (ROBUST_FLOW_BINS - 1).toFloat()
+                return normalized * (2f * maxFlow) - maxFlow
+            }
+        }
+        return 0f
     }
 
     private fun directionalConfidence(
@@ -359,4 +406,7 @@ object OpenCvMotionEstimator {
         val bottom = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * fx
         return top + (bottom - top) * fy
     }
+    private const val ROBUST_FLOW_BINS = 257
+    private const val ROBUST_GLOBAL_CONFIDENCE = 0.38f
+
 }
