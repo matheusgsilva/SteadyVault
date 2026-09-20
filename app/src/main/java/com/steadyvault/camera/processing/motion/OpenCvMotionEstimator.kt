@@ -12,16 +12,16 @@ import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /**
- * Fluxo óptico local entre dois quadros vizinhos.
+ * Fluxo óptico bidirecional entre dois quadros vizinhos.
  *
- * A entrada vem de um downsample feito pela GPU. Farneback calcula movimento nos
- * dois sentidos. O forward continua sendo a trajetória principal e o backward só
- * corrige proporcionalmente quando os dois campos concordam. Isso evita reduzir a
- * velocidade aparente no meio do gap quando o backward é incerto.
+ * Mantemos campos independentes A->B e B->A. Cada campo carrega sua própria
+ * confiança forward/backward para o shader poder decidir qual lado é mais seguro
+ * em bordas de oclusão, em vez de reduzir tudo a um único vetor médio.
  */
 object OpenCvMotionEstimator {
     data class Field(
-        val rgba: ByteArray,
+        val forwardRgba: ByteArray,
+        val backwardRgba: ByteArray,
         val flowScaleX: Float,
         val flowScaleY: Float,
         val meanConfidence: Float,
@@ -68,10 +68,9 @@ object OpenCvMotionEstimator {
             Imgproc.cvtColor(previous, previousGray, Imgproc.COLOR_RGBA2GRAY)
             Imgproc.cvtColor(current, currentGray, Imgproc.COLOR_RGBA2GRAY)
 
-            // O reparo roda depois da captura; aqui qualidade vale mais que latência.
-            val levels = if (highQuality) 6 else 4
-            val window = if (highQuality) 31 else 21
-            val iterations = if (highQuality) 7 else 3
+            val levels = if (highQuality) 7 else 4
+            val window = if (highQuality) 35 else 21
+            val iterations = if (highQuality) 8 else 3
             val polyN = if (highQuality) 7 else 5
             val polySigma = if (highQuality) 1.5 else 1.2
             Video.calcOpticalFlowFarneback(
@@ -92,78 +91,77 @@ object OpenCvMotionEstimator {
             previousGray.get(0, 0, previousLuma)
             currentGray.get(0, 0, currentLuma)
 
-            // O limite antigo de 10/14 px cortava panorâmicas rápidas nos gaps.
-            val maxFlow = if (highQuality) 24f else 12f
-            val encoded = ByteArray(pixels * 4)
+            // Em 4K o campo é calculado em resolução reduzida. 32 px no mapa de
+            // análise representa deslocamento bem maior na imagem final e evita
+            // cortar panorâmicas rápidas.
+            val maxFlow = if (highQuality) 32f else 14f
+            val forwardEncoded = ByteArray(pixels * 4)
+            val backwardEncoded = ByteArray(pixels * 4)
             var confidenceSum = 0.0
             var motionSum = 0.0
 
             for (y in 0 until height) {
                 for (x in 0 until width) {
                     val index = y * width + x
-                    val rawForwardDx = forwardData[index * 2]
-                    val rawForwardDy = forwardData[index * 2 + 1]
-                    val forwardDx = rawForwardDx.coerceIn(-maxFlow, maxFlow)
-                    val forwardDy = rawForwardDy.coerceIn(-maxFlow, maxFlow)
+                    val fdxRaw = forwardData[index * 2]
+                    val fdyRaw = forwardData[index * 2 + 1]
+                    val bdxRaw = backwardData[index * 2]
+                    val bdyRaw = backwardData[index * 2 + 1]
+                    val fdx = fdxRaw.coerceIn(-maxFlow, maxFlow)
+                    val fdy = fdyRaw.coerceIn(-maxFlow, maxFlow)
+                    val bdx = bdxRaw.coerceIn(-maxFlow, maxFlow)
+                    val bdy = bdyRaw.coerceIn(-maxFlow, maxFlow)
 
-                    val targetX = x + forwardDx
-                    val targetY = y + forwardDy
-                    val sampledBackwardDx = sampleFlow(backwardData, width, height, targetX, targetY, 0)
-                    val sampledBackwardDy = sampleFlow(backwardData, width, height, targetX, targetY, 1)
+                    val forwardConfidence = directionalConfidence(
+                        primaryDx = fdx,
+                        primaryDy = fdy,
+                        opposite = backwardData,
+                        oppositeLuma = currentLuma,
+                        sourceLuma = previousLuma,
+                        sourceValue = previousLuma[index].toInt() and 0xff,
+                        width = width,
+                        height = height,
+                        x = x,
+                        y = y,
+                        highQuality = highQuality,
+                        maxFlow = maxFlow,
+                        rawDx = fdxRaw,
+                        rawDy = fdyRaw
+                    )
+                    val backwardConfidence = directionalConfidence(
+                        primaryDx = bdx,
+                        primaryDy = bdy,
+                        opposite = forwardData,
+                        oppositeLuma = previousLuma,
+                        sourceLuma = currentLuma,
+                        sourceValue = currentLuma[index].toInt() and 0xff,
+                        width = width,
+                        height = height,
+                        x = x,
+                        y = y,
+                        highQuality = highQuality,
+                        maxFlow = maxFlow,
+                        rawDx = bdxRaw,
+                        rawDy = bdyRaw
+                    )
 
-                    val consistencyError = hypot(
-                        (forwardDx + sampledBackwardDx).toDouble(),
-                        (forwardDy + sampledBackwardDy).toDouble()
-                    ).toFloat()
-                    val consistencyConfidence = exp(
-                        (-consistencyError / if (highQuality) 2.2f else 2.5f).toDouble()
-                    ).toFloat()
+                    confidenceSum += ((forwardConfidence + backwardConfidence) * 0.5).toDouble()
+                    motionSum += (
+                        hypot(fdx.toDouble(), fdy.toDouble()) +
+                            hypot(bdx.toDouble(), bdy.toDouble())
+                        ) * 0.5
 
-                    // Backward ~= -forward quando a trajetória é confiável. Em vez de
-                    // sempre fazer média 50/50, preserve o forward quando há conflito.
-                    // Isso remove o efeito de desacelerar no frame sintético e acelerar
-                    // novamente logo depois do gap.
-                    val backwardAsForwardDx = -sampledBackwardDx
-                    val backwardAsForwardDy = -sampledBackwardDy
-                    val backwardWeight = (consistencyConfidence * 0.5f).coerceIn(0f, 0.5f)
-                    val correctedDx = (
-                        forwardDx * (1f - backwardWeight) + backwardAsForwardDx * backwardWeight
-                    ).coerceIn(-maxFlow, maxFlow)
-                    val correctedDy = (
-                        forwardDy * (1f - backwardWeight) + backwardAsForwardDy * backwardWeight
-                    ).coerceIn(-maxFlow, maxFlow)
-
-                    val previousValue = previousLuma[index].toInt() and 0xff
-                    val currentValue = sampleGray(currentLuma, width, height, targetX, targetY)
-                    val photoError = abs(previousValue.toFloat() - currentValue) / 255f
-                    val photoConfidence = (1f - photoError * 2.2f).coerceIn(0f, 1f)
-                    val clipped = abs(rawForwardDx) > maxFlow || abs(rawForwardDy) > maxFlow
-                    val boundaryPenalty = if (clipped) 0.55f else 1f
-                    val confidence = (
-                        (consistencyConfidence * 0.75f + photoConfidence * 0.25f) * boundaryPenalty
-                    ).coerceIn(0f, 1f)
-                    confidenceSum += confidence.toDouble()
-                    motionSum += hypot(correctedDx.toDouble(), correctedDy.toDouble())
-
-                    // O shader antigo usava nearest-frame quando B ficava muito baixo,
-                    // produzindo uma microcongelada seguida de salto. Um piso de 0.36
-                    // mantém o fallback em mistura temporal contínua, sem fingir que a
-                    // confiança real é maior no relatório (meanConfidence continua raw).
-                    val shaderConfidence = (0.36f + confidence * 0.64f).coerceIn(0f, 1f)
-
-                    val out = index * 4
-                    encoded[out] = encodeFlow(correctedDx, maxFlow)
-                    encoded[out + 1] = encodeFlow(correctedDy, maxFlow)
-                    encoded[out + 2] = (shaderConfidence * 255f).roundToInt().coerceIn(0, 255).toByte()
-                    encoded[out + 3] = 0xff.toByte()
+                    encodeVector(forwardEncoded, index, fdx, fdy, forwardConfidence, maxFlow)
+                    encodeVector(backwardEncoded, index, bdx, bdy, backwardConfidence, maxFlow)
                 }
             }
 
             return Field(
-                rgba = encoded,
+                forwardRgba = forwardEncoded,
+                backwardRgba = backwardEncoded,
                 flowScaleX = maxFlow / width.toFloat(),
                 flowScaleY = maxFlow / height.toFloat(),
-                meanConfidence = (confidenceSum / pixels.coerceAtLeast(1).toDouble()).toFloat(),
+                meanConfidence = (confidenceSum / pixels.coerceAtLeast(1)).toFloat(),
                 meanMotionPixels = (motionSum / pixels.coerceAtLeast(1).toDouble()).toFloat()
             )
         } finally {
@@ -174,6 +172,71 @@ object OpenCvMotionEstimator {
             forward.release()
             backward.release()
         }
+    }
+
+    private fun directionalConfidence(
+        primaryDx: Float,
+        primaryDy: Float,
+        opposite: FloatArray,
+        oppositeLuma: ByteArray,
+        sourceLuma: ByteArray,
+        sourceValue: Int,
+        width: Int,
+        height: Int,
+        x: Int,
+        y: Int,
+        highQuality: Boolean,
+        maxFlow: Float,
+        rawDx: Float,
+        rawDy: Float
+    ): Float {
+        val targetX = x + primaryDx
+        val targetY = y + primaryDy
+        val oppositeDx = sampleFlow(opposite, width, height, targetX, targetY, 0)
+        val oppositeDy = sampleFlow(opposite, width, height, targetX, targetY, 1)
+        val consistencyError = hypot(
+            (primaryDx + oppositeDx).toDouble(),
+            (primaryDy + oppositeDy).toDouble()
+        ).toFloat()
+        val consistencyConfidence = exp(
+            (-consistencyError / if (highQuality) 2.0f else 2.5f).toDouble()
+        ).toFloat()
+
+        val targetValue = sampleGray(oppositeLuma, width, height, targetX, targetY)
+        val photoError = abs(sourceValue.toFloat() - targetValue) / 255f
+        val photoConfidence = (1f - photoError * 2.0f).coerceIn(0f, 1f)
+
+        val inside = targetX >= 0.5f && targetX <= width - 1.5f &&
+            targetY >= 0.5f && targetY <= height - 1.5f
+        val clipped = abs(rawDx) > maxFlow || abs(rawDy) > maxFlow
+        val boundaryPenalty = when {
+            !inside -> 0.25f
+            clipped -> 0.45f
+            else -> 1f
+        }
+
+        // Consistência bidirecional domina. Fotometria ajuda a detectar oclusões
+        // e objetos revelados entre A e B.
+        return (
+            (consistencyConfidence * 0.82f + photoConfidence * 0.18f) * boundaryPenalty
+            ).coerceIn(0f, 1f)
+    }
+
+    private fun encodeVector(
+        target: ByteArray,
+        index: Int,
+        dx: Float,
+        dy: Float,
+        confidence: Float,
+        maximum: Float
+    ) {
+        val out = index * 4
+        target[out] = encodeFlow(dx, maximum)
+        target[out + 1] = encodeFlow(dy, maximum)
+        // Mantém um piso pequeno para nunca cair em repetição seca de frame.
+        val shaderConfidence = (0.12f + confidence * 0.88f).coerceIn(0f, 1f)
+        target[out + 2] = (shaderConfidence * 255f).roundToInt().coerceIn(0, 255).toByte()
+        target[out + 3] = 0xff.toByte()
     }
 
     private fun encodeFlow(value: Float, maximum: Float): Byte {
