@@ -172,8 +172,6 @@ data class OptimizationConfig(
     val filters: VideoFilterConfig = VideoFilterConfig(),
     val maxInterpolatedFramesPerGap: Int = 8,
     val thermalProtection: Boolean = true,
-    val smartAutoTune: Boolean = false,
-    val aiAssisted: Boolean = false,
     val trimStartMs: Long = 0L,
     val trimEndMs: Long = 0L
 ) {
