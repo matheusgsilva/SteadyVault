@@ -331,9 +331,12 @@ class SettingsActivity : FragmentActivity() {
         addInfo("Pipeline direto Camera2 → uma única Surface do encoder. Em 60 FPS SDR usa MediaCodec; 30 FPS/HDR usam o caminho compatível. Não há callback por quadro durante o MP4.")
         hdr = addSwitch(
             "HDR HLG10",
-            "Usa HEVC Main10, BT.2020 HLG e faixa limitada. Combinações incompatíveis são informadas em vez de serem trocadas silenciosamente.",
-            snapshot.hdrHlg10
-        )
+            "Desativado nesta versão de captura para evitar combinações que o Camera2/encoder não confirmam de forma estável.",
+            false
+        ).apply {
+            isChecked = false
+            visibility = View.GONE
+        }
         colorProfile = addSpinner(
             "Perfil de cor da gravação",
             colorProfileOptions(snapshot),
@@ -524,8 +527,8 @@ class SettingsActivity : FragmentActivity() {
         addSection("Processamento de vídeo")
         val autoRepair = AutoGapRepairSettings.snapshot(this)
         autoGapRepairEnabled = addSwitch(
-            "Reparar gaps automaticamente após gravar",
-            "Analisa os timestamps do MP4 original em segundo plano. Quando há lacunas, cria uma NOVA cópia reparada; o original nunca é substituído. Se outra gravação começar, o processamento é interrompido e volta para a fila.",
+            "Reparar vídeo automaticamente após gravar",
+            "Analisa cadência, gaps, timestamps duplicados, jitter e sincronismo de áudio/vídeo. Quando encontra problema temporal, cria uma NOVA cópia validada; o original nunca é substituído. Se outra gravação começar, o processamento é interrompido e volta para a fila.",
             autoRepair.enabled
         )
         autoGapRepairMode = addSpinner(
@@ -1305,11 +1308,11 @@ class SettingsActivity : FragmentActivity() {
 
     private fun refreshDependentControls() {
         if (!::hdr.isInitialized) return
-        val hdrSupport = selectedCameraFeatures()?.hdrHlg10 ?: Support.UNVERIFIED
-        val hdrHardwareSelectable = hdrSupport == Support.SUPPORTED
-        hdr.isEnabled = selected(codec) != CaptureSettings.CODEC_AVC && hdrHardwareSelectable
-        hdr.alpha = if (hdr.isEnabled) 1f else 0.45f
-        colorProfile.isEnabled = !hdr.isChecked
+        hdr.isChecked = false
+        hdr.isEnabled = false
+        hdr.visibility = View.GONE
+        hdr.alpha = 0.45f
+        colorProfile.isEnabled = true
         colorProfile.alpha = if (colorProfile.isEnabled) 1f else 0.45f
     }
 
@@ -1345,8 +1348,7 @@ class SettingsActivity : FragmentActivity() {
         codec = selected(codec),
         bitrateMbps = selected(bitrate).toIntOrNull()?.coerceIn(4, 240) ?: base.bitrateMbps,
         iFrameIntervalSeconds = selected(iframe).toIntOrNull()?.coerceIn(1, 10) ?: base.iFrameIntervalSeconds,
-        hdrHlg10 = hdr.isChecked &&
-            selectedCameraFeatures()?.hdrHlg10 == Support.SUPPORTED,
+        hdrHlg10 = false,
         colorProfile = selected(colorProfile),
         stabilization = selected(stabilization),
         focusMode = selected(focus),
@@ -2152,10 +2154,8 @@ class SettingsActivity : FragmentActivity() {
             .forEach(::updateSpinnerVisibility)
 
         val features = selectedCameraFeatures()
-        val hdrSupport = features?.hdrHlg10 ?: Support.UNVERIFIED
-        val hdrVerified = hdrSupport == Support.SUPPORTED
-        if (!hdrVerified && hdr.isChecked) hdr.isChecked = false
-        hdr.visibility = if (hdrVerified) View.VISIBLE else View.GONE
+        hdr.isChecked = false
+        hdr.visibility = View.GONE
 
         val exposureVisible = features?.exposureCompensationSupported != false
         exposure.visibility = if (exposureVisible) View.VISIBLE else View.GONE

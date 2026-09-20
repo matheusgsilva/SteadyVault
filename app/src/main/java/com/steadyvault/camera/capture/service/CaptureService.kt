@@ -288,22 +288,17 @@ class CaptureService : Service() {
         // A configuração atualmente salva é a fonte da verdade. Não recarregue um
         // perfil histórico da câmera no instante em que o usuário toca em Gravar.
         CameraProfileStore.setActiveMode(this, CameraProfileStore.FunctionMode.VIDEO)
-        recordingSettings = currentSettings.copy(selectedCameraId = profileCameraId, zoomRatio = profileZoomRatio)
-
-        if (recordingSettings.hdrHlg10) {
-            val hdrSupported = runCatching {
-                val characteristics = getSystemService(CameraManager::class.java)
-                    .getCameraCharacteristics(profileCameraId)
-                supportsHlg10(characteristics)
-            }.getOrDefault(false)
-            if (!hdrSupported) {
-                recordingSettings = recordingSettings.copy(hdrHlg10 = false)
-                AppLogRepository.info(
-                    this,
-                    "recording_hdr",
-                    "HLG10 não confirmado para a câmera/modo atual; captura seguirá em SDR BT.709"
-                )
-            }
+        recordingSettings = currentSettings.copy(
+            selectedCameraId = profileCameraId,
+            zoomRatio = profileZoomRatio,
+            hdrHlg10 = false
+        )
+        if (currentSettings.hdrHlg10) {
+            AppLogRepository.info(
+                this,
+                "recording_hdr",
+                "Preferência HLG10 antiga ignorada; novas gravações usam SDR BT.709 nesta branch"
+            )
         }
 
         if (recordingSettings.thermalProtection && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

@@ -212,11 +212,17 @@ class AutoGapRepairService : Service() {
             } else {
                 settings.mode
             }
-            val modes = if (analysis.hdrHlg10 || !needsFrameSynthesis) {
-                // HDR não passa pelo transcoder SDR. Para jitter, PTS duplicado ou
-                // desalinhamento A/V sem frame ausente, remuxar a timeline é suficiente
-                // e não recodifica os pixels.
+            val modes = if (analysis.hdrHlg10) {
+                // Arquivos HDR antigos não entram no transcoder SDR para evitar
+                // alteração de gama/cor. O reparo fica restrito à timeline.
                 listOf(FrameRepairMode.SMOOTH_TIMELINE)
+            } else if (!needsFrameSynthesis) {
+                // Primeiro tenta correção sem recodificar. Se a validação rígida ainda
+                // detectar jitter ou A/V fora do limite, recodifica para uma grade CFR.
+                listOf(
+                    FrameRepairMode.SMOOTH_TIMELINE,
+                    FrameRepairMode.FILL_MISSING_FRAMES
+                )
             } else {
                 // SDR: um reparo automático de gap só é considerado concluído se
                 // preencher/reconstruir os quadros ausentes de verdade. Não cair em
