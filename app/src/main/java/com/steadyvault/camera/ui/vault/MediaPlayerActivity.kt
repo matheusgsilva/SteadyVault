@@ -1034,8 +1034,6 @@ class MediaPlayerActivity : ComponentActivity() {
             replaceOriginal = false,
             filters = VideoFilterConfig(),
             thermalProtection = true,
-            smartAutoTune = false,
-            aiAssisted = false,
             trimStartMs = startMs.toLong(),
             trimEndMs = endMs.toLong()
         ).normalized()
