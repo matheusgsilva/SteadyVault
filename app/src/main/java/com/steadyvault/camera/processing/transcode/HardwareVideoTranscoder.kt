@@ -700,7 +700,7 @@ class HardwareVideoTranscoder {
         private var motionNearlyStatic = false
         private var globalMotionUnstable = false
         private var localWarpSafe = false
-        private var currentMotionField: OpenCvMotionEstimator.Field? = null
+        private var cachedMotionField: OpenCvMotionEstimator.Field? = null
         private var motionFieldDirty = true
         private var currentIndex = -1
         private var previousIndex = -1
@@ -816,13 +816,13 @@ class HardwareVideoTranscoder {
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             if (previousIndex < 0) previousIndex = currentIndex
             motionFieldDirty = true
-            currentMotionField = null
+            cachedMotionField = null
             checkGl("capturar quadro")
         }
 
         fun currentMotionField(): OpenCvMotionEstimator.Field {
             ensureMotionField()
-            return currentMotionField
+            return cachedMotionField
                 ?: throw IllegalStateException("Campo de movimento indisponível")
         }
 
@@ -936,7 +936,7 @@ class HardwareVideoTranscoder {
             motionNearlyStatic = field.motionIsNearlyStatic
             globalMotionUnstable = field.globalMotionIsUnstable
             localWarpSafe = field.localWarpSafe
-            currentMotionField = field
+            cachedMotionField = field
             uploadMotionField(motionTextures[0], forwardMotionUpload, field.forwardRgba)
             uploadMotionField(motionTextures[1], backwardMotionUpload, field.backwardRgba)
             motionFieldDirty = false
