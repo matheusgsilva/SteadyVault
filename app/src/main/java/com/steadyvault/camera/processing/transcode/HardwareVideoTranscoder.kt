@@ -4,6 +4,7 @@ import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.processing.model.OptimizationPreset
 import com.steadyvault.camera.processing.model.OptimizationRateMode
 import com.steadyvault.camera.processing.motion.OpenCvMotionEstimator
+import com.steadyvault.camera.processing.motion.MotionTrajectoryStabilizer
 
 import android.graphics.SurfaceTexture
 import android.media.MediaCodec
@@ -203,6 +204,9 @@ class HardwareVideoTranscoder {
             var lastWrittenPtsUs = -1L
             var loadedFrame = false
             var previousSourceRelativePts = 0L
+            val trajectoryStabilizer = MotionTrajectoryStabilizer()
+            var previousCorrection = MotionTrajectoryStabilizer.Correction()
+            var currentCorrection = MotionTrajectoryStabilizer.Correction()
 
             fun startMuxerIfReady(format: MediaFormat) {
                 if (muxerStarted) return
@@ -265,14 +269,47 @@ class HardwareVideoTranscoder {
                 drainEncoder(false)
             }
 
-            fun writeCurrentFrame(ptsUs: Long) = submitFrame(ptsUs) { outputSurface!!.drawCurrent() }
-            fun writePreviousFrame(ptsUs: Long) = submitFrame(ptsUs) { outputSurface!!.drawPrevious() }
-            fun writeBlendedFrame(ptsUs: Long, alpha: Float) {
-                submitFrame(ptsUs) { outputSurface!!.drawBlend(alpha) }
+            fun interpolateCorrection(
+                from: MotionTrajectoryStabilizer.Correction,
+                to: MotionTrajectoryStabilizer.Correction,
+                alpha: Float
+            ): MotionTrajectoryStabilizer.Correction {
+                val a = alpha.coerceIn(0f, 1f)
+                return MotionTrajectoryStabilizer.Correction(
+                    xUv = from.xUv + (to.xUv - from.xUv) * a,
+                    yUv = from.yUv + (to.yUv - from.yUv) * a,
+                    rotationRad = from.rotationRad + (to.rotationRad - from.rotationRad) * a,
+                    zoom = from.zoom + (to.zoom - from.zoom) * a,
+                    jankDetected = from.jankDetected || to.jankDetected,
+                    confidence = from.confidence + (to.confidence - from.confidence) * a
+                )
+            }
+
+            fun writeCurrentFrame(
+                ptsUs: Long,
+                correction: MotionTrajectoryStabilizer.Correction = MotionTrajectoryStabilizer.Correction()
+            ) = submitFrame(ptsUs) { outputSurface!!.drawCurrent(correction) }
+
+            fun writePreviousFrame(
+                ptsUs: Long,
+                correction: MotionTrajectoryStabilizer.Correction = MotionTrajectoryStabilizer.Correction()
+            ) = submitFrame(ptsUs) { outputSurface!!.drawPrevious(correction) }
+
+            fun writeBlendedFrame(
+                ptsUs: Long,
+                alpha: Float,
+                correction: MotionTrajectoryStabilizer.Correction = MotionTrajectoryStabilizer.Correction()
+            ) {
+                submitFrame(ptsUs) { outputSurface!!.drawBlend(alpha, correction) }
                 if (alpha > 0.02f && alpha < 0.98f) blendedFrames++
             }
-            fun writeMotionFrame(ptsUs: Long, alpha: Float) {
-                submitFrame(ptsUs) { outputSurface!!.drawMotion(alpha) }
+
+            fun writeMotionFrame(
+                ptsUs: Long,
+                alpha: Float,
+                correction: MotionTrajectoryStabilizer.Correction = MotionTrajectoryStabilizer.Correction()
+            ) {
+                submitFrame(ptsUs) { outputSurface!!.drawMotion(alpha, correction) }
                 if (alpha > 0.02f && alpha < 0.98f) blendedFrames++
             }
 
@@ -320,10 +357,32 @@ class HardwareVideoTranscoder {
                                     FrameRepairMode.ADAPTIVE_BLEND,
                                     FrameRepairMode.MOTION_COMPENSATED -> {
                                         if (!loadedFrame) {
-                                            writeCurrentFrame(0L)
+                                            previousCorrection = MotionTrajectoryStabilizer.Correction()
+                                            currentCorrection = MotionTrajectoryStabilizer.Correction()
+                                            writeCurrentFrame(0L, currentCorrection)
                                             nextFillPtsUs = frameIntervalUs
                                             loadedFrame = true
                                         } else {
+                                            previousCorrection = currentCorrection
+                                            currentCorrection = if (request.frameRepair == FrameRepairMode.MOTION_COMPENSATED) {
+                                                val field = outputSurface!!.currentMotionField()
+                                                trajectoryStabilizer.update(
+                                                    motionXUv = field.globalForwardUvX,
+                                                    motionYUv = field.globalForwardUvY,
+                                                    rotationRad = if (field.globalRotationReliability >= 0.24f) {
+                                                        field.globalRotationRadians
+                                                    } else {
+                                                        0f
+                                                    },
+                                                    reliability = field.globalReliability,
+                                                    sceneChange = field.sceneChangeLikely,
+                                                    unstable = field.globalMotionIsUnstable,
+                                                    nearlyStatic = field.motionIsNearlyStatic
+                                                )
+                                            } else {
+                                                MotionTrajectoryStabilizer.Correction()
+                                            }
+
                                             val intervalUs = (sourceRelative - previousSourceRelativePts).coerceAtLeast(1L)
                                             val nominalSteps = kotlin.math.round(
                                                 intervalUs.toDouble() / frameIntervalUs.toDouble()
@@ -339,18 +398,23 @@ class HardwareVideoTranscoder {
                                             // Não misturamos mais PTS original irregular com PTS reconstruído.
                                             for (step in 1 until nominalSteps) {
                                                 val alpha = step.toFloat() / nominalSteps.toFloat()
+                                                val correction = interpolateCorrection(
+                                                    previousCorrection,
+                                                    currentCorrection,
+                                                    alpha
+                                                )
                                                 when {
-                                                    motionAllowed -> writeMotionFrame(nextFillPtsUs, alpha)
-                                                    blendAllowed -> writeBlendedFrame(nextFillPtsUs, alpha)
+                                                    motionAllowed -> writeMotionFrame(nextFillPtsUs, alpha, correction)
+                                                    blendAllowed -> writeBlendedFrame(nextFillPtsUs, alpha, correction)
                                                     request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ->
-                                                        writeBlendedFrame(nextFillPtsUs, alpha)
-                                                    alpha < 0.5f -> writePreviousFrame(nextFillPtsUs)
-                                                    else -> writeCurrentFrame(nextFillPtsUs)
+                                                        writeBlendedFrame(nextFillPtsUs, alpha, correction)
+                                                    alpha < 0.5f -> writePreviousFrame(nextFillPtsUs, correction)
+                                                    else -> writeCurrentFrame(nextFillPtsUs, correction)
                                                 }
                                                 nextFillPtsUs += frameIntervalUs
                                             }
 
-                                            writeCurrentFrame(nextFillPtsUs)
+                                            writeCurrentFrame(nextFillPtsUs, currentCorrection)
                                             nextFillPtsUs += frameIntervalUs
                                         }
                                         previousSourceRelativePts = sourceRelative
@@ -384,7 +448,7 @@ class HardwareVideoTranscoder {
                     ) {
                         val targetEndExclusiveUs = sourceSpanUs.coerceAtLeast(lastSourceRelativePts + frameIntervalUs)
                         while (nextFillPtsUs < targetEndExclusiveUs) {
-                            writeCurrentFrame(nextFillPtsUs)
+                            writeCurrentFrame(nextFillPtsUs, currentCorrection)
                             nextFillPtsUs += frameIntervalUs
                         }
                     }
@@ -580,10 +644,13 @@ class HardwareVideoTranscoder {
         }
 
         fun captureCurrent() = renderer.captureFrame(surfaceTexture)
-        fun drawCurrent() = renderer.drawCurrent()
-        fun drawPrevious() = renderer.drawPrevious()
-        fun drawBlend(alpha: Float) = renderer.drawBlend(alpha)
-        fun drawMotion(alpha: Float) = renderer.drawMotion(alpha)
+        fun currentMotionField(): OpenCvMotionEstimator.Field = renderer.currentMotionField()
+        fun drawCurrent(correction: MotionTrajectoryStabilizer.Correction) = renderer.drawCurrent(correction)
+        fun drawPrevious(correction: MotionTrajectoryStabilizer.Correction) = renderer.drawPrevious(correction)
+        fun drawBlend(alpha: Float, correction: MotionTrajectoryStabilizer.Correction) =
+            renderer.drawBlend(alpha, correction)
+        fun drawMotion(alpha: Float, correction: MotionTrajectoryStabilizer.Correction) =
+            renderer.drawMotion(alpha, correction)
 
         fun release() {
             surface.release()
@@ -633,6 +700,7 @@ class HardwareVideoTranscoder {
         private var motionNearlyStatic = false
         private var globalMotionUnstable = false
         private var localWarpSafe = false
+        private var currentMotionField: OpenCvMotionEstimator.Field? = null
         private var motionFieldDirty = true
         private var currentIndex = -1
         private var previousIndex = -1
@@ -748,14 +816,26 @@ class HardwareVideoTranscoder {
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             if (previousIndex < 0) previousIndex = currentIndex
             motionFieldDirty = true
+            currentMotionField = null
             checkGl("capturar quadro")
         }
 
-        fun drawCurrent() = drawTextures(currentIndex, currentIndex, 1f)
-        fun drawPrevious() = drawTextures(previousIndex, previousIndex, 1f)
-        fun drawBlend(alpha: Float) = drawTextures(previousIndex, currentIndex, alpha.coerceIn(0f, 1f))
+        fun currentMotionField(): OpenCvMotionEstimator.Field {
+            ensureMotionField()
+            return currentMotionField
+                ?: throw IllegalStateException("Campo de movimento indisponível")
+        }
 
-        fun drawMotion(alpha: Float) {
+        fun drawCurrent(correction: MotionTrajectoryStabilizer.Correction) =
+            drawTextures(currentIndex, currentIndex, 1f, correction)
+
+        fun drawPrevious(correction: MotionTrajectoryStabilizer.Correction) =
+            drawTextures(previousIndex, previousIndex, 1f, correction)
+
+        fun drawBlend(alpha: Float, correction: MotionTrajectoryStabilizer.Correction) =
+            drawTextures(previousIndex, currentIndex, alpha.coerceIn(0f, 1f), correction)
+
+        fun drawMotion(alpha: Float, correction: MotionTrajectoryStabilizer.Correction) {
             check(previousIndex >= 0 && currentIndex >= 0) { "Quadros insuficientes para interpolação de movimento" }
             ensureMotionField()
             val safeAlpha = alpha.coerceIn(0f, 1f)
@@ -817,6 +897,19 @@ class HardwareVideoTranscoder {
                 GLES20.glGetUniformLocation(motionInterpolateProgram, "uLocalWarpSafe"),
                 if (localWarpSafe) 1f else 0f
             )
+            GLES20.glUniform2f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uCorrectionTranslation"),
+                correction.xUv,
+                correction.yUv
+            )
+            GLES20.glUniform1f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uCorrectionRotation"),
+                correction.rotationRad
+            )
+            GLES20.glUniform1f(
+                GLES20.glGetUniformLocation(motionInterpolateProgram, "uCorrectionZoom"),
+                correction.zoom.coerceAtLeast(1f)
+            )
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             checkGl("interpolar movimento")
         }
@@ -843,6 +936,7 @@ class HardwareVideoTranscoder {
             motionNearlyStatic = field.motionIsNearlyStatic
             globalMotionUnstable = field.globalMotionIsUnstable
             localWarpSafe = field.localWarpSafe
+            currentMotionField = field
             uploadMotionField(motionTextures[0], forwardMotionUpload, field.forwardRgba)
             uploadMotionField(motionTextures[1], backwardMotionUpload, field.backwardRgba)
             motionFieldDirty = false
@@ -882,6 +976,9 @@ class HardwareVideoTranscoder {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTextures[textureIndex])
             GLES20.glUniform1i(GLES20.glGetUniformLocation(blendProgram, "uCurrent"), 1)
             GLES20.glUniform1f(GLES20.glGetUniformLocation(blendProgram, "uAlpha"), 1f)
+            GLES20.glUniform2f(GLES20.glGetUniformLocation(blendProgram, "uCorrectionTranslation"), 0f, 0f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(blendProgram, "uCorrectionRotation"), 0f)
+            GLES20.glUniform1f(GLES20.glGetUniformLocation(blendProgram, "uCorrectionZoom"), 1f)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             motionReadback.clear()
             GLES20.glReadPixels(
@@ -894,7 +991,12 @@ class HardwareVideoTranscoder {
             checkGl("ler quadro para fluxo óptico")
         }
 
-        private fun drawTextures(firstIndex: Int, secondIndex: Int, alpha: Float) {
+        private fun drawTextures(
+            firstIndex: Int,
+            secondIndex: Int,
+            alpha: Float,
+            correction: MotionTrajectoryStabilizer.Correction
+        ) {
             check(firstIndex >= 0 && secondIndex >= 0) { "Nenhum quadro foi capturado para renderização" }
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             GLES20.glViewport(0, 0, width, height)
@@ -908,6 +1010,19 @@ class HardwareVideoTranscoder {
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTextures[secondIndex])
             GLES20.glUniform1i(GLES20.glGetUniformLocation(blendProgram, "uCurrent"), 1)
             GLES20.glUniform1f(GLES20.glGetUniformLocation(blendProgram, "uAlpha"), alpha)
+            GLES20.glUniform2f(
+                GLES20.glGetUniformLocation(blendProgram, "uCorrectionTranslation"),
+                correction.xUv,
+                correction.yUv
+            )
+            GLES20.glUniform1f(
+                GLES20.glGetUniformLocation(blendProgram, "uCorrectionRotation"),
+                correction.rotationRad
+            )
+            GLES20.glUniform1f(
+                GLES20.glGetUniformLocation(blendProgram, "uCorrectionZoom"),
+                correction.zoom.coerceAtLeast(1f)
+            )
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             checkGl("renderizar quadro")
         }
@@ -995,9 +1110,22 @@ varying vec2 vTextureCoord;
 uniform sampler2D uPrevious;
 uniform sampler2D uCurrent;
 uniform float uAlpha;
+uniform vec2 uCorrectionTranslation;
+uniform float uCorrectionRotation;
+uniform float uCorrectionZoom;
+
+vec2 correctedUv(vec2 uv){
+    vec2 p=(uv-vec2(0.5))/max(uCorrectionZoom,1.0)-uCorrectionTranslation;
+    float cs=cos(-uCorrectionRotation);
+    float sn=sin(-uCorrectionRotation);
+    p=mat2(cs,-sn,sn,cs)*p;
+    return clamp(p+vec2(0.5),vec2(0.0),vec2(1.0));
+}
+
 void main(){
     float eased=uAlpha*uAlpha*(3.0-2.0*uAlpha);
-    gl_FragColor=mix(texture2D(uPrevious,vTextureCoord),texture2D(uCurrent,vTextureCoord),eased);
+    vec2 uv=correctedUv(vTextureCoord);
+    gl_FragColor=mix(texture2D(uPrevious,uv),texture2D(uCurrent,uv),eased);
 }"""
             private const val MOTION_INTERPOLATE_FRAGMENT_SHADER = """precision highp float;
 varying vec2 vTextureCoord;
@@ -1015,6 +1143,17 @@ uniform vec2 uMotionTexel;
 uniform float uMotionNearlyStatic;
 uniform float uGlobalMotionUnstable;
 uniform float uLocalWarpSafe;
+uniform vec2 uCorrectionTranslation;
+uniform float uCorrectionRotation;
+uniform float uCorrectionZoom;
+
+vec2 correctedUv(vec2 uv){
+    vec2 p=(uv-vec2(0.5))/max(uCorrectionZoom,1.0)-uCorrectionTranslation;
+    float cs=cos(-uCorrectionRotation);
+    float sn=sin(-uCorrectionRotation);
+    p=mat2(cs,-sn,sn,cs)*p;
+    return clamp(p+vec2(0.5),vec2(0.0),vec2(1.0));
+}
 
 vec4 smoothFlow(sampler2D tex, vec2 uv){
     vec2 px=uMotionTexel;
@@ -1034,8 +1173,9 @@ vec4 smoothFlow(sampler2D tex, vec2 uv){
 
 void main(){
     float a=clamp(uAlpha,0.0,1.0);
-    vec4 previous=texture2D(uPrevious,vTextureCoord);
-    vec4 current=texture2D(uCurrent,vTextureCoord);
+    vec2 baseUv=correctedUv(vTextureCoord);
+    vec4 previous=texture2D(uPrevious,baseUv);
+    vec4 current=texture2D(uCurrent,baseUv);
     vec4 simple=mix(previous,current,a);
 
     if(uSceneChange>0.5){
@@ -1047,8 +1187,8 @@ void main(){
         return;
     }
 
-    vec2 prevUv=vTextureCoord;
-    vec2 currUv=vTextureCoord;
+    vec2 prevUv=baseUv;
+    vec2 currUv=baseUv;
     vec4 forward=smoothFlow(uForwardMotion,prevUv);
     vec4 backward=smoothFlow(uBackwardMotion,currUv);
 
@@ -1057,8 +1197,8 @@ void main(){
     for(int i=0;i<2;i++){
         vec2 forwardDelta=(forward.rg*2.0-1.0)*uFlowScale;
         vec2 backwardDelta=(backward.rg*2.0-1.0)*uFlowScale;
-        prevUv=clamp(vTextureCoord-forwardDelta*a,vec2(0.0),vec2(1.0));
-        currUv=clamp(vTextureCoord-backwardDelta*(1.0-a),vec2(0.0),vec2(1.0));
+        prevUv=clamp(baseUv-forwardDelta*a,vec2(0.0),vec2(1.0));
+        currUv=clamp(baseUv-backwardDelta*(1.0-a),vec2(0.0),vec2(1.0));
         forward=smoothFlow(uForwardMotion,prevUv);
         backward=smoothFlow(uBackwardMotion,currUv);
     }
@@ -1080,8 +1220,8 @@ void main(){
     vec2 locallyBlendedBackward=mix(safeGlobalBackward,localBackward,currConfidence);
     vec2 effectiveForward=mix(safeGlobalForward,locallyBlendedForward,useLocal);
     vec2 effectiveBackward=mix(safeGlobalBackward,locallyBlendedBackward,useLocal);
-    prevUv=clamp(vTextureCoord-effectiveForward*a,vec2(0.0),vec2(1.0));
-    currUv=clamp(vTextureCoord-effectiveBackward*(1.0-a),vec2(0.0),vec2(1.0));
+    prevUv=clamp(baseUv-effectiveForward*a,vec2(0.0),vec2(1.0));
+    currUv=clamp(baseUv-effectiveBackward*(1.0-a),vec2(0.0),vec2(1.0));
 
     vec4 prevWarped=texture2D(uPrevious,prevUv);
     vec4 currWarped=texture2D(uCurrent,currUv);
