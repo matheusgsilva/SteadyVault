@@ -32,6 +32,8 @@ object OpenCvMotionEstimator {
         val globalForwardUvY: Float,
         val globalBackwardUvX: Float,
         val globalBackwardUvY: Float,
+        val globalRotationRadians: Float,
+        val globalRotationReliability: Float,
         val motionIsNearlyStatic: Boolean,
         val globalMotionIsUnstable: Boolean,
         val localWarpSafe: Boolean
@@ -219,6 +221,15 @@ object OpenCvMotionEstimator {
             val globalBackwardY = robustMedianComponent(backwardData, backwardEncoded, 1, maxFlow)
             val globalForwardMagnitude = hypot(globalForwardX.toDouble(), globalForwardY.toDouble()).toFloat()
             val globalBackwardMagnitude = hypot(globalBackwardX.toDouble(), globalBackwardY.toDouble()).toFloat()
+            val rotationEstimate = estimateRotationRadians(
+                flow = forwardData,
+                encoded = forwardEncoded,
+                width = width,
+                height = height,
+                translationX = globalForwardX,
+                translationY = globalForwardY,
+                maxFlow = maxFlow
+            )
             val motionIsNearlyStatic = meanMotionPixels < 0.45f &&
                 globalForwardMagnitude < 0.35f &&
                 globalBackwardMagnitude < 0.35f
@@ -254,6 +265,8 @@ object OpenCvMotionEstimator {
                 globalForwardUvY = globalForwardY / height.toFloat(),
                 globalBackwardUvX = globalBackwardX / width.toFloat(),
                 globalBackwardUvY = globalBackwardY / height.toFloat(),
+                globalRotationRadians = rotationEstimate.first,
+                globalRotationReliability = rotationEstimate.second,
                 motionIsNearlyStatic = motionIsNearlyStatic,
                 globalMotionIsUnstable = globalMotionIsUnstable,
                 localWarpSafe = localWarpSafe
@@ -297,6 +310,57 @@ object OpenCvMotionEstimator {
             }
         }
         return 0f
+    }
+
+    private fun estimateRotationRadians(
+        flow: FloatArray,
+        encoded: ByteArray,
+        width: Int,
+        height: Int,
+        translationX: Float,
+        translationY: Float,
+        maxFlow: Float
+    ): Pair<Float, Float> {
+        val centerX = (width - 1) * 0.5f
+        val centerY = (height - 1) * 0.5f
+        var numerator = 0.0
+        var denominator = 0.0
+        var acceptedWeight = 0.0
+        var accepted = 0
+
+        val step = if (width * height > 250_000) 2 else 1
+        var y = 0
+        while (y < height) {
+            var x = 0
+            while (x < width) {
+                val index = y * width + x
+                val confidence = (encoded[index * 4 + 2].toInt() and 0xff) / 255f
+                if (confidence >= ROBUST_ROTATION_CONFIDENCE) {
+                    val dx = flow[index * 2].coerceIn(-maxFlow, maxFlow) - translationX
+                    val dy = flow[index * 2 + 1].coerceIn(-maxFlow, maxFlow) - translationY
+                    val cx = x - centerX
+                    val cy = y - centerY
+                    val radius2 = cx * cx + cy * cy
+                    if (radius2 > 16f) {
+                        val w = confidence.toDouble() * confidence.toDouble()
+                        numerator += (cx.toDouble() * dy.toDouble() - cy.toDouble() * dx.toDouble()) * w
+                        denominator += radius2.toDouble() * w
+                        acceptedWeight += w
+                        accepted++
+                    }
+                }
+                x += step
+            }
+            y += step
+        }
+
+        if (accepted < 48 || denominator <= 1e-6) return 0f to 0f
+        val radians = (numerator / denominator).toFloat().coerceIn(-MAX_GLOBAL_ROTATION_RAD, MAX_GLOBAL_ROTATION_RAD)
+        val sampled = ((width + step - 1) / step) * ((height + step - 1) / step)
+        val coverage = (accepted.toFloat() / sampled.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+        val meanWeight = (acceptedWeight / accepted.coerceAtLeast(1).toDouble()).toFloat().coerceIn(0f, 1f)
+        val reliability = (coverage * 1.8f * meanWeight).coerceIn(0f, 1f)
+        return radians to reliability
     }
 
     private fun directionalConfidence(
@@ -408,5 +472,7 @@ object OpenCvMotionEstimator {
     }
     private const val ROBUST_FLOW_BINS = 257
     private const val ROBUST_GLOBAL_CONFIDENCE = 0.38f
+    private const val ROBUST_ROTATION_CONFIDENCE = 0.46f
+    private const val MAX_GLOBAL_ROTATION_RAD = 0.06f
 
 }
