@@ -671,6 +671,7 @@ class CaptureService : Service() {
         allowHdr,
         recordingSettings.stabilization,
         recordingSettings.focusMode,
+        recordingSettings.autoFpsLowLight,
         recordingSettings.lockAeAwbForCadence,
         preferredCameraId.orEmpty()
     ).joinToString("|")
@@ -722,20 +723,32 @@ class CaptureService : Service() {
     }
 
     /**
-     * Equivalente Android do Auto FPS do iPhone: permanece desligado por padrão.
-     * Quando habilitado, 30/60 usam apenas uma faixa variável que a própria HAL
-     * publica e cujo teto é exatamente o FPS escolhido. Nunca se aplica a alta taxa.
+     * Quando "qualidade em pouca luz" está ativa, mantém o FPS escolhido como teto
+     * e entrega à HAL a faixa variável mais ampla anunciada pelo próprio aparelho.
+     * Isso permite aumentar exposição em cenas escuras. O pós-processamento é quem
+     * volta a saída para cadência regular depois.
+     *
+     * Limitamos o piso a 15 FPS para não aceitar exposições tão longas que criem
+     * motion blur impossível de reconstruir de forma convincente.
      */
     private fun resolveStandardFpsRange(
         characteristics: CameraCharacteristics,
         targetFps: Int
     ): Range<Int> {
-        // Não existe mais Auto FPS: 30 = [30,30] e 60 = [60,60].
-        // Mantemos o parâmetro characteristics porque este método faz parte do fluxo
-        // de resolução da câmera, mas a faixa escolhida é sempre fixa.
-        @Suppress("UNUSED_VARIABLE")
-        val ignoredCharacteristics = characteristics
-        return Range(targetFps, targetFps)
+        if (!recordingSettings.autoFpsLowLight || targetFps > CaptureModeStore.FPS_60) {
+            return Range(targetFps, targetFps)
+        }
+
+        val ranges = characteristics.get(
+            CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
+        )?.toList().orEmpty()
+
+        return ranges
+            .asSequence()
+            .filter { it.upper == targetFps }
+            .filter { it.lower in 15 until targetFps }
+            .minByOrNull { it.lower }
+            ?: Range(targetFps, targetFps)
     }
 
     /**
@@ -782,7 +795,12 @@ class CaptureService : Service() {
         fpsRange.lower == targetFps && fpsRange.upper == targetFps
 
     private fun CameraProfile.matchesRequestedFpsContract(): Boolean =
-        !highSpeed && hasExactFpsRange()
+        !highSpeed && (
+            hasExactFpsRange() ||
+                recordingSettings.autoFpsLowLight &&
+                fpsRange.upper == targetFps &&
+                fpsRange.lower in 15..targetFps
+            )
 
 
     private fun Size.toPolicyDimensions() = StrictCaptureModePolicy.Dimensions(width, height)
@@ -1560,10 +1578,9 @@ class CaptureService : Service() {
         runCatching {
             armRecorderForFirstFrame(token)
             // Gravação regular usa um único request durante toda a captura.
-            // Em 60 FPS com Auto FPS desligado, resolveStandardFpsRange() entrega
-            // exatamente [60,60]. O AE permanece ligado para ajustar exposição/ISO,
-            // sem trocar para SENSOR_FRAME_DURATION/ISO manual depois que o MP4 começou.
-            // Isso evita a transição AE -> sensor manual observada no início dos raws.
+            // Com qualidade em pouca luz ativa, resolveStandardFpsRange() pode entregar
+            // [15,60], [24,60] ou [30,60] conforme a HAL anunciar. AE/ISO continuam
+            // automáticos durante todo o MP4; o pós-processamento regulariza a cadência.
             session.setRepeatingRequest(request, null, mainHandler)
             commitRecorderStart(profile, token, highSpeed = false)
         }.onFailure {
