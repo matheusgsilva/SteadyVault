@@ -105,6 +105,7 @@ class SettingsActivity : FragmentActivity() {
     private lateinit var whiteBalance: Spinner
     private lateinit var yellowReduction: Spinner
     private lateinit var lockWhiteBalance: Switch
+    private lateinit var autoFpsLowLight: Switch
     private lateinit var lockAeAwbForCadence: Switch
     private lateinit var previewMode: Spinner
     private lateinit var intelligentPlayback: Switch
@@ -380,9 +381,14 @@ class SettingsActivity : FragmentActivity() {
             "Depois que a câmera estabiliza, impede mudanças de amarelo para azul no meio do vídeo.",
             snapshot.lockWhiteBalance
         )
+        autoFpsLowLight = addSwitch(
+            "Priorizar qualidade em pouca luz",
+            "Mantém o FPS escolhido como teto, mas permite à câmera reduzir temporariamente a cadência usando uma faixa suportada pelo aparelho para ganhar exposição e reduzir ISO. O pós-processamento reconstrói a cadência depois.",
+            snapshot.autoFpsLowLight
+        )
         lockAeAwbForCadence = addSwitch(
-            "AE híbrido para preservar cadência",
-            "Faz warm-up determinístico e grava com AE/AWB travados. A cada ~2 s faz uma sonda curta; só abre AE por poucos frames quando a exposição medida muda bastante e relocka em seguida.",
+            "Travar AE/AWB para preservar cadência",
+            "Desligado: exposição, ISO e balanço de branco continuam se adaptando durante toda a gravação. Ligado: prioriza cadência e estabilidade de exposição/cor.",
             snapshot.lockAeAwbForCadence
         )
         previewMode = addSpinner(
@@ -401,7 +407,7 @@ class SettingsActivity : FragmentActivity() {
             exposureOptions(snapshot.exposureCompensation),
             snapshot.exposureCompensation.toString()
         )
-        addInfo("30 e 60 FPS usam faixa fixa. O app não reduz o FPS automaticamente em pouca luz.")
+        addInfo("Com 'Priorizar qualidade em pouca luz', 30/60 FPS podem usar uma faixa variável anunciada pela câmera. Resolução, codec, estabilização, foco e demais opções continuam sendo respeitados.")
         addSmallButton("Aplicar perfil de teste de cadência 4K60") {
             val current = CaptureSettings.snapshot(this)
             val testProfile = current.copy(
@@ -441,12 +447,13 @@ class SettingsActivity : FragmentActivity() {
                 colorProfile = CaptureSettings.COLOR_NATURAL,
                 stabilization = CaptureSettings.STABILIZATION_EIS,
                 focusMode = CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
-                noiseReduction = CaptureSettings.PROCESSING_FAST,
-                edgeMode = CaptureSettings.PROCESSING_FAST,
+                autoFpsLowLight = true,
+                noiseReduction = CaptureSettings.PROCESSING_AUTO,
+                edgeMode = CaptureSettings.PROCESSING_AUTO,
                 antibanding = CaptureSettings.ANTIBANDING_AUTO,
                 whiteBalanceMode = CaptureSettings.WHITE_BALANCE_AUTO,
                 lockWhiteBalance = false,
-                lockAeAwbForCadence = true,
+                lockAeAwbForCadence = false,
                 previewMode = CaptureSettings.PREVIEW_OFF,
                 exposureCompensation = 0,
                 zoomRatio = 1f,
@@ -466,11 +473,11 @@ class SettingsActivity : FragmentActivity() {
             buildFormPreservingScroll(maxProfile)
             Toast.makeText(
                 this,
-                "Perfil máximo aplicado: 4K60 HEVC 120 Mbps, EIS, preview desligado, áudio 48 kHz/320 kbps e reconstrução máxima",
+                "Perfil máximo aplicado: 4K60 HEVC 120 Mbps, EIS, exposição/ISO automáticos, pouca luz adaptativa e reconstrução máxima",
                 Toast.LENGTH_LONG
             ).show()
         }
-        addInfo("Perfil máximo: usa 4K60 fixo, HEVC 120 Mbps e EIS. No teste do aparelho, EIS foi a configuração com menos gaps e HEVC 80 Mbps também ficou entre as melhores; aqui o bitrate sobe para preservar mais detalhe para a reconstrução. O widget continua sem preview e o pós-processamento compensa os frames ausentes.")
+        addInfo("Perfil máximo: usa 4K60 como teto, HEVC 120 Mbps, EIS, AE/ISO/WB automáticos e processamento de imagem Auto. Em pouca luz a câmera pode sacrificar cadência para preservar exposição; o widget continua sem preview e a reconstrução automática regulariza o vídeo depois.")
 
         addInfo("Esse botão só altera as opções quando você toca nele. Depois, qualquer ajuste manual continua sendo respeitado normalmente.")
         thermal = addSwitch(
@@ -1219,7 +1226,7 @@ class SettingsActivity : FragmentActivity() {
     private fun bindAutoSaveListeners() {
         listOf(
             hdr, thermal, audioAgc, audioNoise, audioLowCut, vibration, secureScreen,
-            lockWhiteBalance, intelligentPlayback, dropLateFrames, prebuffer4k60, autoRecoverStalls,
+            lockWhiteBalance, autoFpsLowLight, lockAeAwbForCadence, intelligentPlayback, dropLateFrames, prebuffer4k60, autoRecoverStalls,
             openVideosExternally, openPhotosExternally
         ).forEach { control ->
             control.setOnCheckedChangeListener { _, checked ->
@@ -1356,7 +1363,7 @@ class SettingsActivity : FragmentActivity() {
     ): CaptureSettings.Snapshot = base.copy(
         resolution = resolutionValue,
         fps = fpsValue,
-        autoFpsLowLight = false,
+        autoFpsLowLight = autoFpsLowLight.isChecked,
         codec = selected(codec),
         bitrateMbps = selected(bitrate).toIntOrNull()?.coerceIn(4, 240) ?: base.bitrateMbps,
         iFrameIntervalSeconds = selected(iframe).toIntOrNull()?.coerceIn(1, 10) ?: base.iFrameIntervalSeconds,
@@ -1444,7 +1451,7 @@ class SettingsActivity : FragmentActivity() {
         OneUiDialog.confirm(
             activity = this,
             title = "Restaurar padrões estáveis?",
-            message = "Volta para 4K, 60 FPS, SDR BT.709 natural, HEVC e estabilização desativada.",
+            message = "Volta para os padrões de captura e mantém reconstrução automática ativa.",
             positiveLabel = "Restaurar",
             destructive = true
         ) {
