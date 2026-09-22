@@ -1675,10 +1675,10 @@ class PrimaryVaultActivity : FragmentActivity() {
         val processing = optimization?.running == true || VaultRepository.isBeingProcessed(item.file)
         val actions = when {
             item.video && processing -> arrayOf(
-                "Abrir original", "Detalhes", "Ver progresso (${optimization?.progress ?: 0}%)",
+                "Abrir original", "Detalhes",
                 "Cancelar processamento", "Cancelar e mover para a lixeira", "Cancelar e excluir direto"
             )
-            item.video -> arrayOf("Abrir", "Detalhes", "Cortar/editar", "Reparar fluidez", "Exportar", "Mover para a lixeira", "Excluir direto")
+            item.video -> arrayOf("Abrir", "Detalhes", "Cortar/editar", "Exportar", "Mover para a lixeira", "Excluir direto")
             else -> arrayOf("Abrir", "Detalhes", "Exportar", "Mover para a lixeira", "Excluir direto")
         }
         OneUiDialog.choices(
@@ -1696,23 +1696,21 @@ class PrimaryVaultActivity : FragmentActivity() {
                 item.video && processing -> when (which) {
                     0 -> openItem(item)
                     1 -> showMediaDetails(item)
-                    2 -> openOptimization(item)
-                    3 -> {
+                    2 -> {
                         VideoProcessingService.cancel(this)
                         Toast.makeText(this, "Cancelando processamento…", Toast.LENGTH_SHORT).show()
                         scheduleOptimizationRefresh()
                     }
-                    4 -> cancelProcessingAndDelete(item, permanently = false)
-                    5 -> confirmCancelProcessingAndDelete(item)
+                    3 -> cancelProcessingAndDelete(item, permanently = false)
+                    4 -> confirmCancelProcessingAndDelete(item)
                 }
                 item.video -> when (which) {
                     0 -> openItem(item)
                     1 -> showMediaDetails(item)
                     2 -> openTrimEditor(item)
-                    3 -> openOptimization(item)
-                    4 -> exportItem(item)
-                    5 -> confirmDelete(item)
-                    6 -> confirmDirectDeleteSelected(listOf(item))
+                    3 -> exportItem(item)
+                    4 -> confirmDelete(item)
+                    5 -> confirmDirectDeleteSelected(listOf(item))
                 }
                 else -> when (which) {
                     0 -> openItem(item)
@@ -1759,12 +1757,6 @@ class PrimaryVaultActivity : FragmentActivity() {
         )
     }
 
-    private fun openOptimization(item: VaultRepository.MediaItem) {
-        AutoGapRepairService.repairNow(this, item.file)
-        Toast.makeText(this, "Reparo de fluidez adicionado à fila", Toast.LENGTH_SHORT).show()
-        refresh()
-    }
-
     private fun exportItem(item: VaultRepository.MediaItem) {
         storageText.text = "Exportando para a galeria…"
         ioExecutor.execute {
@@ -1790,7 +1782,6 @@ class PrimaryVaultActivity : FragmentActivity() {
                 title = "Processamento em andamento",
                 message = "Progresso: ${optimization?.progress ?: 0}%\n${optimization?.message ?: "Processando vídeo"}",
                 choices = listOf(
-                    OneUiDialog.Choice("Ver progresso", "Acompanhar a etapa atual e o percentual."),
                     OneUiDialog.Choice(
                         "Cancelar e mover para a lixeira",
                         "O arquivo será movido somente depois que o processamento for encerrado com segurança.",
@@ -1804,9 +1795,8 @@ class PrimaryVaultActivity : FragmentActivity() {
                 )
             ) { option ->
                 when (option) {
-                    0 -> openOptimization(item)
-                    1 -> cancelProcessingAndDelete(item, permanently = false)
-                    2 -> confirmCancelProcessingAndDelete(item)
+                    0 -> cancelProcessingAndDelete(item, permanently = false)
+                    1 -> confirmCancelProcessingAndDelete(item)
                 }
             }
             return
