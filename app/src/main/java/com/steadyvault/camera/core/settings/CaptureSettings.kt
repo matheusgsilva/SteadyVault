@@ -159,7 +159,7 @@ object CaptureSettings {
             antibanding = prefs.getString("antibanding", ANTIBANDING_AUTO) ?: ANTIBANDING_AUTO,
             whiteBalanceMode = prefs.getString("white_balance_mode", WHITE_BALANCE_AUTO)?.takeIf { it in supportedWhiteBalanceValues } ?: WHITE_BALANCE_AUTO,
             yellowReduction = prefs.getString("yellow_reduction", YELLOW_REDUCTION_AUTO)?.takeIf { it in supportedYellowReductionValues } ?: YELLOW_REDUCTION_AUTO,
-            lockWhiteBalance = prefs.getBoolean("lock_white_balance", true),
+            lockWhiteBalance = prefs.getBoolean("lock_white_balance", false),
             lockAeAwbForCadence = prefs.getBoolean("lock_ae_awb_for_cadence", false),
             previewMode = prefs.getString("preview_mode", PREVIEW_OFF)?.takeIf { it in supportedPreviewValues } ?: PREVIEW_OFF,
             exposureCompensation = prefs.getInt("exposure_compensation", 0).coerceIn(-12, 12),
