@@ -146,7 +146,7 @@ object CaptureSettings {
         return Snapshot(
             resolution = resolution,
             fps = fps,
-            autoFpsLowLight = false,
+            autoFpsLowLight = prefs.getBoolean("auto_fps_low_light", true),
             codec = codec,
             bitrateMbps = storedBitrate,
             iFrameIntervalSeconds = prefs.getInt("iframe_interval", 2).coerceIn(1, 10),
@@ -190,6 +190,7 @@ object CaptureSettings {
             .putString("resolution", normalized.resolution)
             .putString(resolutionKey(normalized.fps), normalized.resolution)
             .putInt("fps", normalized.fps)
+            .putBoolean("auto_fps_low_light", normalized.autoFpsLowLight)
             .putString("codec", normalized.codec)
             .putInt("bitrate_mbps", normalized.bitrateMbps)
             .putInt("iframe_interval", normalized.iFrameIntervalSeconds)
