@@ -16,7 +16,7 @@ object AutoGapRepairSettings {
     private const val KEY_MODE = "mode"
     private const val KEY_MAX_FRAMES = "max_frames"
     private const val KEY_SCHEMA = "schema"
-    private const val SCHEMA = 5
+    private const val SCHEMA = 6
 
     fun snapshot(context: Context): Snapshot {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -42,8 +42,8 @@ object AutoGapRepairSettings {
         // Schema 3 aumenta o limite padrão para cobrir gaps de 120/240 FPS sem cair
         // prematuramente em repetição de quadro. Preserve valores que o usuário já alterou.
         val storedMaxFrames = if (prefs.contains(KEY_MAX_FRAMES)) {
-            prefs.getInt(KEY_MAX_FRAMES, 8)
-        } else 8
+            prefs.getInt(KEY_MAX_FRAMES, 16)
+        } else 16
 
         if (previousSchema < SCHEMA || safeMode != stored) {
             prefs.edit()
@@ -51,16 +51,23 @@ object AutoGapRepairSettings {
                 .putString(KEY_MODE, safeMode.name)
                 .apply()
         }
+        // O pós-processamento faz parte do fluxo padrão de gravação. Corrige também
+        // instalações antigas que tenham deixado a preferência desativada.
+        if (!prefs.getBoolean(KEY_ENABLED, true)) {
+            prefs.edit().putBoolean(KEY_ENABLED, true).apply()
+        }
         return Snapshot(
-            enabled = prefs.getBoolean(KEY_ENABLED, false),
+            enabled = true,
             mode = safeMode,
-            maxInterpolatedFramesPerGap = storedMaxFrames.coerceIn(1, 16)
+            maxInterpolatedFramesPerGap = storedMaxFrames.coerceIn(1, 30)
         )
     }
 
     fun setEnabled(context: Context, enabled: Boolean) {
+        // Mantido por compatibilidade. O reparo automático não pode ser desligado:
+        // novas gravações entram na fila e a captura sempre tem prioridade.
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_ENABLED, enabled).apply()
+            .edit().putBoolean(KEY_ENABLED, true).apply()
     }
 
     fun setMode(context: Context, mode: FrameRepairMode) {
@@ -76,7 +83,7 @@ object AutoGapRepairSettings {
 
     fun setMaxInterpolatedFramesPerGap(context: Context, value: Int) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putInt(KEY_MAX_FRAMES, value.coerceIn(1, 16)).apply()
+            .edit().putInt(KEY_MAX_FRAMES, value.coerceIn(1, 30)).apply()
     }
 
 }
