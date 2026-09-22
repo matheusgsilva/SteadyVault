@@ -25,7 +25,6 @@ import com.steadyvault.camera.core.playback.PlaybackSettings
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.state.VideoProcessingStateStore
 import com.steadyvault.camera.processing.service.VideoProcessingService
-import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.processing.model.OptimizationConfig
 import com.steadyvault.camera.processing.model.OptimizationPreset
@@ -391,20 +390,11 @@ class MediaPlayerActivity : ComponentActivity() {
     private fun bindActions() {
         exportButton.setOnClickListener { export() }
         deleteButton.setOnClickListener { confirmDelete() }
+        // O reparo de fluidez é automático após gravações do widget.
+        // Não existe mais uma ação manual de otimização no player.
         repairButton.apply {
-            text = "Reparar fluidez"
-            visibility = if (item?.video == true) View.VISIBLE else View.GONE
-            setOnClickListener {
-                val media = item ?: return@setOnClickListener
-                stopVideoPlayback()
-                AutoGapRepairService.repairNow(this@MediaPlayerActivity, media.file)
-                Haptics.success(this@MediaPlayerActivity)
-                Toast.makeText(
-                    this@MediaPlayerActivity,
-                    "Pós-processamento de fluidez iniciado. O original será preservado.",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
+            visibility = View.GONE
+            setOnClickListener(null)
         }
         trimMediaButton.apply {
             visibility = if (item?.video == true) View.VISIBLE else View.GONE
