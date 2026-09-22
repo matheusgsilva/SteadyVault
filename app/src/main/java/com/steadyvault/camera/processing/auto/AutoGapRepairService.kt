@@ -128,6 +128,7 @@ class AutoGapRepairService : Service() {
         }
         AutoGapRepairQueueStore.removeMissingSources(this)
         if (!AutoGapRepairQueueStore.hasPending(this)) {
+            immediateWidgetDrainRequested = false
             if (!workerRunning.get()) stopSelf()
             return
         }
@@ -687,7 +688,7 @@ class AutoGapRepairService : Service() {
             if (!AutoGapRepairSettings.snapshot(context).enabled) return
             if (
                 capturePriorityRequested ||
-                interactivePriorityRequested ||
+                interactiveBlocksProcessing() ||
                 userPauseRequested ||
                 CaptureStateStore.isBusy(context)
             ) return
