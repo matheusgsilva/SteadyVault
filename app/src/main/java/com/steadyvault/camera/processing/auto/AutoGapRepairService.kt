@@ -118,7 +118,7 @@ class AutoGapRepairService : Service() {
         if (
             !AutoGapRepairSettings.snapshot(this).enabled ||
             capturePriorityRequested ||
-            interactivePriorityRequested ||
+            interactiveBlocksProcessing() ||
             userPauseRequested ||
             CaptureStateStore.isBusy(this)
         ) {
@@ -166,9 +166,13 @@ class AutoGapRepairService : Service() {
             releaseWakeLock()
             clearNotification()
             stopSelf()
-            if (shouldContinueQueue() && AutoGapRepairQueueStore.hasPending(this)) {
-                // Um enqueue pode ter chegado exatamente enquanto o worker finalizava.
-                startSelf(this, ACTION_RESUME)
+            if (AutoGapRepairQueueStore.hasPending(this)) {
+                if (shouldContinueQueue()) {
+                    // Um enqueue pode ter chegado exatamente enquanto o worker finalizava.
+                    startSelf(this, ACTION_RESUME)
+                }
+            } else {
+                immediateWidgetDrainRequested = false
             }
         }
     }
@@ -379,7 +383,7 @@ class AutoGapRepairService : Service() {
     private fun shouldContinueQueue(): Boolean =
         AutoGapRepairSettings.snapshot(this).enabled &&
             !capturePriorityRequested &&
-            !interactivePriorityRequested &&
+            !interactiveBlocksProcessing() &&
             !userPauseRequested &&
             !CaptureStateStore.isBusy(this) &&
             !cancelCurrent.get()
@@ -387,7 +391,7 @@ class AutoGapRepairService : Service() {
     private fun cancelledForCaptureOrUser(): Boolean =
         cancelCurrent.get() ||
             capturePriorityRequested ||
-            interactivePriorityRequested ||
+            interactiveBlocksProcessing() ||
             userPauseRequested ||
             CaptureStateStore.isBusy(this) ||
             !AutoGapRepairSettings.snapshot(this).enabled ||
@@ -396,7 +400,7 @@ class AutoGapRepairService : Service() {
     private fun pauseReason(): String = when {
         capturePriorityRequested || CaptureStateStore.isBusy(this) ->
             "Reparo pausado para priorizar uma nova gravação"
-        interactivePriorityRequested ->
+        interactiveBlocksProcessing() ->
             "Reparo pausado enquanto o app está em uso; será retomado em segundo plano"
         userPauseRequested ->
             "Reparo pausado pelo usuário"
@@ -584,18 +588,42 @@ class AutoGapRepairService : Service() {
         @Volatile private var interactivePriorityRequested = false
         @Volatile private var userPauseRequested = false
         @Volatile private var processingActive = false
+        @Volatile private var immediateWidgetDrainRequested = false
 
         fun enqueue(context: Context, source: File, targetFps: Int) {
             if (!AutoGapRepairSettings.snapshot(context).enabled || !source.isFile) return
-            // Persist first. Starting a foreground transcoder is intentionally deferred
-            // while the camera or an interactive SteadyVault screen owns resources.
             AutoGapRepairQueueStore.enqueue(context, source, targetFps)
             if (
                 capturePriorityRequested ||
-                interactivePriorityRequested ||
+                interactiveBlocksProcessing() ||
                 userPauseRequested ||
                 CaptureStateStore.isBusy(context)
             ) return
+            startSelf(context, ACTION_RESUME)
+        }
+
+        /**
+         * Pós-processamento disparado ao finalizar uma gravação.
+         * Para captura headless/widget, a fila pode drenar imediatamente mesmo que a
+         * Activity preta ainda esteja terminando. Uma nova gravação continua tendo
+         * prioridade absoluta e cancela/recoloca o job atual em PENDING.
+         */
+        fun enqueueAfterRecording(
+            context: Context,
+            source: File,
+            targetFps: Int,
+            startImmediately: Boolean
+        ) {
+            if (!source.isFile) return
+            if (startImmediately) {
+                AutoGapRepairSettings.setEnabled(context, true)
+                userPauseRequested = false
+                immediateWidgetDrainRequested = true
+            }
+            if (!AutoGapRepairSettings.snapshot(context).enabled) return
+            AutoGapRepairQueueStore.enqueue(context, source, targetFps)
+            if (capturePriorityRequested || CaptureStateStore.isBusy(context)) return
+            if (interactiveBlocksProcessing() || userPauseRequested) return
             startSelf(context, ACTION_RESUME)
         }
 
@@ -626,6 +654,9 @@ class AutoGapRepairService : Service() {
             capturePriorityRequested = false
             resumeIfEnabled(context)
         }
+
+        private fun interactiveBlocksProcessing(): Boolean =
+            interactivePriorityRequested && !immediateWidgetDrainRequested
 
         fun pauseForInteractiveUse() {
             // Same-process flag: a running transcoder observes this in its cancellation
