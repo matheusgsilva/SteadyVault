@@ -116,7 +116,6 @@ class SettingsActivity : FragmentActivity() {
     private lateinit var openPhotosExternally: Switch
     private lateinit var mediaDetailsLoadingMode: Spinner
     private lateinit var cacheUsageText: TextView
-    private lateinit var autoGapRepairEnabled: Switch
     private lateinit var autoGapRepairMode: Spinner
     private lateinit var autoGapRepairMaxFrames: Spinner
     private lateinit var autoGapRepairQueueInfo: TextView
@@ -430,40 +429,48 @@ class SettingsActivity : FragmentActivity() {
                 Toast.LENGTH_LONG
             ).show()
         }
-        addSmallButton("Aplicar perfil estável 4K60") {
+        addSmallButton("Aplicar perfil máximo 4K60 + reconstrução") {
             val current = CaptureSettings.snapshot(this)
-            val stableProfile = current.copy(
+            val maxProfile = current.copy(
                 resolution = CaptureSettings.RESOLUTION_4K,
                 fps = CaptureModeStore.FPS_60,
-                codec = CaptureSettings.CODEC_AVC,
-                bitrateMbps = 200,
+                codec = CaptureSettings.CODEC_HEVC,
+                bitrateMbps = 120,
+                iFrameIntervalSeconds = 1,
                 hdrHlg10 = false,
-                stabilization = CaptureSettings.STABILIZATION_OIS,
+                colorProfile = CaptureSettings.COLOR_NATURAL,
+                stabilization = CaptureSettings.STABILIZATION_EIS,
                 focusMode = CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
-                noiseReduction = CaptureSettings.PROCESSING_AUTO,
-                edgeMode = CaptureSettings.PROCESSING_AUTO,
+                noiseReduction = CaptureSettings.PROCESSING_FAST,
+                edgeMode = CaptureSettings.PROCESSING_FAST,
                 antibanding = CaptureSettings.ANTIBANDING_AUTO,
                 whiteBalanceMode = CaptureSettings.WHITE_BALANCE_AUTO,
+                lockWhiteBalance = false,
                 lockAeAwbForCadence = true,
+                previewMode = CaptureSettings.PREVIEW_OFF,
                 exposureCompensation = 0,
-                zoomRatio = 1f
+                zoomRatio = 1f,
+                audioSampleRate = 48_000,
+                audioBitrateKbps = 320
             )
             CaptureSettings.saveResolutionForFps(
                 this,
                 CaptureModeStore.FPS_60,
                 CaptureSettings.RESOLUTION_4K
             )
-            CaptureSettings.save(this, stableProfile)
+            CaptureSettings.save(this, maxProfile)
+            AutoGapRepairSettings.setMode(this, FrameRepairMode.MOTION_COMPENSATED)
+            AutoGapRepairSettings.setMaxInterpolatedFramesPerGap(this, 30)
             CaptureStateStore.clearEffectiveMode(this)
             editingFps = CaptureModeStore.FPS_60
-            buildFormPreservingScroll(stableProfile)
+            buildFormPreservingScroll(maxProfile)
             Toast.makeText(
                 this,
-                "Perfil híbrido aplicado: 4K60 AVC 200 Mbps, SDR, OIS, foco contínuo e AE híbrido",
+                "Perfil máximo aplicado: 4K60 HEVC 120 Mbps, EIS, preview desligado, áudio 48 kHz/320 kbps e reconstrução máxima",
                 Toast.LENGTH_LONG
             ).show()
         }
-        addInfo("Perfil baseado no melhor teste de cadência: 4K60, H.264/AVC, 200 Mbps, SDR, OIS, foco contínuo, ruído/nitidez/antibanding/WB em Auto, exposição 0 e zoom 1x. Nesta branch o AE fica travado quase todo o tempo e só corrige mudanças grandes de luz em janelas curtas.")
+        addInfo("Perfil máximo: usa 4K60 fixo, HEVC 120 Mbps e EIS. No teste do aparelho, EIS foi a configuração com menos gaps e HEVC 80 Mbps também ficou entre as melhores; aqui o bitrate sobe para preservar mais detalhe para a reconstrução. O widget continua sem preview e o pós-processamento compensa os frames ausentes.")
 
         addInfo("Esse botão só altera as opções quando você toca nele. Depois, qualquer ajuste manual continua sendo respeitado normalmente.")
         thermal = addSwitch(
@@ -552,46 +559,43 @@ class SettingsActivity : FragmentActivity() {
             audioNoise.visibility = View.GONE
         }
 
-        addSection("Pós-processamento de fluidez")
+        addSection("Reconstrução automática")
         val autoRepair = AutoGapRepairSettings.snapshot(this)
-        autoGapRepairEnabled = addSwitch(
-            "Reparar vídeo automaticamente após gravar",
-            "Analisa cadência, gaps, timestamps duplicados, jitter e sincronismo de áudio/vídeo. Quando encontra problema temporal, cria uma NOVA cópia validada; o original nunca é substituído. Se outra gravação começar, o processamento é interrompido e volta para a fila.",
-            autoRepair.enabled
-        )
+        addInfo("Sempre ativa. Cada vídeo gravado entra na fila automaticamente. Se uma nova gravação começar, o processamento atual é interrompido com segurança, volta para a fila e continua depois.")
         autoGapRepairMode = addSpinner(
-            "Método automático para completar lacunas",
+            "Método de reconstrução",
             listOf(
-                option(FrameRepairMode.MOTION_COMPENSATED.name, "Interpolação com movimento (recomendado)", "Calcula um campo de movimento entre os quadros reais, desloca cada lado até a posição intermediária e reconstrói somente as lacunas. Se não houver confiança suficiente, usa fallbacks seguros."),
-                option(FrameRepairMode.ADAPTIVE_BLEND.name, "Mistura temporal simples", "Mistura os dois quadros reais vizinhos sem estimar deslocamento. Serve como fallback quando a interpolação por movimento não for aceita."),
-                option(FrameRepairMode.FILL_MISSING_FRAMES.name, "Quadro real mais próximo", "Preenche posições CFR usando um quadro vizinho real; não inventa movimento, mas pode deixar um instante repetido."),
-                option(FrameRepairMode.SMOOTH_TIMELINE.name, "Somente corrigir timestamps", "Não cria novos pixels. Regulariza a timeline e é o fallback seguro para HDR ou encoder incompatível.")
+                option(FrameRepairMode.MOTION_COMPENSATED.name, "Movimento robusto (recomendado)", "Usa fluxo bidirecional, movimento global rígido e correção de trajetória. É o modo principal para reconstruir frames realmente ausentes."),
+                option(FrameRepairMode.ADAPTIVE_BLEND.name, "Mistura temporal", "Fallback mais simples quando o fluxo de movimento não é confiável."),
+                option(FrameRepairMode.FILL_MISSING_FRAMES.name, "Quadro vizinho", "Fallback conservador; mantém CFR sem deformar a imagem."),
+                option(FrameRepairMode.SMOOTH_TIMELINE.name, "Somente timeline", "Corrige timestamps sem sintetizar pixels; usado automaticamente quando a recodificação não é segura.")
             ),
             autoRepair.mode.name
         )
         autoGapRepairMaxFrames = addSpinner(
             "Máximo de quadros reconstruídos por gap",
             listOf(
-                option("1", "1 quadro", "Mais conservador; mistura somente gaps curtos."),
-                option("2", "2 quadros", "Conservador para movimento rápido."),
-                option("4", "4 quadros (recomendado)", "Cobre os gaps curtos observados no 60 FPS sem processar trechos longos."),
-                option("8", "8 quadros", "Aceita lacunas maiores antes de cair para quadro vizinho."),
-                option("16", "16 quadros", "Mais agressivo; use somente se houver falhas longas.")
+                option("2", "2 quadros", "Muito conservador."),
+                option("4", "4 quadros", "Conservador para falhas curtas."),
+                option("8", "8 quadros", "Equilíbrio entre continuidade e segurança."),
+                option("16", "16 quadros", "Agressivo para lacunas maiores."),
+                option("24", "24 quadros", "Muito agressivo; tenta manter continuidade em falhas longas."),
+                option("30", "30 quadros (máximo)", "Reconstrução máxima antes de usar fallback seguro.")
             ),
             autoRepair.maxInterpolatedFramesPerGap.toString()
         )
         autoGapRepairQueueInfo = addInfo(AutoGapRepairQueueStore.summary(this).text())
-        addSmallButton("Tentar novamente os reparos com erro") {
+        addSmallButton("Tentar novamente reparos com erro") {
             AutoGapRepairService.retryFailed(this)
             refreshAutoGapRepairQueueCard()
             Toast.makeText(this, "Falhas reenfileiradas quando houver", Toast.LENGTH_SHORT).show()
         }
-        addSmallButton("Liberar fila para reparo em segundo plano") {
+        addSmallButton("Retomar fila agora") {
             AutoGapRepairService.resumeByUser(this)
             refreshAutoGapRepairQueueCard()
-            Toast.makeText(this, "Fila liberada; o reparo começa ao sair do app ou apagar a tela", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Fila liberada para continuar quando a câmera estiver livre", Toast.LENGTH_SHORT).show()
         }
-        addInfo("Para evitar travamentos e disputa de GPU/decoder, o reparo automático fica pausado enquanto você navega no SteadyVault e retoma quando o app vai para segundo plano ou a tela é apagada. Uma nova gravação sempre tem prioridade e interrompe qualquer processamento. Cada tentativa recomeça do MP4 original; temporários incompletos são descartados.")
+        addInfo("A captura sempre tem prioridade sobre GPU/decoder. O original nunca é apagado durante o reparo e temporários incompletos são descartados.")
 
         val playback = PlaybackSettings.snapshot(this)
         addSection("Reprodução")
@@ -1216,16 +1220,10 @@ class SettingsActivity : FragmentActivity() {
         listOf(
             hdr, thermal, audioAgc, audioNoise, audioLowCut, vibration, secureScreen,
             lockWhiteBalance, intelligentPlayback, dropLateFrames, prebuffer4k60, autoRecoverStalls,
-            openVideosExternally, openPhotosExternally, autoGapRepairEnabled
+            openVideosExternally, openPhotosExternally
         ).forEach { control ->
             control.setOnCheckedChangeListener { _, checked ->
                 if (building) return@setOnCheckedChangeListener
-                if (control === autoGapRepairEnabled) {
-                    AutoGapRepairSettings.setEnabled(this, checked)
-                    if (checked) AutoGapRepairService.resumeIfEnabled(this) else AutoGapRepairService.pauseByUser(this)
-                    refreshAutoGapRepairQueueCard()
-                    return@setOnCheckedChangeListener
-                }
                 if (control === hdr) enforceHdrCompatibility()
                 if (control === hdr) refreshHardwareFeatureOptions()
                 refreshDependentControls()
@@ -1452,8 +1450,10 @@ class SettingsActivity : FragmentActivity() {
         ) {
             CaptureSettings.restoreDefaults(this)
             PlaybackSettings.restoreDefaults(this)
-            AutoGapRepairSettings.setEnabled(this, false)
-            AutoGapRepairService.pauseByUser(this)
+            AutoGapRepairSettings.setEnabled(this, true)
+            AutoGapRepairSettings.setMode(this, FrameRepairMode.MOTION_COMPENSATED)
+            AutoGapRepairSettings.setMaxInterpolatedFramesPerGap(this, 16)
+            AutoGapRepairService.resumeByUser(this)
             VaultMediaCacheSettings.restoreDefaults(this)
             CaptureStateStore.clearEffectiveMode(this)
             buildFormPreservingScroll(CaptureSettings.snapshot(this))
