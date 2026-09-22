@@ -2760,8 +2760,16 @@ class CaptureService : Service() {
             ((SystemClock.elapsedRealtime() - recordingStartedAtElapsedMs) / 1000L).coerceAtLeast(0L)
         } else 0L
         val qualityLabel = if (profile?.hdrHlg10 == true) "HDR HLG10" else "SDR BT.709"
-        // The original is finalized and indexed before it ever enters repair.
-        AutoGapRepairService.enqueue(this, finalFile, fps)
+        // O original é finalizado e indexado antes de entrar no pós-processamento.
+        // Gravações headless (widget/atalhos) já armam a fila para iniciar assim que
+        // esta sessão liberar câmera/encoder. Se outra gravação começar, o worker
+        // é cancelado e o job volta para PENDING.
+        AutoGapRepairService.enqueueAfterRecording(
+            context = this,
+            source = finalFile,
+            targetFps = fps,
+            startImmediately = headlessCaptureRequested
+        )
         val message = "Vídeo salvo no cofre • ${sizeName(size)} • $fps FPS • $qualityLabel • ${formatDuration(durationSeconds)}"
         sendStateOnMain(message)
         updateNotificationOnMain(message)
