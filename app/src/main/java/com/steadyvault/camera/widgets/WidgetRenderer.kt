@@ -19,13 +19,11 @@ import com.steadyvault.camera.capture.service.CaptureService
 import com.steadyvault.camera.core.settings.BackgroundRecordingZoom
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
-import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
 import com.steadyvault.camera.core.settings.VisualIdentityStore
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.core.state.PhotoCaptureStateStore
 import com.steadyvault.camera.photo.service.PhotoService
 import com.steadyvault.camera.ui.capture.CaptureActivity
-import com.steadyvault.camera.ui.capture.DiscreetRecordingActivity
 
 object WidgetRenderer {
     enum class WidgetType(
@@ -214,17 +212,10 @@ object WidgetRenderer {
         )
         val startIntent = if (!state.cameraGranted) {
             videoPermissionIntent
-        } else if (RecordingDisplayPreferences.widget(context)) {
-            PendingIntent.getActivity(
-                context,
-                510,
-                Intent(context, DiscreetRecordingActivity::class.java)
-                    .setAction(DiscreetRecordingActivity.ACTION_START_FROM_WIDGET)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    .setData(Uri.parse("steadyvault://widget/start/black")),
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
         } else {
+            // O widget nunca depende de uma Activity para iniciar a câmera.
+            // Primeiro o receiver promove o CaptureService a FGS; a tela preta,
+            // quando habilitada, é apenas uma UI opcional aberta depois.
             PendingIntent.getBroadcast(
                 context,
                 510,
