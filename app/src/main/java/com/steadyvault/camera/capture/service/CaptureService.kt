@@ -811,6 +811,31 @@ class CaptureService : Service() {
      * Limitamos o piso a 15 FPS para não aceitar exposições tão longas que criem
      * motion blur impossível de reconstruir de forma convincente.
      */
+    /**
+     * Quando o usuário deixa compensação em 0, aplicamos uma pequena proteção
+     * automática de altas luzes. Em 60 FPS ela também empurra o AE para uma
+     * exposição um pouco mais curta, ajudando a reduzir motion blur sem desligar
+     * AE/ISO automáticos. Qualquer valor manual diferente de zero sempre prevalece.
+     */
+    private fun effectiveExposureCompensation(profile: CameraProfile): Int {
+        if (recordingSettings.exposureCompensation != 0) {
+            return recordingSettings.exposureCompensation
+        }
+
+        val step = profile.characteristics
+            .get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
+            ?.toFloat()
+            ?.takeIf { it > 0f }
+            ?: return 0
+
+        val targetEv = if (profile.targetFps >= CaptureModeStore.FPS_60) {
+            AUTO_HIGHLIGHT_BIAS_EV_60
+        } else {
+            AUTO_HIGHLIGHT_BIAS_EV_30
+        }
+        return kotlin.math.round(targetEv / step).toInt()
+    }
+
     private fun resolveStandardFpsRange(
         characteristics: CameraCharacteristics,
         targetFps: Int
@@ -823,10 +848,15 @@ class CaptureService : Service() {
             CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
         )?.toList().orEmpty()
 
+        val minimumSafeFps = when {
+            targetFps >= CaptureModeStore.FPS_60 -> CaptureModeStore.FPS_30
+            else -> targetFps
+        }
+
         return ranges
             .asSequence()
             .filter { it.upper == targetFps }
-            .filter { it.lower in 15 until targetFps }
+            .filter { it.lower in minimumSafeFps until targetFps }
             .minByOrNull { it.lower }
             ?: Range(targetFps, targetFps)
     }
@@ -2424,7 +2454,12 @@ class CaptureService : Service() {
         if (manualCadence == null) {
             val exposureRange = profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
             exposureRange?.let {
-                setSafely(builder, CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, recordingSettings.exposureCompensation.coerceIn(it.lower, it.upper))
+                val requestedCompensation = effectiveExposureCompensation(profile)
+                setSafely(
+                    builder,
+                    CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                    requestedCompensation.coerceIn(it.lower, it.upper)
+                )
             }
         }
 
@@ -3562,6 +3597,8 @@ class CaptureService : Service() {
 
         private const val RAW_FILE_PREFIX = "steadyvault_raw_"
         private const val STALE_RAW_FILE_MIN_AGE_MS = 60_000L
+        private const val AUTO_HIGHLIGHT_BIAS_EV_60 = -0.40f
+        private const val AUTO_HIGHLIGHT_BIAS_EV_30 = -0.25f
         private const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
         private const val CAMERA_RECOVERY_DELAY_MS = 450L
 
