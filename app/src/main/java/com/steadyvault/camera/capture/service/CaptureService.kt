@@ -185,6 +185,9 @@ class CaptureService : Service() {
     @Volatile
     private var requestedTargetFps = CaptureModeStore.FPS_60
 
+    @Volatile
+    private var cameraRecoveryAttempt = 0
+
     private var fpsFallbackWarningLogged = false
     private var activeRecorderBackendName = ""
     private var activeRecorderMime: String? = null
@@ -262,6 +265,7 @@ class CaptureService : Service() {
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
 
         recordingRequestedAtElapsedNs = intent?.getLongExtra(EXTRA_REQUESTED_AT_ELAPSED_NS, 0L)?.takeIf { it > 0L } ?: SystemClock.elapsedRealtimeNanos()
+        cameraRecoveryAttempt = intent?.getIntExtra(EXTRA_CAMERA_RECOVERY_ATTEMPT, 0)?.coerceAtLeast(0) ?: 0
         headlessCaptureRequested = intent?.getBooleanExtra(EXTRA_HEADLESS_CAPTURE, false) == true
         if (headlessCaptureRequested) {
             // Contrato encoder-only: widget, tela preta e atalhos headless nunca
@@ -550,8 +554,79 @@ class CaptureService : Service() {
         reason: String
     ) {
         if (!isAttemptValid(token)) return
-        if (recorderStarted) failAndStopFromWorker(reason)
-        else failSelectedConfigurationFromWorker(token, reason)
+        if (!recorderStarted) {
+            failSelectedConfigurationFromWorker(token, reason)
+            return
+        }
+        recoverActiveRecordingFromCameraInterruption(reason)
+    }
+
+    /**
+     * Alguns HALs OEM podem entregar onDisconnected/onError durante transições
+     * repetidas de lockscreen. Não trate isso como um "Parar" do usuário.
+     *
+     * Fecha o segmento atual de modo recuperável e reinicia a mesma captura dentro
+     * do FGS. O usuário pode acabar com mais de um segmento, mas não perde o trecho
+     * já gravado e a sessão continua sem depender de Activity/tela ligada.
+     */
+    private fun recoverActiveRecordingFromCameraInterruption(reason: String) {
+        if (!serviceActive.get() || userRequestedStop) return
+
+        val nextAttempt = cameraRecoveryAttempt + 1
+        if (nextAttempt > MAX_CAMERA_RECOVERY_ATTEMPTS) {
+            failAndStopFromWorker(
+                "$reason • limite de recuperação automática atingido"
+            )
+            return
+        }
+
+        stopping.set(true)
+        val preserved = preserveInterruptedRecording()
+        CameraResourceCoordinator.releaseCapture(
+            CameraResourceCoordinator.Owner.VIDEO,
+            cameraLeaseToken
+        )
+        attemptToken++
+
+        val message = buildString {
+            append("Câmera interrompida • ")
+            if (preserved) append("trecho preservado • ")
+            append("retomando gravação ")
+            append(nextAttempt)
+            append("/")
+            append(MAX_CAMERA_RECOVERY_ATTEMPTS)
+        }
+        sendStateOnMain(message)
+        updateNotificationOnMain(message)
+
+        val restartIntent = Intent(this, CaptureService::class.java)
+            .setAction(ACTION_START)
+            .putExtra(EXTRA_TARGET_FPS, requestedTargetFps)
+            .putExtra(EXTRA_FROM_PREVIEW, false)
+            .putExtra(EXTRA_HEADLESS_CAPTURE, headlessCaptureRequested)
+            .putExtra(EXTRA_CAMERA_RECOVERY_ATTEMPT, nextAttempt)
+            .putExtra(EXTRA_REQUESTED_AT_ELAPSED_NS, SystemClock.elapsedRealtimeNanos())
+            .apply {
+                preferredCameraId?.takeIf { it.isNotBlank() }?.let {
+                    putExtra(EXTRA_PREFERRED_CAMERA_ID, it)
+                }
+            }
+
+        serviceActive.set(false)
+        stopping.set(false)
+
+        mainHandler.postDelayed(
+            {
+                if (userRequestedStop) return@postDelayed
+                runCatching { startForegroundService(restartIntent) }
+                    .onFailure { failure ->
+                        failAndStop(
+                            "não foi possível retomar após interrupção da câmera: ${errorText(failure)}"
+                        )
+                    }
+            },
+            CAMERA_RECOVERY_DELAY_MS
+        )
     }
 
     private fun resolveCaptureResolutionForFps(
@@ -3437,6 +3512,8 @@ class CaptureService : Service() {
             "stop_haptic_acknowledged"
         const val EXTRA_REQUESTED_AT_ELAPSED_NS =
             "requested_at_elapsed_ns"
+        const val EXTRA_CAMERA_RECOVERY_ATTEMPT =
+            "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
         private const val CAPTURE_PIPELINE_REVISION = "mediacodec-hybrid-ae-probe-1.8.272"
@@ -3480,6 +3557,8 @@ class CaptureService : Service() {
 
         private const val RAW_FILE_PREFIX = "steadyvault_raw_"
         private const val STALE_RAW_FILE_MIN_AGE_MS = 60_000L
+        private const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
+        private const val CAMERA_RECOVERY_DELAY_MS = 450L
 
     }
 }
