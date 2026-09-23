@@ -102,12 +102,14 @@ object OpenCvMotionEstimator {
             previousGray.convertTo(previousFloat, CvType.CV_32F)
             currentGray.convertTo(currentFloat, CvType.CV_32F)
             val phaseResponse = doubleArrayOf(0.0)
+            val phaseWindow = Mat()
             val phaseShift = Imgproc.phaseCorrelate(
                 previousFloat,
                 currentFloat,
-                Mat(),
+                phaseWindow,
                 phaseResponse
             )
+            phaseWindow.release()
             previousFloat.release()
             currentFloat.release()
 
