@@ -620,9 +620,14 @@ class CaptureService : Service() {
                 if (userRequestedStop) return@postDelayed
                 runCatching { startForegroundService(restartIntent) }
                     .onFailure { failure ->
-                        failAndStop(
-                            "não foi possível retomar após interrupção da câmera: ${errorText(failure)}"
-                        )
+                        val message =
+                            "Falha: não foi possível retomar após interrupção da câmera: ${errorText(failure)}"
+                        sendState(message)
+                        updateNotification(message)
+                        releaseWakeLock()
+                        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+                        foregroundNotificationStarted = false
+                        stopSelf()
                     }
             },
             CAMERA_RECOVERY_DELAY_MS
