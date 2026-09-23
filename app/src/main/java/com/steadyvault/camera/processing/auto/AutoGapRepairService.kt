@@ -629,7 +629,7 @@ class AutoGapRepairService : Service() {
         }
 
         fun repairNow(context: Context, source: File) {
-            if (!source.isFile || !VaultRepository.isInsideVault(context, source)) return
+            if (!source.isFile || !VaultRepository.isInsideKnownVault(context, source)) return
             AutoGapRepairSettings.setEnabled(context, true)
             AutoGapRepairSettings.setMode(context, FrameRepairMode.MOTION_COMPENSATED)
             userPauseRequested = false
