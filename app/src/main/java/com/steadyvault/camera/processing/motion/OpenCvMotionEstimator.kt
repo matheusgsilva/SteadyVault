@@ -93,6 +93,28 @@ object OpenCvMotionEstimator {
                 0.5, levels, window, iterations, polyN, polySigma, 0
             )
 
+            // A mediana do fluxo denso pode ficar próxima de zero quando a cena
+            // possui grandes áreas sem textura. A correlação de fase fornece uma
+            // translação global independente do Farneback e funciona bem como
+            // fallback rígido para panorâmicas e saltos de câmera.
+            val previousFloat = Mat()
+            val currentFloat = Mat()
+            previousGray.convertTo(previousFloat, CvType.CV_32F)
+            currentGray.convertTo(currentFloat, CvType.CV_32F)
+            val phaseResponse = doubleArrayOf(0.0)
+            val phaseShift = Imgproc.phaseCorrelate(
+                previousFloat,
+                currentFloat,
+                Mat(),
+                phaseResponse
+            )
+            previousFloat.release()
+            currentFloat.release()
+
+            val phaseForwardX = phaseShift.x.toFloat()
+            val phaseForwardY = phaseShift.y.toFloat()
+            val phaseReliability = phaseResponse[0].toFloat().coerceIn(0f, 1f)
+
             val forwardData = FloatArray(pixels * 2)
             val backwardData = FloatArray(pixels * 2)
             val previousLuma = ByteArray(pixels)
@@ -204,7 +226,7 @@ object OpenCvMotionEstimator {
             // como corte apenas por haver movimento.
             val sceneChangeLikely =
                 meanPhotoDifference > 0.34f && meanConfidence < 0.24f && lowConfidenceRatio > 0.58f
-            val globalReliability = if (sceneChangeLikely) {
+            var globalReliability = if (sceneChangeLikely) {
                 0f
             } else {
                 (meanConfidence * (1f - lowConfidenceRatio * 0.45f)).coerceIn(0.18f, 1f)
@@ -215,12 +237,41 @@ object OpenCvMotionEstimator {
             // Para movimento global, mediana por histograma é muito mais robusta
             // que média ponderada: um objeto rápido ou vetor errado não arrasta a
             // cena inteira e não cria um frame sintético "torto".
-            val globalForwardX = robustMedianComponent(forwardData, forwardEncoded, 0, maxFlow)
-            val globalForwardY = robustMedianComponent(forwardData, forwardEncoded, 1, maxFlow)
-            val globalBackwardX = robustMedianComponent(backwardData, backwardEncoded, 0, maxFlow)
-            val globalBackwardY = robustMedianComponent(backwardData, backwardEncoded, 1, maxFlow)
+            val medianForwardX = robustMedianComponent(forwardData, forwardEncoded, 0, maxFlow)
+            val medianForwardY = robustMedianComponent(forwardData, forwardEncoded, 1, maxFlow)
+            val medianBackwardX = robustMedianComponent(backwardData, backwardEncoded, 0, maxFlow)
+            val medianBackwardY = robustMedianComponent(backwardData, backwardEncoded, 1, maxFlow)
+
+            val medianMagnitude = hypot(
+                medianForwardX.toDouble(),
+                medianForwardY.toDouble()
+            ).toFloat()
+            val phaseMagnitude = hypot(
+                phaseForwardX.toDouble(),
+                phaseForwardY.toDouble()
+            ).toFloat()
+
+            val usePhaseGlobal =
+                !sceneChangeLikely &&
+                    phaseReliability >= PHASE_MIN_RELIABILITY &&
+                    phaseMagnitude >= PHASE_MIN_MOTION_PX &&
+                    (
+                        medianMagnitude < PHASE_MEDIAN_NEAR_ZERO_PX ||
+                            phaseMagnitude > medianMagnitude * PHASE_DOMINANCE_RATIO
+                    )
+
+            val globalForwardX = if (usePhaseGlobal) phaseForwardX else medianForwardX
+            val globalForwardY = if (usePhaseGlobal) phaseForwardY else medianForwardY
+            val globalBackwardX = if (usePhaseGlobal) -phaseForwardX else medianBackwardX
+            val globalBackwardY = if (usePhaseGlobal) -phaseForwardY else medianBackwardY
             val globalForwardMagnitude = hypot(globalForwardX.toDouble(), globalForwardY.toDouble()).toFloat()
             val globalBackwardMagnitude = hypot(globalBackwardX.toDouble(), globalBackwardY.toDouble()).toFloat()
+            if (usePhaseGlobal) {
+                globalReliability = maxOf(
+                    globalReliability,
+                    (0.45f + phaseReliability * 0.5f).coerceAtMost(0.98f)
+                )
+            }
             val rotationEstimate = estimateRotationRadians(
                 flow = forwardData,
                 encoded = forwardEncoded,
@@ -246,6 +297,7 @@ object OpenCvMotionEstimator {
             // Se não passar, o shader usa apenas movimento global rígido, evitando
             // deformações locais que aparecem como "frame bugado".
             val localWarpSafe =
+                !usePhaseGlobal &&
                 !sceneChangeLikely &&
                 !globalMotionIsUnstable &&
                 meanConfidence >= 0.40f &&
@@ -474,5 +526,9 @@ object OpenCvMotionEstimator {
     private const val ROBUST_GLOBAL_CONFIDENCE = 0.38f
     private const val ROBUST_ROTATION_CONFIDENCE = 0.46f
     private const val MAX_GLOBAL_ROTATION_RAD = 0.06f
+    private const val PHASE_MIN_RELIABILITY = 0.18f
+    private const val PHASE_MIN_MOTION_PX = 0.75f
+    private const val PHASE_MEDIAN_NEAR_ZERO_PX = 0.9f
+    private const val PHASE_DOMINANCE_RATIO = 1.65f
 
 }
