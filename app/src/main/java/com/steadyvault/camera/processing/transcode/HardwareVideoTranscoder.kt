@@ -285,6 +285,20 @@ class HardwareVideoTranscoder {
                 )
             }
 
+            fun decayCorrection(
+                correction: MotionTrajectoryStabilizer.Correction
+            ): MotionTrajectoryStabilizer.Correction {
+                val factor = 0.72f
+                return MotionTrajectoryStabilizer.Correction(
+                    xUv = correction.xUv * factor,
+                    yUv = correction.yUv * factor,
+                    rotationRad = correction.rotationRad * factor,
+                    zoom = 1f + (correction.zoom - 1f) * factor,
+                    jankDetected = false,
+                    confidence = correction.confidence * factor
+                )
+            }
+
             fun writeCurrentFrame(
                 ptsUs: Long,
                 correction: MotionTrajectoryStabilizer.Correction = MotionTrajectoryStabilizer.Correction()
@@ -363,26 +377,6 @@ class HardwareVideoTranscoder {
                                             nextFillPtsUs = frameIntervalUs
                                             loadedFrame = true
                                         } else {
-                                            previousCorrection = currentCorrection
-                                            currentCorrection = if (request.frameRepair == FrameRepairMode.MOTION_COMPENSATED) {
-                                                val field = outputSurface!!.currentMotionField()
-                                                trajectoryStabilizer.update(
-                                                    motionXUv = field.globalForwardUvX,
-                                                    motionYUv = field.globalForwardUvY,
-                                                    rotationRad = if (field.globalRotationReliability >= 0.24f) {
-                                                        field.globalRotationRadians
-                                                    } else {
-                                                        0f
-                                                    },
-                                                    reliability = field.globalReliability,
-                                                    sceneChange = field.sceneChangeLikely,
-                                                    unstable = field.globalMotionIsUnstable,
-                                                    nearlyStatic = field.motionIsNearlyStatic
-                                                )
-                                            } else {
-                                                MotionTrajectoryStabilizer.Correction()
-                                            }
-
                                             val intervalUs = (sourceRelative - previousSourceRelativePts).coerceAtLeast(1L)
                                             val nominalSteps = kotlin.math.round(
                                                 intervalUs.toDouble() / frameIntervalUs.toDouble()
@@ -392,6 +386,33 @@ class HardwareVideoTranscoder {
                                                 missingFrames in 1..request.maxInterpolatedFramesPerGap
                                             val blendAllowed = request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND &&
                                                 missingFrames in 1..request.maxInterpolatedFramesPerGap
+
+                                            previousCorrection = currentCorrection
+                                            currentCorrection = when {
+                                                // Optical flow denso é a parte mais cara do pipeline.
+                                                // Só faça GPU->CPU + Farneback bidirecional quando
+                                                // realmente existe pelo menos um slot temporal ausente.
+                                                motionAllowed -> {
+                                                    val field = outputSurface!!.currentMotionField()
+                                                    trajectoryStabilizer.update(
+                                                        motionXUv = field.globalForwardUvX,
+                                                        motionYUv = field.globalForwardUvY,
+                                                        rotationRad = if (field.globalRotationReliability >= 0.24f) {
+                                                            field.globalRotationRadians
+                                                        } else {
+                                                            0f
+                                                        },
+                                                        reliability = field.globalReliability,
+                                                        sceneChange = field.sceneChangeLikely,
+                                                        unstable = field.globalMotionIsUnstable,
+                                                        nearlyStatic = field.motionIsNearlyStatic
+                                                    )
+                                                }
+                                                request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ->
+                                                    decayCorrection(previousCorrection)
+                                                else ->
+                                                    MotionTrajectoryStabilizer.Correction()
+                                            }
 
                                             // A posição visual é derivada somente da fração entre os dois
                                             // quadros reais. A timeline de saída usa apenas a grade CFR.
@@ -429,7 +450,7 @@ class HardwareVideoTranscoder {
                                 sourceDecodedFrames++
                                 val percent = ((sourceRelative * 88L / sourceSpanUs).toInt() + 5).coerceIn(5, 93)
                                 val message = when (request.frameRepair) {
-                                    FrameRepairMode.MOTION_COMPENSATED -> "Reconstruindo movimento e cadência por GPU"
+                                    FrameRepairMode.MOTION_COMPENSATED -> "Reconstrução seletiva: GPU/optical flow apenas nos gaps"
                                     FrameRepairMode.ADAPTIVE_BLEND -> "Reconstruindo cadência com mistura temporal por GPU"
                                     FrameRepairMode.FILL_MISSING_FRAMES -> "Preenchendo lacunas com o quadro mais próximo"
                                     FrameRepairMode.SMOOTH_TIMELINE -> "Regularizando a timeline"
