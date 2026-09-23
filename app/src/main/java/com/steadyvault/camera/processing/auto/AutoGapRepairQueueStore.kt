@@ -80,7 +80,8 @@ object AutoGapRepairQueueStore {
         val job = Job(
             id = UUID.randomUUID().toString(),
             sourcePath = path,
-            targetFps = targetFps.coerceIn(1, 240),
+            // 0 significa "inferir o FPS do próprio vídeo" no worker.
+            targetFps = targetFps.coerceIn(0, 240),
             status = Status.PENDING,
             attempts = 0,
             progress = 0,
@@ -268,7 +269,7 @@ object AutoGapRepairQueueStore {
     private fun fromJson(json: JSONObject) = Job(
         id = json.getString("id"),
         sourcePath = json.getString("sourcePath"),
-        targetFps = json.optInt("targetFps", 60).coerceIn(1, 240),
+        targetFps = json.optInt("targetFps", 0).coerceIn(0, 240),
         status = runCatching { Status.valueOf(json.optString("status")) }.getOrDefault(Status.ERROR),
         attempts = json.optInt("attempts", 0).coerceAtLeast(0),
         progress = json.optInt("progress", 0).coerceIn(0, 100),
