@@ -383,7 +383,10 @@ class HardwareVideoTranscoder {
                                             ).toInt().coerceAtLeast(1)
                                             val missingFrames = (nominalSteps - 1).coerceAtLeast(0)
                                             val motionAllowed = request.frameRepair == FrameRepairMode.MOTION_COMPENSATED &&
-                                                missingFrames in 1..request.maxInterpolatedFramesPerGap
+                                                missingFrames in 1..minOf(
+                                                    request.maxInterpolatedFramesPerGap,
+                                                    MAX_DENSE_MOTION_GAP_FRAMES
+                                                )
                                             val blendAllowed = request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND &&
                                                 missingFrames in 1..request.maxInterpolatedFramesPerGap
 
@@ -1276,6 +1279,7 @@ void main(){
     }
 
     companion object {
+        private const val MAX_DENSE_MOTION_GAP_FRAMES = 6
         private const val CODEC_TIMEOUT_US = 10_000L
         private const val MAX_ENCODER_IDLE_POLLS = 3_000
         private const val FRAME_WAIT_MS = 5_000L
