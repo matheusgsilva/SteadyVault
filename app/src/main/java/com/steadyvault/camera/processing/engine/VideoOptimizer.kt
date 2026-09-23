@@ -125,7 +125,12 @@ class VideoOptimizer {
                 sourceFrameCount = analysis.frameCount,
                 keepAudio = config.keepAudio,
                 maxInterpolatedFramesPerGap = config.maxInterpolatedFramesPerGap,
-                highQualityMotion = config.frameRepair == FrameRepairMode.MOTION_COMPENSATED,
+                // A fila automática usa REPAIR_ONLY. O campo denso em resolução alta
+                // é caro demais para 4K60 e não traz ganho proporcional em gaps curtos.
+                // Reserve-o apenas ao preset explícito HIGH_QUALITY.
+                highQualityMotion =
+                    config.frameRepair == FrameRepairMode.MOTION_COMPENSATED &&
+                        config.preset == OptimizationPreset.HIGH_QUALITY,
                 trimStartUs = trimStartUs,
                 trimEndUs = trimEndUs
             ),
