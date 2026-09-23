@@ -194,7 +194,9 @@ class DiscreetRecordingActivity : Activity() {
     }
 
     private fun configureBlackWindow() {
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Não mantenha o painel acordado. A gravação vive no CaptureService com
+        // PARTIAL_WAKE_LOCK; a Activity pode parar/voltar conforme a lockscreen.
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.attributes = window.attributes.apply {
             screenBrightness = MINIMUM_SCREEN_BRIGHTNESS
             // A tela é totalmente preta e estática. Limitar a taxa do painel reduz
