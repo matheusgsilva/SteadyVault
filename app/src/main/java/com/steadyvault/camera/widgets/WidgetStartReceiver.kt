@@ -1,21 +1,25 @@
 package com.steadyvault.camera.widgets
 
 import android.Manifest
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.PowerManager
 import android.widget.Toast
 import com.steadyvault.camera.capture.service.RecordingServiceRouter
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
+import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.core.state.VideoProcessingStateStore
 import com.steadyvault.camera.core.state.PhotoCaptureStateStore
 import com.steadyvault.camera.processing.service.VideoProcessingService
 import com.steadyvault.camera.core.storage.RecordingStorageGuard
 import com.steadyvault.camera.ui.capture.CaptureActivity
+import com.steadyvault.camera.ui.capture.DiscreetRecordingActivity
 
 class WidgetStartReceiver : BroadcastReceiver() {
 
@@ -77,8 +81,14 @@ class WidgetStartReceiver : BroadcastReceiver() {
         CaptureStateStore.update(context, preparing)
 
         runCatching {
+            // A captura nasce primeiro como Foreground Service. Nenhum ciclo de
+            // lockscreen/Activity pode interromper ou ser requisito para gravar.
             RecordingServiceRouter.startHeadless(context, fps)
             WidgetRenderer.updateRecordingControls(context)
+
+            // A tela preta é puramente visual. Não a abra sobre a tela bloqueada
+            // nem tente acordar o aparelho: isso evita churn de Activity na One UI.
+            maybeShowDiscreetUi(context)
         }.onFailure { throwable ->
             CaptureStateStore.update(context, "Pronto para gravar")
             WidgetRenderer.updateRecordingControls(context)
@@ -89,6 +99,25 @@ class WidgetStartReceiver : BroadcastReceiver() {
                     ?: "Não foi possível iniciar a gravação.",
                 Toast.LENGTH_LONG
             ).show()
+        }
+    }
+
+    private fun maybeShowDiscreetUi(context: Context) {
+        if (!RecordingDisplayPreferences.widget(context)) return
+        val power = context.getSystemService(PowerManager::class.java)
+        val keyguard = context.getSystemService(KeyguardManager::class.java)
+        if (power?.isInteractive != true || keyguard?.isKeyguardLocked == true) return
+
+        runCatching {
+            context.startActivity(
+                Intent(context, DiscreetRecordingActivity::class.java)
+                    .setAction(DiscreetRecordingActivity.ACTION_SHOW)
+                    .addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+            )
         }
     }
 
