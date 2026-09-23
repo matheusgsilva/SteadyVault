@@ -383,7 +383,7 @@ class SettingsActivity : FragmentActivity() {
         )
         autoFpsLowLight = addSwitch(
             "Priorizar qualidade em pouca luz",
-            "Mantém o FPS escolhido como teto, mas permite à câmera reduzir temporariamente a cadência usando uma faixa suportada pelo aparelho para ganhar exposição e reduzir ISO. O pós-processamento reconstrói a cadência depois.",
+            "Mantém o FPS escolhido como teto. Em 60 FPS, a câmera pode cair somente até 30 FPS em pouca luz; não desce mais a 15 FPS, evitando exposições longas demais e motion blur que o pós não consegue recuperar.",
             snapshot.autoFpsLowLight
         )
         lockAeAwbForCadence = addSwitch(
@@ -407,7 +407,7 @@ class SettingsActivity : FragmentActivity() {
             exposureOptions(snapshot.exposureCompensation),
             snapshot.exposureCompensation.toString()
         )
-        addInfo("Com 'Priorizar qualidade em pouca luz', 30/60 FPS podem usar uma faixa variável anunciada pela câmera. Resolução, codec, estabilização, foco e demais opções continuam sendo respeitados.")
+        addInfo("Com compensação de exposição em 0, o app aplica proteção automática leve de altas luzes (~−0,4 EV em 60 FPS). Qualquer compensação manual diferente de 0 prevalece. Em pouca luz, 60 FPS pode cair até 30, nunca até 15.")
         addSmallButton("Aplicar perfil de teste de cadência 4K60") {
             val current = CaptureSettings.snapshot(this)
             val testProfile = current.copy(
@@ -473,11 +473,11 @@ class SettingsActivity : FragmentActivity() {
             buildFormPreservingScroll(maxProfile)
             Toast.makeText(
                 this,
-                "Perfil máximo aplicado: 4K60 HEVC 120 Mbps, EIS, exposição/ISO automáticos, pouca luz adaptativa e reconstrução máxima",
+                "Perfil máximo aplicado: 4K60 HEVC 120 Mbps, EIS, AE automático com proteção de highlights, pouca luz limitada a 30 FPS e reconstrução máxima",
                 Toast.LENGTH_LONG
             ).show()
         }
-        addInfo("Perfil máximo: usa 4K60 como teto, HEVC 120 Mbps, EIS, AE/ISO/WB automáticos e processamento de imagem Auto. Em pouca luz a câmera pode sacrificar cadência para preservar exposição; o widget continua sem preview e a reconstrução automática regulariza o vídeo depois.")
+        addInfo("Perfil máximo: usa 4K60 como teto, HEVC 120 Mbps, EIS, AE/ISO/WB automáticos e processamento de imagem Auto. Em pouca luz pode cair a 30 FPS, mas não a 15; compensação 0 ativa proteção leve de highlights para preservar textura e reduzir blur.")
 
         addInfo("Esse botão só altera as opções quando você toca nele. Depois, qualquer ajuste manual continua sendo respeitado normalmente.")
         thermal = addSwitch(
