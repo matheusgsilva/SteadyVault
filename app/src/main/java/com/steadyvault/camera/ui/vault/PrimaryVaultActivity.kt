@@ -1678,7 +1678,7 @@ class PrimaryVaultActivity : FragmentActivity() {
                 "Abrir original", "Detalhes",
                 "Cancelar processamento", "Cancelar e mover para a lixeira", "Cancelar e excluir direto"
             )
-            item.video -> arrayOf("Abrir", "Detalhes", "Cortar/editar", "Exportar", "Mover para a lixeira", "Excluir direto")
+            item.video -> arrayOf("Abrir", "Detalhes", "Cortar/editar", "Pós-processar agora", "Exportar", "Mover para a lixeira", "Excluir direto")
             else -> arrayOf("Abrir", "Detalhes", "Exportar", "Mover para a lixeira", "Excluir direto")
         }
         OneUiDialog.choices(
@@ -1708,9 +1708,10 @@ class PrimaryVaultActivity : FragmentActivity() {
                     0 -> openItem(item)
                     1 -> showMediaDetails(item)
                     2 -> openTrimEditor(item)
-                    3 -> exportItem(item)
-                    4 -> confirmDelete(item)
-                    5 -> confirmDirectDeleteSelected(listOf(item))
+                    3 -> runPostProcessing(item)
+                    4 -> exportItem(item)
+                    5 -> confirmDelete(item)
+                    6 -> confirmDirectDeleteSelected(listOf(item))
                 }
                 else -> when (which) {
                     0 -> openItem(item)
@@ -1755,6 +1756,16 @@ class PrimaryVaultActivity : FragmentActivity() {
                 .putExtra(MediaPlayerActivity.EXTRA_PATH, item.file.absolutePath)
                 .putExtra(MediaPlayerActivity.EXTRA_START_TRIM, true)
         )
+    }
+
+    private fun runPostProcessing(item: VaultRepository.MediaItem) {
+        AutoGapRepairService.repairNow(this, item.file)
+        Toast.makeText(
+            this,
+            "Vídeo adicionado à fila de pós-processamento",
+            Toast.LENGTH_SHORT
+        ).show()
+        scheduleOptimizationRefresh()
     }
 
     private fun exportItem(item: VaultRepository.MediaItem) {
