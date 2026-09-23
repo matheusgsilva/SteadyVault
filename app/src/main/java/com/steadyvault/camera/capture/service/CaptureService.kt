@@ -840,25 +840,9 @@ class CaptureService : Service() {
         characteristics: CameraCharacteristics,
         targetFps: Int
     ): Range<Int> {
-        if (!recordingSettings.autoFpsLowLight || targetFps > CaptureModeStore.FPS_60) {
-            return Range(targetFps, targetFps)
-        }
-
-        val ranges = characteristics.get(
-            CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
-        )?.toList().orEmpty()
-
-        val minimumSafeFps = when {
-            targetFps >= CaptureModeStore.FPS_60 -> CaptureModeStore.FPS_30
-            else -> targetFps
-        }
-
-        return ranges
-            .asSequence()
-            .filter { it.upper == targetFps }
-            .filter { it.lower in minimumSafeFps until targetFps }
-            .minByOrNull { it.lower }
-            ?: Range(targetFps, targetFps)
+        @Suppress("UNUSED_VARIABLE")
+        val ignoredCharacteristics = characteristics
+        return Range(targetFps, targetFps)
     }
 
     /**
@@ -904,19 +888,8 @@ class CaptureService : Service() {
     private fun CameraProfile.hasExactFpsRange(): Boolean =
         fpsRange.lower == targetFps && fpsRange.upper == targetFps
 
-    private fun CameraProfile.matchesRequestedFpsContract(): Boolean {
-        val minimumSafeFps = if (targetFps >= CaptureModeStore.FPS_60) {
-            CaptureModeStore.FPS_30
-        } else {
-            targetFps
-        }
-        return !highSpeed && (
-            hasExactFpsRange() ||
-                recordingSettings.autoFpsLowLight &&
-                fpsRange.upper == targetFps &&
-                fpsRange.lower in minimumSafeFps..targetFps
-            )
-    }
+    private fun CameraProfile.matchesRequestedFpsContract(): Boolean =
+        !highSpeed && hasExactFpsRange()
 
 
     private fun Size.toPolicyDimensions() = StrictCaptureModePolicy.Dimensions(width, height)
@@ -3562,7 +3535,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-motion-highlight-guard-1.8.273"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-highlight-guard-fixed-fps-1.8.274"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
