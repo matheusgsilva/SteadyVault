@@ -90,6 +90,25 @@ class AutoGapRepairService : Service() {
                 ensureForegroundStarted("Verificando fila de reparo…")
                 kickWorker()
             }
+            ACTION_MANUAL_REPAIR -> {
+                ensureForegroundStarted("Preparando pós-processamento manual…")
+                manualDrainRequested = true
+                userPauseRequested = false
+                interactivePriorityRequested = false
+                val path = intent.getStringExtra(EXTRA_SOURCE_PATH).orEmpty()
+                val fps = intent.getIntExtra(EXTRA_TARGET_FPS, 0)
+                val source = File(path)
+                if (source.isFile && VaultRepository.isInsideKnownVault(this, source)) {
+                    AutoGapRepairSettings.setEnabled(this, true)
+                    AutoGapRepairSettings.setMode(this, FrameRepairMode.MOTION_COMPENSATED)
+                    AutoGapRepairQueueStore.enqueue(this, source, fps)
+                    kickWorker()
+                } else {
+                    manualDrainRequested = false
+                    publish(100, "Vídeo não está disponível para pós-processamento", force = true)
+                    stopSelf(startId)
+                }
+            }
             ACTION_RETRY_FAILED -> {
                 ensureForegroundStarted("Verificando fila de reparo…")
                 AutoGapRepairQueueStore.retryFailed(this)
@@ -107,7 +126,12 @@ class AutoGapRepairService : Service() {
                 else publish(currentProgress, "Reparo pausado pelo usuário…", force = true)
             }
         }
-        return if (action == ACTION_ENQUEUE || action == ACTION_RESUME || action == ACTION_RETRY_FAILED) {
+        return if (
+            action == ACTION_ENQUEUE ||
+            action == ACTION_RESUME ||
+            action == ACTION_RETRY_FAILED ||
+            action == ACTION_MANUAL_REPAIR
+        ) {
             START_REDELIVER_INTENT
         } else {
             START_NOT_STICKY
@@ -174,14 +198,15 @@ class AutoGapRepairService : Service() {
                 }
             } else {
                 immediateWidgetDrainRequested = false
+                manualDrainRequested = false
             }
         }
     }
 
     private fun processJob(job: AutoGapRepairQueueStore.Job): Boolean {
         val source = File(job.sourcePath)
-        if (!source.isFile || !VaultRepository.isInsideVault(this, source)) {
-            AutoGapRepairQueueStore.markError(this, job.id, "O arquivo original não está mais disponível no cofre")
+        if (!source.isFile || !VaultRepository.isInsideKnownVault(this, source)) {
+            AutoGapRepairQueueStore.markError(this, job.id, "O arquivo original não está mais disponível em um cofre conhecido")
             return true
         }
 
@@ -576,6 +601,7 @@ class AutoGapRepairService : Service() {
         private const val ACTION_ENQUEUE = "com.steadyvault.camera.AUTO_GAP_REPAIR_ENQUEUE"
         private const val ACTION_RESUME = "com.steadyvault.camera.AUTO_GAP_REPAIR_RESUME"
         private const val ACTION_RETRY_FAILED = "com.steadyvault.camera.AUTO_GAP_REPAIR_RETRY_FAILED"
+        private const val ACTION_MANUAL_REPAIR = "com.steadyvault.camera.AUTO_GAP_REPAIR_MANUAL"
         private const val ACTION_PAUSE_CAPTURE = "com.steadyvault.camera.AUTO_GAP_REPAIR_PAUSE_CAPTURE"
         private const val ACTION_PAUSE_USER = "com.steadyvault.camera.AUTO_GAP_REPAIR_PAUSE_USER"
         const val EXTRA_SOURCE_PATH = "source_path"
@@ -590,6 +616,7 @@ class AutoGapRepairService : Service() {
         @Volatile private var userPauseRequested = false
         @Volatile private var processingActive = false
         @Volatile private var immediateWidgetDrainRequested = false
+        @Volatile private var manualDrainRequested = false
 
         fun enqueue(context: Context, source: File, targetFps: Int) {
             if (!AutoGapRepairSettings.snapshot(context).enabled || !source.isFile) return
@@ -628,16 +655,26 @@ class AutoGapRepairService : Service() {
             startSelf(context, ACTION_RESUME)
         }
 
-        fun repairNow(context: Context, source: File) {
-            if (!source.isFile || !VaultRepository.isInsideKnownVault(context, source)) return
-            AutoGapRepairSettings.setEnabled(context, true)
-            AutoGapRepairSettings.setMode(context, FrameRepairMode.MOTION_COMPENSATED)
+        fun repairNow(context: Context, source: File): Boolean {
+            if (!source.isFile || !VaultRepository.isInsideKnownVault(context, source)) return false
+            if (capturePriorityRequested || CaptureStateStore.isBusy(context)) {
+                // Persiste o job para não perder o pedido; ele será retomado após a captura.
+                AutoGapRepairQueueStore.enqueue(context, source, 0)
+                manualDrainRequested = true
+                return true
+            }
+
             userPauseRequested = false
             interactivePriorityRequested = false
-            AutoGapRepairQueueStore.enqueue(context, source, 0)
-            if (!capturePriorityRequested && !CaptureStateStore.isBusy(context)) {
-                startSelf(context, ACTION_RESUME)
-            }
+            manualDrainRequested = true
+            val intent = Intent(context, AutoGapRepairService::class.java)
+                .setAction(ACTION_MANUAL_REPAIR)
+                .putExtra(EXTRA_SOURCE_PATH, source.absolutePath)
+                .putExtra(EXTRA_TARGET_FPS, 0)
+            return runCatching {
+                context.startForegroundService(intent)
+                true
+            }.getOrDefault(false)
         }
 
         fun pauseForCapture(context: Context) {
@@ -657,7 +694,9 @@ class AutoGapRepairService : Service() {
         }
 
         private fun interactiveBlocksProcessing(): Boolean =
-            interactivePriorityRequested && !immediateWidgetDrainRequested
+            interactivePriorityRequested &&
+                !immediateWidgetDrainRequested &&
+                !manualDrainRequested
 
         fun pauseForInteractiveUse() {
             // Same-process flag: a running transcoder observes this in its cancellation
