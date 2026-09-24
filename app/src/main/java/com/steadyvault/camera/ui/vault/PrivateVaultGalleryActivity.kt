@@ -827,10 +827,14 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
     }
 
     private fun runPostProcessing(item: VaultRepository.MediaItem) {
-        AutoGapRepairService.repairNow(this, item.file)
+        val started = AutoGapRepairService.repairNow(this, item.file)
         Toast.makeText(
             this,
-            "Vídeo adicionado à fila de pós-processamento",
+            if (started) {
+                "Pós-processamento iniciado em segundo plano"
+            } else {
+                "Não foi possível iniciar o pós-processamento"
+            },
             Toast.LENGTH_SHORT
         ).show()
     }
