@@ -818,22 +818,11 @@ class CaptureService : Service() {
      * AE/ISO automáticos. Qualquer valor manual diferente de zero sempre prevalece.
      */
     private fun effectiveExposureCompensation(profile: CameraProfile): Int {
-        if (recordingSettings.exposureCompensation != 0) {
-            return recordingSettings.exposureCompensation
-        }
-
-        val step = profile.characteristics
-            .get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
-            ?.toFloat()
-            ?.takeIf { it > 0f }
-            ?: return 0
-
-        val targetEv = if (profile.targetFps >= CaptureModeStore.FPS_60) {
-            AUTO_HIGHLIGHT_BIAS_EV_60
-        } else {
-            AUTO_HIGHLIGHT_BIAS_EV_30
-        }
-        return kotlin.math.round(targetEv / step).toInt()
+        // "0" volta a significar exposição neutra. A Hybrid AE aplicava EV negativo
+        // automaticamente em 60 FPS, deixando a gravação mais escura que o preview.
+        @Suppress("UNUSED_VARIABLE")
+        val ignoredProfile = profile
+        return recordingSettings.exposureCompensation
     }
 
     private fun resolveStandardFpsRange(
@@ -1666,12 +1655,33 @@ class CaptureService : Service() {
 
         runCatching {
             armRecorderForFirstFrame(token)
-            // Gravação regular usa um único request durante toda a captura.
-            // Com qualidade em pouca luz ativa, resolveStandardFpsRange() pode entregar
-            // [15,60], [24,60] ou [30,60] conforme a HAL anunciar. AE/ISO continuam
-            // automáticos durante todo o MP4; o pós-processamento regulariza a cadência.
-            session.setRepeatingRequest(request, null, mainHandler)
-            commitRecorderStart(profile, token, highSpeed = false)
+            val manualSensor = supportsManualSensor(profile)
+            if (
+                !recordingSettings.autoFpsLowLight &&
+                profile.targetFps == CaptureModeStore.FPS_60 &&
+                !profile.hdrHlg10 &&
+                manualSensor
+            ) {
+                // Recupera o caminho AE60 CLEAN usado nas branches iOS-like:
+                // captura primeiro a exposição real do AE e fixa frame-duration/ISO/exposure
+                // para impedir oscilações periódicas da HAL durante 60 FPS.
+                val recent = Camera3AStateStore.recentExposure(profile.cameraId)
+                val immediatePlan = recent?.let {
+                    fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso)
+                }
+                if (immediatePlan != null) {
+                    val fixedRequest = buildFixedCadenceRequest(profile, immediatePlan)
+                        ?: throw IllegalStateException("câmera não disponível para request de cadência fixa")
+                    session.setRepeatingRequest(fixedRequest, null, mainHandler)
+                    commitRecorderStart(profile, token, highSpeed = false)
+                } else {
+                    startWithFixedSensorCadence(session, request, profile, token)
+                }
+            } else {
+                // 30 FPS, HDR e Auto FPS continuam com AE contínuo.
+                session.setRepeatingRequest(request, null, mainHandler)
+                commitRecorderStart(profile, token, highSpeed = false)
+            }
         }.onFailure {
             failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}")
         }
@@ -2879,7 +2889,7 @@ class CaptureService : Service() {
             context = this,
             source = finalFile,
             targetFps = fps,
-            startImmediately = headlessCaptureRequested
+            startImmediately = false
         )
         val message = "Vídeo salvo no cofre • ${sizeName(size)} • $fps FPS • $qualityLabel • ${formatDuration(durationSeconds)}"
         sendStateOnMain(message)
