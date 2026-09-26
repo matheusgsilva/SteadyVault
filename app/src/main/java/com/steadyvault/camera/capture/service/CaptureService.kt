@@ -1628,19 +1628,6 @@ class CaptureService : Service() {
         !name.startsWith("android.", ignoreCase = true)
 
     private fun logVendorCaptureResult(result: TotalCaptureResult) {
-        val ndkTargets = arrayOf(
-            "org.codeaurora.qcamera3.sessionParameters.dynamicFPSConfig",
-            "org.codeaurora.qcamera3.sessionParameters.EISMode",
-            "org.codeaurora.qcamera3.sessionParameters.MultiCameraMode",
-            "org.codeaurora.qcamera3.sessionParameters.HDRVideoMode",
-            "org.codeaurora.qcamera3.sessionParameters.numPCRsBeforeStreamOn",
-            "org.codeaurora.qcamera3.sessionParameters.enableMCTFwithReferenceFrame",
-            "org.codeaurora.qcamera3.sessionParameters.overrideResourceCostValidation"
-        )
-        NativeCameraMetadataProbe.inspect(result, ndkTargets).forEach { row ->
-            Log.i(LOG_TAG, "VENDOR_NDK_RESULT $row")
-        }
-
         val vendorKeys = result.keys
             .filter { isVendorCameraKey(it.name) }
             .sortedBy { it.name }
@@ -1726,8 +1713,8 @@ class CaptureService : Service() {
         val available = profile.characteristics.availableCaptureRequestKeys
             .associateBy { it.name }
 
-        NativeCameraMetadataProbe.inspect(
-            profile.characteristics,
+        NativeCameraMetadataProbe.inspectCharacteristics(
+            profile.cameraId,
             targets.toTypedArray()
         ).forEach { row ->
             Log.i(LOG_TAG, "VENDOR_NDK_CHARACTERISTICS $row")
