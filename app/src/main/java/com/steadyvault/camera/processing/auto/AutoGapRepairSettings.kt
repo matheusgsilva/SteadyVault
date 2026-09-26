@@ -16,34 +16,34 @@ object AutoGapRepairSettings {
     private const val KEY_MODE = "mode"
     private const val KEY_MAX_FRAMES = "max_frames"
     private const val KEY_SCHEMA = "schema"
-    private const val SCHEMA = 6
+    private const val SCHEMA = 7
 
     fun snapshot(context: Context): Snapshot {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val stored = FrameRepairMode.from(
-            prefs.getString(KEY_MODE, FrameRepairMode.MOTION_COMPENSATED.name)
+            prefs.getString(KEY_MODE, FrameRepairMode.ADAPTIVE_BLEND.name)
         )
         val previousSchema = prefs.getInt(KEY_SCHEMA, 0)
         val migrated = when {
-            previousSchema < 4 &&
-                (stored == FrameRepairMode.FILL_MISSING_FRAMES ||
-                    stored == FrameRepairMode.SMOOTH_TIMELINE ||
-                    stored == FrameRepairMode.ADAPTIVE_BLEND) ->
-                FrameRepairMode.MOTION_COMPENSATED
+            previousSchema < 7 && stored == FrameRepairMode.MOTION_COMPENSATED ->
+                FrameRepairMode.ADAPTIVE_BLEND
             else -> stored
         }
         val safeMode = migrated.takeIf {
-            it == FrameRepairMode.MOTION_COMPENSATED ||
-                it == FrameRepairMode.ADAPTIVE_BLEND ||
+            it == FrameRepairMode.ADAPTIVE_BLEND ||
                 it == FrameRepairMode.FILL_MISSING_FRAMES ||
                 it == FrameRepairMode.SMOOTH_TIMELINE
-        } ?: FrameRepairMode.MOTION_COMPENSATED
+        } ?: FrameRepairMode.ADAPTIVE_BLEND
 
         // Schema 3 aumenta o limite padrão para cobrir gaps de 120/240 FPS sem cair
         // prematuramente em repetição de quadro. Preserve valores que o usuário já alterou.
-        val storedMaxFrames = if (prefs.contains(KEY_MAX_FRAMES)) {
-            prefs.getInt(KEY_MAX_FRAMES, 16)
-        } else 16
+        val storedMaxFrames = if (previousSchema < 7) {
+            // A branch iOS-like robust usava janelas curtas; evita tentar sintetizar
+            // sequências grandes, que tendem a criar arrasto/ghosting perceptível.
+            4
+        } else if (prefs.contains(KEY_MAX_FRAMES)) {
+            prefs.getInt(KEY_MAX_FRAMES, 4)
+        } else 4
 
         if (previousSchema < SCHEMA || safeMode != stored) {
             prefs.edit()
@@ -72,11 +72,10 @@ object AutoGapRepairSettings {
 
     fun setMode(context: Context, mode: FrameRepairMode) {
         val safe = mode.takeIf {
-            it == FrameRepairMode.MOTION_COMPENSATED ||
-                it == FrameRepairMode.ADAPTIVE_BLEND ||
+            it == FrameRepairMode.ADAPTIVE_BLEND ||
                 it == FrameRepairMode.FILL_MISSING_FRAMES ||
                 it == FrameRepairMode.SMOOTH_TIMELINE
-        } ?: FrameRepairMode.MOTION_COMPENSATED
+        } ?: FrameRepairMode.ADAPTIVE_BLEND
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().putString(KEY_MODE, safe.name).apply()
     }
