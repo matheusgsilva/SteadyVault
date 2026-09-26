@@ -27,6 +27,7 @@ import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.core.storage.RecordingStorageGuard
 import com.steadyvault.camera.storage.vault.VaultRepository
 import com.steadyvault.camera.processing.auto.AutoGapRepairService
+import com.steadyvault.camera.processing.analysis.VideoAnalysis
 import com.steadyvault.camera.processing.service.VideoProcessingService
 import com.steadyvault.camera.storage.vault.RecordingRecoveryRepository
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
@@ -201,6 +202,16 @@ class CaptureService : Service() {
     @Volatile
     private var foregroundNotificationStarted = false
 
+    // Diagnóstico temporário 60+ FPS: correlaciona gaps reais do sensor com
+    // autofocus/lente sem alterar o comportamento da captura.
+    @Volatile private var cadenceDiagPreviousSensorTsNs = 0L
+    @Volatile private var cadenceDiagPreviousFrameNumber = -1L
+    @Volatile private var cadenceDiagPreviousAfState: Int? = null
+    @Volatile private var cadenceDiagPreviousLensState: Int? = null
+    @Volatile private var cadenceDiagGapCount = 0
+    @Volatile private var cadenceDiagAfScanTransitions = 0
+    @Volatile private var cadenceDiagLensMovingFrames = 0
+
 
 
 
@@ -263,6 +274,7 @@ class CaptureService : Service() {
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
         MediaThumbnailRepository.prepareForCapture()
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
+        resetCadenceFocusDiagnostics()
 
         recordingRequestedAtElapsedNs = intent?.getLongExtra(EXTRA_REQUESTED_AT_ELAPSED_NS, 0L)?.takeIf { it > 0L } ?: SystemClock.elapsedRealtimeNanos()
         cameraRecoveryAttempt = intent?.getIntExtra(EXTRA_CAMERA_RECOVERY_ATTEMPT, 0)?.coerceAtLeast(0) ?: 0
@@ -692,7 +704,7 @@ class CaptureService : Service() {
             .putInt(CONFIG_WIDTH, camera.videoSize.width)
             .putInt(CONFIG_HEIGHT, camera.videoSize.height)
             .putInt(CONFIG_FPS, camera.targetFps)
-            .remove(CONFIG_HIGH_SPEED)
+            .putBoolean(CONFIG_HIGH_SPEED, camera.highSpeed)
             .putLong(CONFIG_DYNAMIC_RANGE, camera.dynamicRangeProfile)
             .putString(CONFIG_MIME, encoder.mime)
             .apply()
@@ -705,7 +717,7 @@ class CaptureService : Service() {
     ): Pair<CameraProfile, EncoderProfile>? {
         val prefs = getSharedPreferences(CONFIG_CACHE_PREFS, MODE_PRIVATE)
         if (prefs.getString(CONFIG_SIGNATURE, null) != signature) return null
-        if (prefs.getBoolean(CONFIG_HIGH_SPEED, false)) return null
+        val rememberedHighSpeed = prefs.getBoolean(CONFIG_HIGH_SPEED, false)
         val cameraId = prefs.getString(CONFIG_CAMERA_ID, null) ?: return null
         val width = prefs.getInt(CONFIG_WIDTH, 0)
         val height = prefs.getInt(CONFIG_HEIGHT, 0)
@@ -722,7 +734,12 @@ class CaptureService : Service() {
         val characteristics = runCatching {
             getSystemService(CameraManager::class.java).getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return null
-        val fpsRange = resolveFpsRange(characteristics, rememberedSize, fps, false) ?: return null
+        val fpsRange =
+            if (rememberedHighSpeed) {
+                constrainedHighSpeedRange(characteristics, rememberedSize, fps)
+            } else {
+                resolveFpsRange(characteristics, rememberedSize, fps, false)
+            } ?: return null
         val dynamicRange = when {
             allowHdr && supportsHlg10(characteristics) -> storedDynamicRange
             allowHdr -> return null
@@ -734,7 +751,7 @@ class CaptureService : Service() {
             videoSize = rememberedSize,
             targetFps = fps,
             fpsRange = fpsRange,
-            highSpeed = false,
+            highSpeed = rememberedHighSpeed,
             dynamicRangeProfile = dynamicRange
         )
         if (mime !in recordingSettings.codecMimes(profile.hdrHlg10)) return null
@@ -777,19 +794,67 @@ class CaptureService : Service() {
             else -> standardDynamicRangeProfile()
         }
         val size = recordingSettings.exactPreferredSize() ?: return null
+        val highSpeedRange =
+            if (!allowHdr && targetFps >= CaptureModeStore.FPS_60) {
+                constrainedHighSpeedRange(characteristics, size, targetFps)
+            } else {
+                null
+            }
         val profile = createCameraProfile(
             cameraId = cameraId,
             characteristics = characteristics,
             videoSize = size,
             targetFps = targetFps,
-            fpsRange = resolveStandardFpsRange(characteristics, targetFps),
-            highSpeed = false,
+            fpsRange = highSpeedRange ?: resolveStandardFpsRange(characteristics, targetFps),
+            highSpeed = highSpeedRange != null,
             dynamicRangeProfile = dynamicRange
+        )
+        Log.i(
+            LOG_TAG,
+            "Modo de sessão selecionado: ${if (profile.highSpeed) "HIGH_SPEED" else "REGULAR"} " +
+                "${size.width}x${size.height} ${profile.fpsRange.lower}-${profile.fpsRange.upper} FPS"
         )
         if (!matchesRequestedMode(profile, targetFps)) return null
         if (!profileSatisfiesExplicitStabilization(profile)) return null
         val encoder = selectDirectRecorderEncoder(profile) ?: return null
         return profile to encoder
+    }
+
+    private fun constrainedHighSpeedRange(
+        characteristics: CameraCharacteristics,
+        size: Size,
+        targetFps: Int
+    ): Range<Int>? {
+        val map = characteristics.get(
+            CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
+        ) ?: return null
+
+        val sizes = runCatching {
+            map.highSpeedVideoSizes?.toList().orEmpty()
+        }.getOrDefault(emptyList())
+
+        if (size !in sizes) {
+            Log.i(
+                LOG_TAG,
+                "HIGH_SPEED_CAP: ${size.width}x${size.height} não anunciado; " +
+                    "sizes=" + sizes.joinToString { "${it.width}x${it.height}" }
+            )
+            return null
+        }
+
+        val ranges = runCatching {
+            map.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty()
+        }.getOrDefault(emptyList())
+
+        Log.i(
+            LOG_TAG,
+            "HIGH_SPEED_CAP: ${size.width}x${size.height} ranges=" +
+                ranges.joinToString { "${it.lower}-${it.upper}" }
+        )
+
+        return ranges.firstOrNull {
+            it.lower == targetFps && it.upper == targetFps
+        }
     }
 
     private fun resolveFpsRange(
@@ -818,11 +883,20 @@ class CaptureService : Service() {
      * AE/ISO automáticos. Qualquer valor manual diferente de zero sempre prevalece.
      */
     private fun effectiveExposureCompensation(profile: CameraProfile): Int {
-        // "0" volta a significar exposição neutra. A Hybrid AE aplicava EV negativo
-        // automaticamente em 60 FPS, deixando a gravação mais escura que o preview.
-        @Suppress("UNUSED_VARIABLE")
-        val ignoredProfile = profile
-        return recordingSettings.exposureCompensation
+        if (recordingSettings.exposureCompensation != 0) {
+            return recordingSettings.exposureCompensation
+        }
+
+        // AE/ISO continuam 100% automáticos. Quando o usuário deixa em 0, aplicamos
+        // apenas um alvo de brilho levemente mais alto (+0,5 EV), mais próximo do
+        // look da câmera Samsung sem congelar exposição ou sensibilidade.
+        val step = profile.characteristics
+            .get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)
+            ?.toFloat()
+            ?.takeIf { it > 0f }
+            ?: return 0
+
+        return kotlin.math.round(0.5f / step).toInt()
     }
 
     private fun resolveStandardFpsRange(
@@ -878,7 +952,7 @@ class CaptureService : Service() {
         fpsRange.lower == targetFps && fpsRange.upper == targetFps
 
     private fun CameraProfile.matchesRequestedFpsContract(): Boolean =
-        !highSpeed && hasExactFpsRange()
+        hasExactFpsRange()
 
 
     private fun Size.toPolicyDimensions() = StrictCaptureModePolicy.Dimensions(width, height)
@@ -887,18 +961,27 @@ class CaptureService : Service() {
     private fun encoderSurfaceMinFrameDurationNs(
         map: android.hardware.camera2.params.StreamConfigurationMap,
         size: Size,
-        preferMediaRecorder: Boolean = true
+        preferMediaRecorder: Boolean
     ): Long {
-        val recorderDuration = runCatching {
+        fun recorderDuration() = runCatching {
             map.getOutputMinFrameDuration(MediaRecorder::class.java, size)
         }.getOrNull()?.takeIf { it > 0L }
-        if (recorderDuration != null) return recorderDuration
-        return runCatching {
+
+        fun privateDuration() = runCatching {
             map.getOutputMinFrameDuration(ImageFormat.PRIVATE, size)
-        }.getOrNull()?.takeIf { it > 0L } ?: 0L
+        }.getOrNull()?.takeIf { it > 0L }
+
+        return if (preferMediaRecorder) {
+            recorderDuration() ?: privateDuration() ?: 0L
+        } else {
+            privateDuration() ?: recorderDuration() ?: 0L
+        }
     }
 
-    private fun cadenceConfidence(profile: CameraProfile): CaptureCadencePolicy.Confidence {
+    private fun cadenceConfidence(
+        profile: CameraProfile,
+        preferMediaRecorder: Boolean
+    ): CaptureCadencePolicy.Confidence {
         if (profile.highSpeed || profile.targetFps < CaptureModeStore.FPS_60) {
             return CaptureCadencePolicy.Confidence.CONFIRMED
         }
@@ -907,7 +990,7 @@ class CaptureService : Service() {
         val minFrameDurationNs = encoderSurfaceMinFrameDurationNs(
             map,
             profile.videoSize,
-            preferMediaRecorder = true
+            preferMediaRecorder
         )
         return CaptureCadencePolicy.confidence(
             minFrameDurationNs = minFrameDurationNs,
@@ -1442,6 +1525,15 @@ class CaptureService : Service() {
                     setStreamUseCase(
                         CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_VIDEO_RECORD.toLong()
                     )
+                    if (
+                        profile.videoSize == UHD_SIZE &&
+                        profile.targetFps >= CaptureModeStore.FPS_60
+                    ) {
+                        Log.i(
+                            LOG_TAG,
+                            "TESTE_4K60: streamUseCase VIDEO_RECORD reativado para comparar pipeline HAL"
+                        )
+                    }
                 }
             }
         }
@@ -1505,29 +1597,26 @@ class CaptureService : Service() {
                                     profile = profile,
                                     token = token
                                 )
-                            } else if (recordingSettings.lockAeAwbForCadence) {
-                                startLocked3ARecording(
-                                    session = session,
-                                    warmupRequest = request,
-                                    profile = profile,
-                                    token = token
-                                )
-                            } else if (
-                                recordingSettings.focusMode == CaptureSettings.FOCUS_LOCKED
-                            ) {
-                                startLockedFocusRecording(
-                                    session = session,
-                                    warmupRequest = request,
-                                    profile = profile,
-                                    token = token
-                                )
                             } else {
-                                startStabilizedRecording(
-                                    session = session,
-                                    request = request,
-                                    profile = profile,
-                                    token = token
-                                )
+                                if (
+                                    profile.videoSize == UHD_SIZE &&
+                                    profile.targetFps == CaptureModeStore.FPS_60 &&
+                                    supportsManualSensor(profile)
+                                ) {
+                                    startWithFixedSensorCadence(
+                                        session = session,
+                                        autoRequest = request,
+                                        profile = profile,
+                                        token = token
+                                    )
+                                } else {
+                                    startStabilizedRecording(
+                                        session = session,
+                                        request = request,
+                                        profile = profile,
+                                        token = token
+                                    )
+                                }
                             }
                         } catch (throwable: Throwable) {
                             failSelectedConfigurationFromWorker(
@@ -1655,36 +1744,197 @@ class CaptureService : Service() {
 
         runCatching {
             armRecorderForFirstFrame(token)
-            val manualSensor = supportsManualSensor(profile)
-            if (
-                !recordingSettings.autoFpsLowLight &&
-                profile.targetFps == CaptureModeStore.FPS_60 &&
-                !profile.hdrHlg10 &&
-                manualSensor
-            ) {
-                // Recupera o caminho AE60 CLEAN usado nas branches iOS-like:
-                // captura primeiro a exposição real do AE e fixa frame-duration/ISO/exposure
-                // para impedir oscilações periódicas da HAL durante 60 FPS.
-                val recent = Camera3AStateStore.recentExposure(profile.cameraId)
-                val immediatePlan = recent?.let {
-                    fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso)
-                }
-                if (immediatePlan != null) {
-                    val fixedRequest = buildFixedCadenceRequest(profile, immediatePlan)
-                        ?: throw IllegalStateException("câmera não disponível para request de cadência fixa")
-                    session.setRepeatingRequest(fixedRequest, null, mainHandler)
-                    commitRecorderStart(profile, token, highSpeed = false)
+
+            val diagnosticCallback =
+                if (profile.targetFps >= CaptureModeStore.FPS_60) {
+                    createCadenceFocusDiagnosticCallback(profile, token)
                 } else {
-                    startWithFixedSensorCadence(session, request, profile, token)
+                    null
                 }
-            } else {
-                // 30 FPS, HDR e Auto FPS continuam com AE contínuo.
-                session.setRepeatingRequest(request, null, mainHandler)
-                commitRecorderStart(profile, token, highSpeed = false)
-            }
+            session.setRepeatingRequest(request, diagnosticCallback, mainHandler)
+            commitRecorderStart(profile, token, highSpeed = false)
         }.onFailure {
-            failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}")
+            failSelectedConfigurationFromWorker(
+                token,
+                "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}"
+            )
         }
+    }
+
+    private fun resetCadenceFocusDiagnostics() {
+        cadenceDiagPreviousSensorTsNs = 0L
+        cadenceDiagPreviousFrameNumber = -1L
+        cadenceDiagPreviousAfState = null
+        cadenceDiagPreviousLensState = null
+        cadenceDiagGapCount = 0
+        cadenceDiagAfScanTransitions = 0
+        cadenceDiagLensMovingFrames = 0
+    }
+
+    private fun createCadenceFocusDiagnosticCallback(
+        profile: CameraProfile,
+        token: Int
+    ): CameraCaptureSession.CaptureCallback {
+        val nominalNs = frameDurationNs(profile.targetFps)
+        val gapThresholdNs = nominalNs * 3L / 2L
+
+        return object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                if (!isAttemptValid(token) || !recorderStarted) return
+
+                val sensorTs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+                val frameNumber = result.frameNumber
+                val afState = result.get(CaptureResult.CONTROL_AF_STATE)
+                val lensState = result.get(CaptureResult.LENS_STATE)
+                val focusDistance = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+                val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                val frameDurationNs = result.get(CaptureResult.SENSOR_FRAME_DURATION)
+                val rollingShutterSkewNs = result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW)
+                val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+                val awbState = result.get(CaptureResult.CONTROL_AWB_STATE)
+                val activePhysicalId =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        result.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)
+                    } else {
+                        null
+                    }
+
+                val previousTs = cadenceDiagPreviousSensorTsNs
+                val previousFrame = cadenceDiagPreviousFrameNumber
+                val previousAf = cadenceDiagPreviousAfState
+                val previousLens = cadenceDiagPreviousLensState
+
+                if (
+                    afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN &&
+                    previousAf != CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN
+                ) {
+                    cadenceDiagAfScanTransitions++
+                    Log.d(
+                        LOG_TAG,
+                        "AF_SCAN início: frame=$frameNumber foco=${focusDistance ?: -1f} " +
+                            "lens=${lensStateName(lensState)}"
+                    )
+                }
+                if (lensState == CaptureResult.LENS_STATE_MOVING) {
+                    cadenceDiagLensMovingFrames++
+                }
+
+                if (previousTs > 0L) {
+                    val deltaNs = sensorTs - previousTs
+                    if (deltaNs > gapThresholdNs) {
+                        cadenceDiagGapCount++
+                        val frameStep = if (previousFrame >= 0L) frameNumber - previousFrame else -1L
+                        Log.w(
+                            LOG_TAG,
+                            String.format(
+                                Locale.US,
+                                "GAP_SENSOR #%d delta=%.3fms nominal=%.3fms frame=%d prevFrame=%d frameStep=%d " +
+                                    "frameDuration=%.3fms exposição=%.3fms ISO=%s AE=%s AWB=%s " +
+                                    "rollingSkew=%.3fms physicalId=%s AF=%s prevAF=%s LENS=%s prevLENS=%s foco=%.3f",
+                                cadenceDiagGapCount,
+                                deltaNs / 1_000_000.0,
+                                nominalNs / 1_000_000.0,
+                                frameNumber,
+                                previousFrame,
+                                frameStep,
+                                (frameDurationNs ?: 0L) / 1_000_000.0,
+                                (exposureNs ?: 0L) / 1_000_000.0,
+                                iso?.toString() ?: "?",
+                                aeStateName(aeState),
+                                awbStateName(awbState),
+                                (rollingShutterSkewNs ?: 0L) / 1_000_000.0,
+                                activePhysicalId ?: "?",
+                                afStateName(afState),
+                                afStateName(previousAf),
+                                lensStateName(lensState),
+                                lensStateName(previousLens),
+                                focusDistance ?: -1f
+                            )
+                        )
+                    }
+                }
+
+                cadenceDiagPreviousSensorTsNs = sensorTs
+                cadenceDiagPreviousFrameNumber = frameNumber
+                cadenceDiagPreviousAfState = afState
+                cadenceDiagPreviousLensState = lensState
+            }
+
+            override fun onCaptureFailed(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                failure: android.hardware.camera2.CaptureFailure
+            ) {
+                Log.w(
+                    LOG_TAG,
+                    "CAPTURE_FAILED frame=${failure.frameNumber} reason=${failure.reason} " +
+                        "sequence=${failure.sequenceId} captured=${failure.wasImageCaptured()}"
+                )
+            }
+
+            override fun onCaptureBufferLost(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                target: Surface,
+                frameNumber: Long
+            ) {
+                Log.w(LOG_TAG, "BUFFER_LOST frame=$frameNumber")
+            }
+        }
+    }
+
+    private fun aeStateName(value: Int?): String = when (value) {
+        CaptureResult.CONTROL_AE_STATE_INACTIVE -> "INACTIVE"
+        CaptureResult.CONTROL_AE_STATE_SEARCHING -> "SEARCHING"
+        CaptureResult.CONTROL_AE_STATE_CONVERGED -> "CONVERGED"
+        CaptureResult.CONTROL_AE_STATE_LOCKED -> "LOCKED"
+        CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED -> "FLASH_REQUIRED"
+        CaptureResult.CONTROL_AE_STATE_PRECAPTURE -> "PRECAPTURE"
+        null -> "?"
+        else -> value.toString()
+    }
+
+    private fun awbStateName(value: Int?): String = when (value) {
+        CaptureResult.CONTROL_AWB_STATE_INACTIVE -> "INACTIVE"
+        CaptureResult.CONTROL_AWB_STATE_SEARCHING -> "SEARCHING"
+        CaptureResult.CONTROL_AWB_STATE_CONVERGED -> "CONVERGED"
+        CaptureResult.CONTROL_AWB_STATE_LOCKED -> "LOCKED"
+        null -> "?"
+        else -> value.toString()
+    }
+
+    private fun afStateName(value: Int?): String = when (value) {
+        CaptureResult.CONTROL_AF_STATE_INACTIVE -> "INACTIVE"
+        CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN -> "PASSIVE_SCAN"
+        CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED -> "PASSIVE_FOCUSED"
+        CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN -> "ACTIVE_SCAN"
+        CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED -> "FOCUSED_LOCKED"
+        CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED -> "NOT_FOCUSED_LOCKED"
+        CaptureResult.CONTROL_AF_STATE_PASSIVE_UNFOCUSED -> "PASSIVE_UNFOCUSED"
+        null -> "?"
+        else -> value.toString()
+    }
+
+    private fun lensStateName(value: Int?): String = when (value) {
+        CaptureResult.LENS_STATE_STATIONARY -> "STATIONARY"
+        CaptureResult.LENS_STATE_MOVING -> "MOVING"
+        null -> "?"
+        else -> value.toString()
+    }
+
+    private fun logCadenceFocusDiagnosticSummary() {
+        if (requestedTargetFps < CaptureModeStore.FPS_60) return
+        Log.i(
+            LOG_TAG,
+            "Diagnóstico AF/cadência: gapsSensor=$cadenceDiagGapCount " +
+                "afScanStarts=$cadenceDiagAfScanTransitions " +
+                "lensMovingFrames=$cadenceDiagLensMovingFrames"
+        )
     }
 
     private fun startLocked3ARecording(
@@ -2252,32 +2502,123 @@ class CaptureService : Service() {
         profile: CameraProfile,
         token: Int
     ) {
+        if (!isAttemptValid(token)) return
+
+        armRecorderForFirstFrame(token)
+
         val locked = AtomicBoolean(false)
-        val completed = AtomicInteger(0)
+        val validResults = AtomicInteger(0)
+        var latestExposureNs: Long? = null
+        var latestSensitivityIso: Int? = null
+
+        fun applyHeadroomOrFallback(reason: String) {
+            if (!locked.compareAndSet(false, true) || !isAttemptValid(token)) return
+
+            val exposureNs = latestExposureNs
+            val sensitivityIso = latestSensitivityIso
+            val plan = if (exposureNs != null && sensitivityIso != null) {
+                fixedCadencePlan(profile, exposureNs, sensitivityIso)
+            } else null
+            val fixedRequest = plan?.let { buildFixedCadenceRequest(profile, it) }
+            val diagnosticCallback = createCadenceFocusDiagnosticCallback(profile, token)
+
+            if (plan != null && exposureNs != null && sensitivityIso != null) {
+                val requestedIso =
+                    sensitivityIso.toDouble() * exposureNs.toDouble() /
+                        plan.exposureTimeNs.toDouble()
+                val exposureLossPercent =
+                    if (requestedIso > plan.sensitivityIso) {
+                        ((1.0 - plan.sensitivityIso / requestedIso) * 100.0)
+                            .coerceAtLeast(0.0)
+                    } else {
+                        0.0
+                    }
+
+                Log.i(
+                    LOG_TAG,
+                    String.format(
+                        Locale.US,
+                        "4K60_HEADROOM: motivo=%s frameDuration=%.3fms exposure=%.3fms ISO=%d " +
+                            "(AE observado %.3fms ISO=%d, perdaEstimativa=%.1f%%)",
+                        reason,
+                        plan.frameDurationNs / 1_000_000.0,
+                        plan.exposureTimeNs / 1_000_000.0,
+                        plan.sensitivityIso,
+                        exposureNs / 1_000_000.0,
+                        sensitivityIso,
+                        exposureLossPercent
+                    )
+                )
+            } else {
+                Log.w(
+                    LOG_TAG,
+                    "4K60_HEADROOM indisponível ($reason); mantendo AE automático"
+                )
+            }
+
+            runCatching {
+                session.setRepeatingRequest(
+                    fixedRequest ?: autoRequest,
+                    diagnosticCallback,
+                    mainHandler
+                )
+                commitRecorderStart(profile, token, highSpeed = false)
+            }.onFailure {
+                failSelectedConfigurationFromWorker(
+                    token,
+                    "não foi possível aplicar headroom de exposição 4K60: ${errorText(it)}"
+                )
+            }
+        }
+
         val callback = object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureCompleted(
                 captureSession: CameraCaptureSession,
                 request: CaptureRequest,
                 result: TotalCaptureResult
             ) {
-                if (!isAttemptValid(token) || locked.get() || completed.incrementAndGet() < 3) return
-                if (!locked.compareAndSet(false, true)) return
+                if (!isAttemptValid(token) || locked.get()) return
 
                 val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                 val sensitivityIso = result.get(CaptureResult.SENSOR_SENSITIVITY)
-                val plan = if (exposureNs != null && sensitivityIso != null) {
-                    fixedCadencePlan(profile, exposureNs, sensitivityIso)
-                } else null
+                if (exposureNs == null || sensitivityIso == null) return
 
-                val fixedRequest = plan?.let { buildFixedCadenceRequest(profile, it) }
-                runCatching {
-                    captureSession.setRepeatingRequest(fixedRequest ?: autoRequest, null, mainHandler)
+                latestExposureNs = exposureNs
+                latestSensitivityIso = sensitivityIso
+                val count = validResults.incrementAndGet()
+                val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+                val aeReady =
+                    aeState == null ||
+                        aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
+                        aeState == CaptureResult.CONTROL_AE_STATE_LOCKED
+
+                if (aeReady || count >= 4) {
+                    applyHeadroomOrFallback(
+                        if (aeReady) "AE_CONVERGED" else "4_RESULTADOS_VALIDOS"
+                    )
                 }
+            }
+
+            override fun onCaptureFailed(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                failure: android.hardware.camera2.CaptureFailure
+            ) {
+                Log.w(
+                    LOG_TAG,
+                    "4K60_HEADROOM warmup falhou frame=${failure.frameNumber}"
+                )
             }
         }
 
         session.setRepeatingRequest(autoRequest, callback, mainHandler)
-        commitRecorderStart(profile, token, highSpeed = false)
+
+        mainHandler.postDelayed(
+            {
+                applyHeadroomOrFallback("TIMEOUT_${FOUR_K60_HEADROOM_WARMUP_MS}MS")
+            },
+            FOUR_K60_HEADROOM_WARMUP_MS
+        )
     }
 
     private fun buildFixedCadenceRequest(
@@ -2387,40 +2728,25 @@ class CaptureService : Service() {
         setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
         setSafely(builder, CaptureRequest.CONTROL_CAPTURE_INTENT, CameraMetadata.CONTROL_CAPTURE_INTENT_VIDEO_RECORD)
 
-        val afModes = profile.characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
-        val requestedAf = when (recordingSettings.focusMode) {
-            CaptureSettings.FOCUS_CONTINUOUS_PICTURE ->
-                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-            CaptureSettings.FOCUS_AUTO ->
-                CameraMetadata.CONTROL_AF_MODE_AUTO
-            CaptureSettings.FOCUS_LOCKED ->
-                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-            CaptureSettings.FOCUS_OFF ->
-                CameraMetadata.CONTROL_AF_MODE_OFF
-            else ->
-                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO
-        }
-        val fallbackAf = listOf(
-            requestedAf,
+        val afModes = profile.characteristics.get(
+            CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES
+        ) ?: intArrayOf()
+        val automaticAf = listOf(
             CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO,
             CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
-            CameraMetadata.CONTROL_AF_MODE_AUTO,
-            CameraMetadata.CONTROL_AF_MODE_OFF
-        ).distinct().firstOrNull { afModes.contains(it) }
-        fallbackAf?.let { setSafely(builder, CaptureRequest.CONTROL_AF_MODE, it) }
+            CameraMetadata.CONTROL_AF_MODE_AUTO
+        ).firstOrNull { afModes.contains(it) }
+        automaticAf?.let { setSafely(builder, CaptureRequest.CONTROL_AF_MODE, it) }
+        setSafely(builder, CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
 
-        if (!profile.highSpeed) {
-            setSafely(builder, CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
-            // Em OFF não force LENS_FOCUS_DISTANCE=0 (infinito). A lente permanece
-            // na posição que a HAL já possui. O modo LOCKED aplica uma distância
-            // explícita antes do início do MP4.
+        val awbModes = profile.characteristics.get(
+            CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES
+        ) ?: intArrayOf()
+        if (awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_AUTO)) {
+            setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
         }
+        setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
 
-        val awbModes = profile.characteristics.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES) ?: intArrayOf()
-        val requestedAwb = requestedAwbMode(recordingSettings.whiteBalanceMode)
-        val fallbackAwb = listOf(requestedAwb, CameraMetadata.CONTROL_AWB_MODE_AUTO, CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT)
-            .firstOrNull { awbModes.contains(it) }
-        fallbackAwb?.let { setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, it) }
         setSafely(
             builder,
             CaptureRequest.COLOR_CORRECTION_MODE,
@@ -2626,42 +2952,20 @@ class CaptureService : Service() {
         else -> CameraMetadata.CONTROL_AWB_MODE_AUTO
     }
 
-    private fun applyFinalWhiteBalance(builder: CaptureRequest.Builder, profile: CameraProfile) {
-        if (CctWhiteBalanceController.applyIfSupported(builder, profile.characteristics, recordingSettings.yellowReduction, recordingSettings.whiteBalanceMode)) return
-        val availableModes = profile.characteristics.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES) ?: intArrayOf()
-        val selectedMode = requestedAwbMode(recordingSettings.whiteBalanceMode)
-        if (availableModes.contains(selectedMode)) setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, selectedMode)
-
-        val measured = Camera3AStateStore.recentWhiteBalance(profile.cameraId)
-        val strength = WhiteBalanceCorrection.strength(recordingSettings.yellowReduction, recordingSettings.whiteBalanceMode, measured?.gains)
-        val capabilities = profile.characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
-        val manualPost = capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING)
-        val canManualCorrect = strength > 0f && manualPost && measured != null && availableModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF)
-
-        if (canManualCorrect) {
-            setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
-            setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-            setSafely(builder, CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
-            setSafely(builder, CaptureRequest.COLOR_CORRECTION_TRANSFORM, measured.transform)
-            setSafely(builder, CaptureRequest.COLOR_CORRECTION_GAINS, WhiteBalanceCorrection.adjustedGains(measured.gains, strength))
-            return
+    private fun applyFinalWhiteBalance(
+        builder: CaptureRequest.Builder,
+        profile: CameraProfile
+    ) {
+        // Durante vídeo o balanço de branco fica sempre sob controle do HAL.
+        // Evita AWB lock, ganhos manuais e fallback incandescente, que faziam a cor
+        // ficar presa quando a iluminação mudava.
+        val modes = profile.characteristics.get(
+            CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES
+        ) ?: intArrayOf()
+        if (modes.contains(CameraMetadata.CONTROL_AWB_MODE_AUTO)) {
+            setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
         }
-
-        if (
-            WhiteBalanceCorrection.useIncandescentFallback(strength) &&
-            recordingSettings.whiteBalanceMode == CaptureSettings.WHITE_BALANCE_AUTO &&
-            availableModes.contains(CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT)
-        ) {
-            setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
-            setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT)
-            return
-        }
-
-        val canLockAwb = profile.characteristics.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true
-        val shouldLockAwb = recordingSettings.lockWhiteBalance &&
-            recordingSettings.whiteBalanceMode == CaptureSettings.WHITE_BALANCE_AUTO &&
-            canLockAwb && measured != null
-        setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, shouldLockAwb)
+        setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
     }
 
     private fun applyColorProfile(
@@ -2766,23 +3070,22 @@ class CaptureService : Service() {
     }
 
     private fun requestedStabilizationMode(profile: CameraProfile): RecordingStabilizationPolicy.Mode {
+        // Regra única de estabilização em alta cadência: Preview stabilization/EIS
+        // sobrecarregam o ISP e, em 4K60 (e acima), viram gaps de frame reais no
+        // arquivo. Essa regra vale sempre, mesmo se o usuário escolheu manualmente
+        // EIS/Preview nos Ajustes — não existe um "caminho manual" que ignore isso.
+        if (profile.highSpeed || profile.targetFps > CaptureModeStore.FPS_60) {
+            return RecordingStabilizationPolicy.Mode.OFF
+        }
+        if (profile.targetFps >= CaptureModeStore.FPS_60) {
+            return if (profile.oisSupported) {
+                RecordingStabilizationPolicy.Mode.OIS
+            } else {
+                RecordingStabilizationPolicy.Mode.OFF
+            }
+        }
+
         if (recordingSettings.stabilization == CaptureSettings.STABILIZATION_AUTO) {
-            if (profile.highSpeed || profile.targetFps > CaptureModeStore.FPS_60) {
-                return RecordingStabilizationPolicy.Mode.OFF
-            }
-
-            // Em 60 FPS a prioridade do modo AUTO é preservar a cadência real.
-            // Preview stabilization/EIS adicionam trabalho ao ISP e, em 4K60,
-            // podem transformar picos de processamento em gaps que depois exigem
-            // reconstrução. OIS é óptico e tem custo muito menor no pipeline.
-            if (profile.targetFps >= CaptureModeStore.FPS_60) {
-                return if (profile.oisSupported) {
-                    RecordingStabilizationPolicy.Mode.OIS
-                } else {
-                    RecordingStabilizationPolicy.Mode.OFF
-                }
-            }
-
             return when {
                 profile.previewStabilizationSupported -> RecordingStabilizationPolicy.Mode.PREVIEW
                 profile.eisSupported -> RecordingStabilizationPolicy.Mode.EIS
@@ -2850,6 +3153,7 @@ class CaptureService : Service() {
         val finalFile = claimed.output
         val recorder = claimed.recorder
         val validOutput = claimed.wasStarted && runCatching { recorder?.stop() == true }.getOrDefault(false)
+        logCadenceFocusDiagnosticSummary()
 
         releaseCameraOnly()
         runCatching { recorder?.release() }
@@ -2885,12 +3189,43 @@ class CaptureService : Service() {
         // Gravações headless (widget/atalhos) já armam a fila para iniciar assim que
         // esta sessão liberar câmera/encoder. Se outra gravação começar, o worker
         // é cancelado e o job volta para PENDING.
-        AutoGapRepairService.enqueueAfterRecording(
-            context = this,
-            source = finalFile,
-            targetFps = fps,
-            startImmediately = false
-        )
+        val cadenceAnalysis = runCatching { VideoAnalysis.read(finalFile) }
+            .onSuccess { analysis ->
+                Log.i(
+                    LOG_TAG,
+                    String.format(
+                        Locale.US,
+                        "Cadência MP4: fpsReal=%.3f nominal=%d frames=%d gaps=%d ausentes=%d curtos=%d deltaMin=%.3fms deltaMax=%.3fms jitter=%d%%",
+                        analysis.exactFps,
+                        analysis.estimatedFps,
+                        analysis.frameCount,
+                        analysis.largeGapCount,
+                        analysis.estimatedMissingFrames,
+                        analysis.shortIntervalCount,
+                        analysis.minimumFrameDeltaUs / 1000.0,
+                        analysis.maximumFrameDeltaUs / 1000.0,
+                        analysis.frameJitterPercent
+                    )
+                )
+            }
+            .onFailure {
+                Log.w(LOG_TAG, "Não foi possível analisar a cadência do MP4 final", it)
+            }
+            .getOrNull()
+
+        if (cadenceAnalysis?.estimatedMissingFrames ?: 0 > 0) {
+            Log.i(
+                LOG_TAG,
+                "Gap real detectado no MP4: iniciando reparo CFR automático de " +
+                    "${cadenceAnalysis?.estimatedMissingFrames ?: 0} quadro(s)"
+            )
+            AutoGapRepairService.enqueueAfterRecording(
+                context = this,
+                source = finalFile,
+                targetFps = fps,
+                startImmediately = false
+            )
+        }
         val message = "Vídeo salvo no cofre • ${sizeName(size)} • $fps FPS • $qualityLabel • ${formatDuration(durationSeconds)}"
         sendStateOnMain(message)
         updateNotificationOnMain(message)
@@ -3462,13 +3797,16 @@ class CaptureService : Service() {
         val requestedAt = recordingRequestedAtElapsedNs
         if (requestedAt <= 0L) return
         val elapsedMs = ((SystemClock.elapsedRealtimeNanos() - requestedAt) / 1_000_000L).coerceAtLeast(0L)
+        val backend = synchronized(resourceLock) { professionalRecorder }
+        val preferMediaRecorder = backend is DirectMediaRecorderBackend
         val map = profile.characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val minFrameDurationNs = map?.let {
-            encoderSurfaceMinFrameDurationNs(it, profile.videoSize, preferMediaRecorder = true)
+            encoderSurfaceMinFrameDurationNs(it, profile.videoSize, preferMediaRecorder)
         } ?: 0L
-        val cadence = cadenceConfidence(profile)
+        val cadence = cadenceConfidence(profile, preferMediaRecorder)
         val cadenceMessage = "Gravação ${sizeName(profile.videoSize)} ${profile.targetFps} FPS iniciada em ${elapsedMs} ms • " +
-            "cadênciaHAL=$cadence • minFrame=${if (minFrameDurationNs > 0L) minFrameDurationNs / 1_000_000.0 else -1.0}ms • câmera=${profile.cameraId}"
+            "cadênciaHAL=$cadence • minFrame=${if (minFrameDurationNs > 0L) minFrameDurationNs / 1_000_000.0 else -1.0}ms • " +
+            "backend=${backend?.backendName ?: activeRecorderBackendName} • câmera=${profile.cameraId}"
         Log.i(LOG_TAG, cadenceMessage)
     }
 
@@ -3481,7 +3819,7 @@ class CaptureService : Service() {
             append(", faixaAE=").append(profile.fpsRange.lower).append('-').append(profile.fpsRange.upper)
             append(", câmera=").append(profile.cameraId)
             append(", resolução=").append(profile.videoSize.width).append('x').append(profile.videoSize.height)
-            append(", backend=MediaRecorder direto")
+            append(", backend=").append(backend?.backendName ?: activeRecorderBackendName.ifBlank { "desconhecido" })
         }
         fpsFallbackWarningLogged = true
         Log.i(LOG_TAG, info)
@@ -3507,6 +3845,7 @@ class CaptureService : Service() {
         private const val HYBRID_AE_MIN_CORRECTION_FRAMES = 4
         private const val HYBRID_AE_MAX_CORRECTION_FRAMES = 6
         private const val HYBRID_AE_CORRECTION_TIMEOUT_MS = 250L
+        private const val FOUR_K60_HEADROOM_WARMUP_MS = 500L
 
         const val ACTION_RECORDING_VISUAL_FINISHED =
             "com.steadyvault.camera.RECORDING_VISUAL_FINISHED"
@@ -3545,7 +3884,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-highlight-guard-fixed-fps-1.8.274"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-4k60-video-usecase-1.8.279"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
