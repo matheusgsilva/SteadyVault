@@ -1356,6 +1356,68 @@ class CaptureService : Service() {
             runCatching { backend.release() }
             runCatching { finalFile.delete() }
 
+            if (!preferDirectCodec && exactOem4k60) {
+                Log.w(
+                    LOG_TAG,
+                    "OEM MediaRecorder 4K60 recusado; voltando para MediaCodec direto",
+                    codecFailure
+                )
+
+                val fallbackFile = VaultRepository.createRecordingFile(this, profileLabel)
+                check(hasAudioPermission()) { "permissão de microfone necessária para gravar com áudio" }
+                startForegroundNow(
+                    "Preparando fallback MediaCodec 4K60…",
+                    includeMicrophone = true
+                )
+
+                val fallback = DirectMediaCodecBackend(
+                    outputFile = fallbackFile,
+                    width = cameraProfile.videoSize.width,
+                    height = cameraProfile.videoSize.height,
+                    targetFps = cameraProfile.targetFps,
+                    videoMime = encoderProfile.mime,
+                    preferredCodecName = encoderProfile.codecName,
+                    videoBitrate = encoderProfile.bitrate,
+                    iFrameIntervalSeconds = recordingSettings.iFrameIntervalSeconds,
+                    orientationHint = calculateOrientationHint(cameraProfile.sensorOrientation),
+                    integratedAudio = true,
+                    audioSampleRate = recordingSettings.audioSampleRate,
+                    audioBitrate = recordingSettings.audioBitrateKbps * 1_000,
+                    requestedAudioChannels = when (recordingSettings.audioChannels) {
+                        CaptureSettings.CHANNELS_MONO -> 1
+                        CaptureSettings.CHANNELS_STEREO -> 2
+                        else -> 0
+                    },
+                    audioGainDb = recordingSettings.audioGainDb,
+                    audioAgc = recordingSettings.audioAgc,
+                    audioNoiseSuppressor = recordingSettings.audioNoiseSuppressor,
+                    audioLowCut = recordingSettings.audioLowCut,
+                    onError = { throwable ->
+                        if (!stopping.get() && serviceActive.get()) {
+                            failAndStop("MediaCodec fallback 4K60: ${errorText(throwable)}")
+                        }
+                    }
+                )
+
+                try {
+                    val surface = fallback.prepare()
+                    synchronized(resourceLock) {
+                        finalOutputFile = fallbackFile
+                        rawOutputFile = fallbackFile
+                        professionalRecorder = fallback
+                        recorderSurface = surface
+                        activeRecorderBackendName = fallback.backendName
+                        activeRecorderMime = encoderProfile.mime
+                    }
+                    Log.i(LOG_TAG, "Fallback 4K60 ativo: ${fallback.profileDescription}")
+                    return
+                } catch (fallbackFailure: Throwable) {
+                    runCatching { fallback.release() }
+                    runCatching { fallbackFile.delete() }
+                    throw fallbackFailure
+                }
+            }
+
             if (!preferDirectCodec) throw codecFailure
 
             Log.w(
