@@ -218,6 +218,10 @@ class CaptureService : Service() {
     override fun onCreate() {
         super.onCreate()
 
+        runCatching {
+            Process.setThreadPriority(Process.myTid(), Process.THREAD_PRIORITY_URGENT_DISPLAY)
+        }
+
         cameraExecutor = Executors.newSingleThreadExecutor(
             createThreadFactory("SteadyVault-Camera", Process.THREAD_PRIORITY_URGENT_DISPLAY)
         )
@@ -3608,7 +3612,8 @@ class CaptureService : Service() {
     private fun acquireWakeLock() {
         releaseWakeLock()
 
-        wakeLock = getSystemService(PowerManager::class.java)
+        val powerManager = getSystemService(PowerManager::class.java)
+        wakeLock = powerManager
             .newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "SteadyVault:Camera2"
@@ -3617,6 +3622,15 @@ class CaptureService : Service() {
                 setReferenceCounted(false)
                 acquire()
             }
+
+        Log.i(
+            LOG_TAG,
+            "CAPTURE_PRIORITY: foreground=true wakeLock=" +
+                (wakeLock?.isHeld == true) +
+                " mainThreadPriority=" + Process.getThreadPriority(Process.myTid()) +
+                " ignoreBatteryOptimizations=" +
+                powerManager.isIgnoringBatteryOptimizations(packageName)
+        )
     }
 
     private fun releaseWakeLock() {
