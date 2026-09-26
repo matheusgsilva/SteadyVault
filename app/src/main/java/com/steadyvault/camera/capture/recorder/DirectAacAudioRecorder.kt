@@ -37,7 +37,7 @@ class DirectAacAudioRecorder(
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(
             {
-                runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
+                runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
                 runnable.run()
             },
             "SteadyVault-AAC"
