@@ -39,6 +39,7 @@ import com.steadyvault.camera.widgets.WidgetRenderer
 import com.steadyvault.camera.core.settings.VisualIdentityStore
 
 import android.Manifest
+import android.app.ActivityManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -211,6 +212,8 @@ class CaptureService : Service() {
     @Volatile private var cadenceDiagGapCount = 0
     @Volatile private var cadenceDiagAfScanTransitions = 0
     @Volatile private var cadenceDiagLensMovingFrames = 0
+    @Volatile private var cadenceDiagCpuStartMs = 0L
+    @Volatile private var cadenceDiagWallStartMs = 0L
 
 
 
@@ -273,6 +276,8 @@ class CaptureService : Service() {
         VideoProcessingService.pauseForCapture(this)
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
         MediaThumbnailRepository.prepareForCapture()
+        val repairReleased = AutoGapRepairService.awaitReleasedForCapture()
+        Log.i(LOG_TAG, "CAPTURE_ISOLATION: repairReleased=$repairReleased processingPaused=true thumbnailsPaused=true startupPaused=true")
         captureSessionId = "video-${System.currentTimeMillis()}-${SystemClock.elapsedRealtimeNanos()}"
         resetCadenceFocusDiagnostics()
 
@@ -1914,6 +1919,8 @@ class CaptureService : Service() {
         cadenceDiagGapCount = 0
         cadenceDiagAfScanTransitions = 0
         cadenceDiagLensMovingFrames = 0
+        cadenceDiagCpuStartMs = Process.getElapsedCpuTime()
+        cadenceDiagWallStartMs = SystemClock.elapsedRealtime()
     }
 
     private fun createCadenceFocusDiagnosticCallback(
@@ -1974,13 +1981,15 @@ class CaptureService : Service() {
                     if (deltaNs > gapThresholdNs) {
                         cadenceDiagGapCount++
                         val frameStep = if (previousFrame >= 0L) frameNumber - previousFrame else -1L
+                        val pressure = capturePressureSnapshot()
                         Log.w(
                             LOG_TAG,
                             String.format(
                                 Locale.US,
                                 "GAP_SENSOR #%d delta=%.3fms nominal=%.3fms frame=%d prevFrame=%d frameStep=%d " +
                                     "frameDuration=%.3fms exposição=%.3fms ISO=%s AE=%s AWB=%s " +
-                                    "rollingSkew=%.3fms physicalId=%s AF=%s prevAF=%s LENS=%s prevLENS=%s foco=%.3f",
+                                    "rollingSkew=%.3fms physicalId=%s AF=%s prevAF=%s LENS=%s prevLENS=%s foco=%.3f " +
+                                    "thermal=%d procCpu=%.1f%% heap=%dMB availMem=%dMB",
                                 cadenceDiagGapCount,
                                 deltaNs / 1_000_000.0,
                                 nominalNs / 1_000_000.0,
@@ -1998,7 +2007,11 @@ class CaptureService : Service() {
                                 afStateName(previousAf),
                                 lensStateName(lensState),
                                 lensStateName(previousLens),
-                                focusDistance ?: -1f
+                                focusDistance ?: -1f,
+                                pressure.thermalStatus,
+                                pressure.processCpuPercent,
+                                pressure.heapUsedMb,
+                                pressure.availableMemoryMb
                             )
                         )
                     }
@@ -2031,6 +2044,40 @@ class CaptureService : Service() {
                 Log.w(LOG_TAG, "BUFFER_LOST frame=$frameNumber")
             }
         }
+    }
+
+    private data class CapturePressureSnapshot(
+        val thermalStatus: Int,
+        val processCpuPercent: Double,
+        val heapUsedMb: Long,
+        val availableMemoryMb: Long
+    )
+
+    private fun capturePressureSnapshot(): CapturePressureSnapshot {
+        val wallDeltaMs = (SystemClock.elapsedRealtime() - cadenceDiagWallStartMs).coerceAtLeast(1L)
+        val cpuDeltaMs = (Process.getElapsedCpuTime() - cadenceDiagCpuStartMs).coerceAtLeast(0L)
+        val processCpuPercent = cpuDeltaMs.toDouble() * 100.0 / wallDeltaMs.toDouble()
+        val runtime = Runtime.getRuntime()
+        val heapUsedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024L * 1024L)
+        val memoryInfo = ActivityManager.MemoryInfo()
+        runCatching {
+            getSystemService(ActivityManager::class.java).getMemoryInfo(memoryInfo)
+        }
+        val availableMemoryMb = memoryInfo.availMem / (1024L * 1024L)
+        val thermalStatus =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                runCatching { getSystemService(PowerManager::class.java).currentThermalStatus }
+                    .getOrDefault(-1)
+            } else {
+                -1
+            }
+
+        return CapturePressureSnapshot(
+            thermalStatus = thermalStatus,
+            processCpuPercent = processCpuPercent,
+            heapUsedMb = heapUsedMb,
+            availableMemoryMb = availableMemoryMb
+        )
     }
 
     private fun aeStateName(value: Int?): String = when (value) {
