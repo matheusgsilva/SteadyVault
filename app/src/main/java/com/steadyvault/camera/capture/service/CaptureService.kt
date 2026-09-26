@@ -100,6 +100,7 @@ class CaptureService : Service() {
         val characteristics: CameraCharacteristics,
         val videoSize: Size,
         val targetFps: Int,
+        val sourceFps: Int,
         val fpsRange: Range<Int>,
         val highSpeed: Boolean,
         val dynamicRangeProfile: Long,
@@ -742,7 +743,11 @@ class CaptureService : Service() {
         }.getOrNull() ?: return null
         val fpsRange =
             if (rememberedHighSpeed) {
-                constrainedHighSpeedRange(characteristics, rememberedSize, fps)
+                if (fps == CaptureModeStore.FPS_60) {
+                    highSpeed120SourceFor60(characteristics, rememberedSize, fps, mime)
+                } else {
+                    constrainedHighSpeedRange(characteristics, rememberedSize, fps)
+                }
             } else {
                 resolveFpsRange(characteristics, rememberedSize, fps, false)
             } ?: return null
@@ -756,6 +761,7 @@ class CaptureService : Service() {
             characteristics = characteristics,
             videoSize = rememberedSize,
             targetFps = fps,
+            sourceFps = if (rememberedHighSpeed) fpsRange.upper else fps,
             fpsRange = fpsRange,
             highSpeed = rememberedHighSpeed,
             dynamicRangeProfile = dynamicRange
@@ -800,17 +806,23 @@ class CaptureService : Service() {
             else -> standardDynamicRangeProfile()
         }
         val size = recordingSettings.exactPreferredSize() ?: return null
+        val requestedMime = recordingSettings.codecMimes(false).singleOrNull().orEmpty()
         val highSpeedRange =
-            if (!allowHdr && targetFps >= CaptureModeStore.FPS_60) {
-                constrainedHighSpeedRange(characteristics, size, targetFps)
+            if (!allowHdr) {
+                highSpeed120SourceFor60(characteristics, size, targetFps, requestedMime)
+                    ?: if (targetFps > CaptureModeStore.FPS_60) {
+                        constrainedHighSpeedRange(characteristics, size, targetFps)
+                    } else null
             } else {
                 null
             }
+        val sourceFps = highSpeedRange?.upper ?: targetFps
         val profile = createCameraProfile(
             cameraId = cameraId,
             characteristics = characteristics,
             videoSize = size,
             targetFps = targetFps,
+            sourceFps = sourceFps,
             fpsRange = highSpeedRange ?: resolveStandardFpsRange(characteristics, targetFps),
             highSpeed = highSpeedRange != null,
             dynamicRangeProfile = dynamicRange
@@ -818,12 +830,36 @@ class CaptureService : Service() {
         Log.i(
             LOG_TAG,
             "Modo de sessão selecionado: ${if (profile.highSpeed) "HIGH_SPEED" else "REGULAR"} " +
-                "${size.width}x${size.height} ${profile.fpsRange.lower}-${profile.fpsRange.upper} FPS"
+                "${size.width}x${size.height} saída=${profile.targetFps} fonte=${profile.sourceFps} " +
+                "AE=${profile.fpsRange.lower}-${profile.fpsRange.upper} FPS"
         )
         if (!matchesRequestedMode(profile, targetFps)) return null
         if (!profileSatisfiesExplicitStabilization(profile)) return null
         val encoder = selectDirectRecorderEncoder(profile) ?: return null
         return profile to encoder
+    }
+
+    private fun highSpeed120SourceFor60(
+        characteristics: CameraCharacteristics,
+        size: Size,
+        targetFps: Int,
+        mime: String
+    ): Range<Int>? {
+        if (
+            targetFps != CaptureModeStore.FPS_60 ||
+            mime != MediaFormat.MIMETYPE_VIDEO_HEVC ||
+            (size != FHD_SIZE && size != HD_SIZE)
+        ) return null
+
+        val map = characteristics.get(
+            CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
+        ) ?: return null
+        val sizes = runCatching { map.highSpeedVideoSizes?.toList().orEmpty() }
+            .getOrDefault(emptyList())
+        if (size !in sizes) return null
+        val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }
+            .getOrDefault(emptyList())
+        return ranges.firstOrNull { it.lower == 120 && it.upper == 120 }
     }
 
     private fun constrainedHighSpeedRange(
@@ -955,7 +991,11 @@ class CaptureService : Service() {
         )
 
     private fun CameraProfile.hasExactFpsRange(): Boolean =
-        fpsRange.lower == targetFps && fpsRange.upper == targetFps
+        if (highSpeed && targetFps == CaptureModeStore.FPS_60 && sourceFps == 120) {
+            fpsRange.lower == 120 && fpsRange.upper == 120
+        } else {
+            fpsRange.lower == targetFps && fpsRange.upper == targetFps
+        }
 
     private fun CameraProfile.matchesRequestedFpsContract(): Boolean =
         hasExactFpsRange()
@@ -1010,6 +1050,7 @@ class CaptureService : Service() {
         characteristics: CameraCharacteristics,
         videoSize: Size,
         targetFps: Int,
+        sourceFps: Int = targetFps,
         fpsRange: Range<Int>,
         highSpeed: Boolean,
         dynamicRangeProfile: Long
@@ -1025,6 +1066,7 @@ class CaptureService : Service() {
             characteristics = characteristics,
             videoSize = videoSize,
             targetFps = targetFps,
+            sourceFps = sourceFps,
             fpsRange = fpsRange,
             highSpeed = highSpeed,
             dynamicRangeProfile = dynamicRangeProfile,
@@ -1178,7 +1220,7 @@ class CaptureService : Service() {
                             videoCaps.areSizeAndRateSupported(
                                 profile.videoSize.width,
                                 profile.videoSize.height,
-                                profile.targetFps.toDouble()
+                                profile.sourceFps.toDouble()
                             )
                     }.getOrDefault(false)
                 }
@@ -1281,6 +1323,7 @@ class CaptureService : Service() {
                     width = cameraProfile.videoSize.width,
                     height = cameraProfile.videoSize.height,
                     targetFps = cameraProfile.targetFps,
+                    sourceFps = cameraProfile.sourceFps,
                     videoMime = encoderProfile.mime,
                     preferredCodecName = encoderProfile.codecName,
                     videoBitrate = encoderProfile.bitrate,
@@ -1319,6 +1362,7 @@ class CaptureService : Service() {
                     width = cameraProfile.videoSize.width,
                     height = cameraProfile.videoSize.height,
                     targetFps = cameraProfile.targetFps,
+                    sourceFps = cameraProfile.sourceFps,
                     videoMime = encoderProfile.mime,
                     videoBitrate = encoderProfile.bitrate,
                     hdrHlg10 = cameraProfile.hdrHlg10,
@@ -1381,6 +1425,7 @@ class CaptureService : Service() {
                     width = cameraProfile.videoSize.width,
                     height = cameraProfile.videoSize.height,
                     targetFps = cameraProfile.targetFps,
+                    sourceFps = cameraProfile.sourceFps,
                     videoMime = encoderProfile.mime,
                     preferredCodecName = encoderProfile.codecName,
                     videoBitrate = encoderProfile.bitrate,
@@ -4446,7 +4491,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-dynamicfps-all-60-1.8.283"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-hs120-temporal60-1.8.284"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
