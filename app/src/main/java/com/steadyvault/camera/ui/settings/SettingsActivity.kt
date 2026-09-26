@@ -1454,19 +1454,20 @@ class SettingsActivity : FragmentActivity() {
         OneUiDialog.confirm(
             activity = this,
             title = "Limpar estado de teste da câmera?",
-            message = "Apaga apenas preferências e caches técnicos de câmera: perfis, capacidades detectadas, modo efetivo e estado 3A temporário. Vídeos, cofres, PINs, lixeira e demais arquivos permanecem intactos.",
+            message = "Limpa somente caches e estados técnicos temporários da câmera. Mantém resolução, FPS, codec, bitrate, OIS/estabilização, foco, exposição, WB, áudio e demais ajustes exatamente como estão. Vídeos, cofres, PINs, lixeira e arquivos também permanecem intactos.",
             positiveLabel = "Limpar estado",
             destructive = false
         ) {
             formReady = false
             saveGeneration++
-            CaptureSettings.restoreDefaults(this)
+            val preserved = CaptureSettings.snapshot(this)
             CaptureCapabilityMatrix.invalidate(this)
             CaptureStateStore.clearEffectiveMode(this)
             Camera3AStateStore.clearAll()
+            CaptureSettings.save(this, preserved)
             Log.i(
                 "SteadyVaultTestReset",
-                "TEST_STATE_RESET: cameraPrefs=true capabilityCache=true effectiveMode=true 3A=true mediaPreserved=true"
+                "TEST_STATE_RESET: cameraPrefsPreserved=true capabilityCache=true effectiveMode=true 3A=true bitrate=${preserved.bitrateMbps} stabilization=${preserved.stabilization} fps=${preserved.fps} resolution=${preserved.resolution} mediaPreserved=true"
             )
             capabilityMatrix = null
             capabilityScanCompleted = false
@@ -1475,7 +1476,7 @@ class SettingsActivity : FragmentActivity() {
             Haptics.success(this)
             Toast.makeText(
                 this,
-                "Estado de teste da câmera limpo. Nenhuma mídia ou cofre foi apagado.",
+                "Estado técnico limpo. Seus ajustes de captura foram preservados.",
                 Toast.LENGTH_LONG
             ).show()
         }
