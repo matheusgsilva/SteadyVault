@@ -1697,12 +1697,11 @@ class CaptureService : Service() {
         return if (raw.length <= 220) raw else raw.take(217) + "..."
     }
 
-    private fun applyDynamicFpsConfig4k60(
+    private fun applyDynamicFpsConfig60(
         profile: CameraProfile,
         builder: CaptureRequest.Builder
     ): Boolean {
         if (
-            profile.videoSize != UHD_SIZE ||
             profile.targetFps != CaptureModeStore.FPS_60 ||
             profile.highSpeed
         ) {
@@ -1721,7 +1720,7 @@ class CaptureService : Service() {
         if (!requestSupported || !sessionSupported) {
             Log.i(
                 LOG_TAG,
-                "4K60_DYNAMIC_FPS: aplicado=false requestSupported=$requestSupported " +
+                "60FPS_DYNAMIC_FPS: aplicado=false requestSupported=$requestSupported " +
                     "sessionSupported=$sessionSupported"
             )
             return false
@@ -1734,14 +1733,14 @@ class CaptureService : Service() {
             builder.set(key, value)
             Log.i(
                 LOG_TAG,
-                "4K60_DYNAMIC_FPS: aplicado=true type=FloatArray value=" +
+                "60FPS_DYNAMIC_FPS: aplicado=true type=FloatArray value=" +
                     value.joinToString(prefix = "[", postfix = "]")
             )
             true
         }.onFailure { throwable ->
             Log.w(
                 LOG_TAG,
-                "4K60_DYNAMIC_FPS: aplicado=false erro=${errorText(throwable)}",
+                "60FPS_DYNAMIC_FPS: aplicado=false erro=${errorText(throwable)}",
                 throwable
             )
         }.getOrDefault(false)
@@ -2005,7 +2004,7 @@ class CaptureService : Service() {
             if (!profile.highSpeed) applyFinalWhiteBalance(this, profile)
         }
 
-        val dynamicFpsApplied = applyDynamicFpsConfig4k60(profile, requestBuilder)
+        val dynamicFpsApplied = applyDynamicFpsConfig60(profile, requestBuilder)
 
         val request =
             requestBuilder.build()
@@ -2180,7 +2179,7 @@ class CaptureService : Service() {
             if (dynamicFpsApplied) {
                 Log.i(
                     LOG_TAG,
-                    "4K60_DYNAMIC_FPS_SESSION: aplicado=true value=[2.0, 33.0, 60.0, 0.0, 0.0]"
+                    "60FPS_DYNAMIC_FPS_SESSION: aplicado=true value=[2.0, 33.0, 60.0, 0.0, 0.0]"
                 )
             }
         }
@@ -4447,7 +4446,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-manual-headroom-all-regular-1.8.282"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-dynamicfps-all-60-1.8.283"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
