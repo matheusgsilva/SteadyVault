@@ -1747,6 +1747,52 @@ class CaptureService : Service() {
         }.getOrDefault(false)
     }
 
+    private fun applyMctfReferenceFrame4k60(
+        profile: CameraProfile,
+        builder: CaptureRequest.Builder,
+    ): Boolean {
+        if (
+            profile.videoSize != UHD_SIZE ||
+            profile.targetFps != CaptureModeStore.FPS_60 ||
+            profile.highSpeed
+        ) {
+            return false
+        }
+
+        val name = "org.codeaurora.qcamera3.sessionParameters.enableMCTFwithReferenceFrame"
+        val requestSupported = profile.characteristics.availableCaptureRequestKeys.any { it.name == name }
+        val sessionSupported =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                profile.characteristics.availableSessionKeys.orEmpty().any { it.name == name }
+            } else {
+                false
+            }
+
+        if (!requestSupported || !sessionSupported) {
+            Log.i(
+                LOG_TAG,
+                "4K60_MCTF_REFERENCE: aplicado=false requestSupported=$requestSupported " +
+                    "sessionSupported=$sessionSupported"
+            )
+            return false
+        }
+
+        val key = CaptureRequest.Key<Byte>(name, Byte::class.java)
+        val value: Byte = 0
+
+        return runCatching {
+            builder.set(key, value)
+            Log.i(LOG_TAG, "4K60_MCTF_REFERENCE: aplicado=true type=Byte value=0")
+            true
+        }.onFailure { throwable ->
+            Log.w(
+                LOG_TAG,
+                "4K60_MCTF_REFERENCE: aplicado=false erro=${errorText(throwable)}",
+                throwable,
+            )
+        }.getOrDefault(false)
+    }
+
     private fun logSelectedVendorTemplateDefaults(
         profile: CameraProfile,
         builder: CaptureRequest.Builder
@@ -2006,6 +2052,7 @@ class CaptureService : Service() {
         }
 
         val dynamicFpsApplied = applyDynamicFpsConfig4k60(profile, requestBuilder)
+        val mctfReferenceApplied = applyMctfReferenceFrame4k60(profile, requestBuilder)
 
         val request =
             requestBuilder.build()
@@ -2182,6 +2229,12 @@ class CaptureService : Service() {
                 Log.i(
                     LOG_TAG,
                     "4K60_DYNAMIC_FPS_SESSION: aplicado=true value=[2.0, 33.0, 60.0, 0.0, 0.0]"
+                )
+            }
+            if (mctfReferenceApplied) {
+                Log.i(
+                    LOG_TAG,
+                    "4K60_MCTF_REFERENCE_SESSION: aplicado=true value=0"
                 )
             }
         }
