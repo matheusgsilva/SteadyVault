@@ -1697,6 +1697,56 @@ class CaptureService : Service() {
         return if (raw.length <= 220) raw else raw.take(217) + "..."
     }
 
+    private fun applyDynamicFpsConfig4k60(
+        profile: CameraProfile,
+        builder: CaptureRequest.Builder
+    ): Boolean {
+        if (
+            profile.videoSize != UHD_SIZE ||
+            profile.targetFps != CaptureModeStore.FPS_60 ||
+            profile.highSpeed
+        ) {
+            return false
+        }
+
+        val name = "org.codeaurora.qcamera3.sessionParameters.dynamicFPSConfig"
+        val requestSupported = profile.characteristics.availableCaptureRequestKeys.any { it.name == name }
+        val sessionSupported =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                profile.characteristics.availableSessionKeys.orEmpty().any { it.name == name }
+            } else {
+                false
+            }
+
+        if (!requestSupported || !sessionSupported) {
+            Log.i(
+                LOG_TAG,
+                "4K60_DYNAMIC_FPS: aplicado=false requestSupported=$requestSupported " +
+                    "sessionSupported=$sessionSupported"
+            )
+            return false
+        }
+
+        val key = CaptureRequest.Key<FloatArray>(name, FloatArray::class.java)
+        val value = floatArrayOf(2.0f, 33.0f, 60.0f, 0.0f, 0.0f)
+
+        return runCatching {
+            builder.set(key, value)
+            Log.i(
+                LOG_TAG,
+                "4K60_DYNAMIC_FPS: aplicado=true type=FloatArray value=" +
+                    value.joinToString(prefix = "[", postfix = "]")
+            )
+            true
+        }.onFailure { throwable ->
+            Log.w(
+                LOG_TAG,
+                "4K60_DYNAMIC_FPS: aplicado=false erro=${errorText(throwable)}",
+                throwable
+            )
+        }.getOrDefault(false)
+    }
+
     private fun logSelectedVendorTemplateDefaults(
         profile: CameraProfile,
         builder: CaptureRequest.Builder
@@ -1955,6 +2005,8 @@ class CaptureService : Service() {
             if (!profile.highSpeed) applyFinalWhiteBalance(this, profile)
         }
 
+        val dynamicFpsApplied = applyDynamicFpsConfig4k60(profile, requestBuilder)
+
         val request =
             requestBuilder.build()
 
@@ -2126,6 +2178,12 @@ class CaptureService : Service() {
                 .setSessionParameters(
                     request
                 )
+            if (dynamicFpsApplied) {
+                Log.i(
+                    LOG_TAG,
+                    "4K60_DYNAMIC_FPS_SESSION: aplicado=true value=[2.0, 33.0, 60.0, 0.0, 0.0]"
+                )
+            }
         }
 
         if (
