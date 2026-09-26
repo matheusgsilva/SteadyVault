@@ -29,6 +29,7 @@ class DirectMediaCodecBackend(
     private val width: Int,
     private val height: Int,
     private val targetFps: Int,
+    private val sourceFps: Int = targetFps,
     private val videoMime: String,
     private val preferredCodecName: String?,
     private val videoBitrate: Int,
@@ -58,7 +59,8 @@ class DirectMediaCodecBackend(
     override val audioBitrateBps: Long get() = if (integratedAudio) audioBitrate.toLong() else 0L
 
     val profileDescription: String
-        get() = "${encoderWidth}x${encoderHeight} ${targetFps} FPS " +
+        get() = "${encoderWidth}x${encoderHeight} ${targetFps} FPS" +
+            (if (sourceFps != targetFps) " (sensor ${sourceFps}→${targetFps}) " else " ") +
             "${videoMime.substringAfter('/').uppercase()} ${videoBitrate / 1_000_000} Mbps • hardware"
 
     private val drainExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -115,7 +117,7 @@ class DirectMediaCodecBackend(
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
             )
             setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
+            setInteger(MediaFormat.KEY_FRAME_RATE, sourceFps)
 
             // A saída SDR precisa carregar sinalização explícita de vídeo HD.
             // Sem estas chaves alguns codecs Qualcomm/Samsung escrevem metadados
@@ -129,7 +131,10 @@ class DirectMediaCodecBackend(
             // chegam da Camera2/HAL, mas reduz a chance de o próprio MediaCodec
             // introduzir atraso quando o sistema estiver sob contenção.
             setInteger(MediaFormat.KEY_PRIORITY, 0)
-            setInteger(MediaFormat.KEY_OPERATING_RATE, targetFps)
+            setInteger(MediaFormat.KEY_OPERATING_RATE, sourceFps)
+            if (sourceFps == targetFps * 2 && videoMime == MediaFormat.MIMETYPE_VIDEO_HEVC) {
+                setString(MediaFormat.KEY_TEMPORAL_LAYERING, "android.generic.2")
+            }
 
             setInteger(
                 MediaFormat.KEY_I_FRAME_INTERVAL,
@@ -141,6 +146,18 @@ class DirectMediaCodecBackend(
             val mediaCodec = MediaCodec.createByCodecName(codecInfo.name)
             codec = mediaCodec
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+
+            if (sourceFps == targetFps * 2) {
+                require(videoMime == MediaFormat.MIMETYPE_VIDEO_HEVC) {
+                    "redução temporal 120→60 exige HEVC"
+                }
+                val acceptedSchema = runCatching {
+                    mediaCodec.inputFormat.getString(MediaFormat.KEY_TEMPORAL_LAYERING)
+                }.getOrNull()
+                require(acceptedSchema?.startsWith("android.generic.2") == true) {
+                    "encoder ${mediaCodec.name} não aceitou temporal layering 2 níveis (retorno=$acceptedSchema)"
+                }
+            }
 
             val encoderSurface = mediaCodec.createInputSurface()
             inputSurface = encoderSurface
@@ -245,6 +262,56 @@ class DirectMediaCodecBackend(
         started = false
     }
 
+    private fun isBaseTemporalLayerHevc(buffer: ByteBuffer, offset: Int, size: Int): Boolean {
+        if (sourceFps == targetFps) return true
+        if (videoMime != MediaFormat.MIMETYPE_VIDEO_HEVC || size <= 0) return false
+
+        val end = offset + size
+        fun temporalIdAt(header: Int): Int? {
+            if (header + 1 >= end) return null
+            val b0 = buffer.get(header).toInt() and 0xFF
+            val b1 = buffer.get(header + 1).toInt() and 0xFF
+            val nalType = (b0 shr 1) and 0x3F
+            if (nalType !in 0..31) return null
+            val tidPlus1 = b1 and 0x07
+            return if (tidPlus1 > 0) tidPlus1 - 1 else null
+        }
+
+        var i = offset
+        while (i + 5 < end) {
+            val b0 = buffer.get(i).toInt() and 0xFF
+            val b1 = buffer.get(i + 1).toInt() and 0xFF
+            val b2 = buffer.get(i + 2).toInt() and 0xFF
+            if (b0 == 0 && b1 == 0 && b2 == 1) {
+                temporalIdAt(i + 3)?.let { return it == 0 }
+                i += 3
+                continue
+            }
+            if (i + 4 < end) {
+                val b3 = buffer.get(i + 3).toInt() and 0xFF
+                if (b0 == 0 && b1 == 0 && b2 == 0 && b3 == 1) {
+                    temporalIdAt(i + 4)?.let { return it == 0 }
+                    i += 4
+                    continue
+                }
+            }
+            i++
+        }
+
+        // Alguns codecs entregam access units com NALs length-prefixed.
+        i = offset
+        while (i + 6 <= end) {
+            val len = ((buffer.get(i).toInt() and 0xFF) shl 24) or
+                ((buffer.get(i + 1).toInt() and 0xFF) shl 16) or
+                ((buffer.get(i + 2).toInt() and 0xFF) shl 8) or
+                (buffer.get(i + 3).toInt() and 0xFF)
+            if (len <= 0 || i + 4 + len > end) break
+            temporalIdAt(i + 4)?.let { return it == 0 }
+            i += 4 + len
+        }
+        return false
+    }
+
     private fun drain(
         mediaCodec: MediaCodec,
         mediaMuxer: MediaMuxer
@@ -272,7 +339,11 @@ class DirectMediaCodecBackend(
 
                     index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         check(videoTrack < 0) { "formato do MediaCodec mudou duas vezes" }
-                        videoTrack = mediaMuxer.addTrack(mediaCodec.outputFormat)
+                        val muxFormat = mediaCodec.outputFormat
+                        if (sourceFps != targetFps) {
+                            muxFormat.setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
+                        }
+                        videoTrack = mediaMuxer.addTrack(muxFormat)
                         mediaMuxer.start()
                         muxerStarted = true
                     }
@@ -290,6 +361,15 @@ class DirectMediaCodecBackend(
 
                         if (!isConfig && info.size > 0) {
                             val ptsUs = info.presentationTimeUs
+                            val keepTemporalFrame =
+                                sourceFps == targetFps ||
+                                    isBaseTemporalLayerHevc(buffer, info.offset, info.size)
+
+                            if (!keepTemporalFrame) {
+                                mediaCodec.releaseOutputBuffer(index, false)
+                                if (isEos) break
+                                continue
+                            }
 
                             if (!committed.get()) {
                                 previousPtsUs = Long.MIN_VALUE
@@ -505,7 +585,7 @@ class DirectMediaCodecBackend(
                         videoCaps.areSizeAndRateSupported(
                             encoderWidth,
                             encoderHeight,
-                            targetFps.toDouble()
+                            sourceFps.toDouble()
                         )
                 }.getOrDefault(false)
             }
