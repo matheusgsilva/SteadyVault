@@ -1739,12 +1739,91 @@ class CaptureService : Service() {
                 else -> value.javaClass.name
             }
 
+            val internalType = describeVendorKeyInternalType(key)
             Log.i(
                 LOG_TAG,
                 "VENDOR_TEMPLATE_DEFAULT key=$name present=true type=$type " +
-                    "value=${metadataValueForLog(value)}"
+                    "internal=$internalType value=${metadataValueForLog(value)}"
             )
         }
+    }
+
+    private fun describeVendorKeyInternalType(key: CaptureRequest.Key<*>): String {
+        val parts = mutableListOf<String>()
+        parts += "publicClass=${key.javaClass.name}"
+
+        val fields = runCatching { key.javaClass.declaredFields.toList() }
+            .getOrElse {
+                parts += "fieldsError=${it.javaClass.simpleName}:${it.message}"
+                return parts.joinToString(";")
+            }
+
+        fields.forEach { field ->
+            val fieldValue = runCatching {
+                field.isAccessible = true
+                field.get(key)
+            }.onFailure { error ->
+                parts += "field:${field.name}:${field.type.name}=BLOCKED(${error.javaClass.simpleName})"
+            }.getOrNull()
+
+            if (fieldValue != null) {
+                parts += "field:${field.name}:${field.type.name}=${metadataValueForLog(fieldValue)}"
+
+                if (field.name.contains("key", ignoreCase = true)) {
+                    parts += describeInternalMetadataKey(fieldValue)
+                }
+            }
+        }
+
+        return parts.joinToString(";")
+    }
+
+    private fun describeInternalMetadataKey(internalKey: Any): String {
+        val details = mutableListOf<String>()
+        details += "internalClass=${internalKey.javaClass.name}"
+
+        val methodNames = listOf(
+            "getName",
+            "getVendorId",
+            "getTypeReference",
+            "getType",
+            "getNativeType"
+        )
+        methodNames.forEach { methodName ->
+            val method = internalKey.javaClass.declaredMethods.firstOrNull {
+                it.name == methodName && it.parameterTypes.isEmpty()
+            } ?: return@forEach
+
+            val value = runCatching {
+                method.isAccessible = true
+                method.invoke(internalKey)
+            }.onFailure { error ->
+                details += "$methodName=BLOCKED(${error.javaClass.simpleName})"
+            }.getOrNull()
+            if (value != null) {
+                details += "$methodName=${metadataValueForLog(value)}"
+            }
+        }
+
+        internalKey.javaClass.declaredFields
+            .filter { field ->
+                field.name.contains("type", ignoreCase = true) ||
+                    field.name.contains("vendor", ignoreCase = true) ||
+                    field.name.contains("name", ignoreCase = true)
+            }
+            .forEach { field ->
+                val value = runCatching {
+                    field.isAccessible = true
+                    field.get(internalKey)
+                }.onFailure { error ->
+                    details += "internalField:${field.name}=BLOCKED(${error.javaClass.simpleName})"
+                }.getOrNull()
+                if (value != null) {
+                    details += "internalField:${field.name}:${field.type.name}=${metadataValueForLog(value)}"
+                }
+            }
+
+        return details.joinToString(",")
     }
 
     private fun calculateOrientationHint(sensorOrientation: Int): Int =
