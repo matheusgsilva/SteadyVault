@@ -8,6 +8,8 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.Bundle
 import android.os.Process
+import android.os.SystemClock
+import android.util.Log
 import android.view.Surface
 import java.io.File
 import java.nio.ByteBuffer
@@ -15,6 +17,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
 /**
@@ -73,11 +77,22 @@ class DirectMediaCodecBackend(
 
     // Gravar em disco é a parte mais lenta e mais variável do pipeline (I/O de
     // armazenamento pode ter picos, principalmente com o cofre em bitrate alto).
-    // Isolar isso num executor próprio evita que um pico de escrita segure o
-    // laço de dequeueOutputBuffer, o que faria o MediaCodec parar de aceitar
-    // frames novos da câmera e produzir engasgo/gap real no arquivo.
+    // O executor isola picos curtos de I/O. O pool limita samples pendentes e
+    // reutiliza sua memória; se o disco não acompanhar, reportamos falha em vez
+    // de bloquear o drain ou crescer a fila indefinidamente.
     private val muxerWriteExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "SteadyVault-MuxerWrite")
+    }
+
+    private val samplePool = EncodedBufferPool(32L * 1024 * 1024, 120, 16L * 1024 * 1024)
+    private val pipelineFailure = AtomicReference<Throwable?>(null)
+    private val maxWriteNs = AtomicLong(0L)
+
+    private fun recordPipelineFailure(throwable: Throwable) {
+        if (pipelineFailure.compareAndSet(null, throwable)) {
+            Log.e(LOG_TAG, "ENCODER_PRESSURE: pipeline failed", throwable)
+            if (!stopRequested.get() && !released.get()) onError(throwable)
+        }
     }
 
     private var codec: MediaCodec? = null
@@ -207,12 +222,14 @@ class DirectMediaCodecBackend(
             !integratedAudio
         }
 
-        runCatching { codec?.signalEndOfInputStream() }
+        runCatching { codec?.signalEndOfInputStream() }.onFailure { recordPipelineFailure(it) }
         runCatching { drainFuture?.get(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS) }
+            .onFailure { recordPipelineFailure(it) }
 
         closeCodecAndMuxer()
         started = false
 
+        if (pipelineFailure.get() != null) return false
         if (!outputFile.isFile || outputFile.length() <= 0L) return false
         if (!integratedAudio) return true
         if (!audioOk) return false
@@ -257,6 +274,11 @@ class DirectMediaCodecBackend(
         var syncRequested = false
         var gateOpen = false
         var firstPtsUs = 0L
+        var outputSamples = 0L
+        var outputGaps = 0L
+        var lastOutputPtsUs = Long.MIN_VALUE
+        var maxHeldNs = 0L
+        var lastPressureLogNs = SystemClock.elapsedRealtimeNanos()
 
         val nominalDeltaUs = 1_000_000L / targetFps.coerceAtLeast(1)
         val toleranceUs = maxOf(1_500L, nominalDeltaUs / 8L)
@@ -278,101 +300,131 @@ class DirectMediaCodecBackend(
                     }
 
                     index >= 0 -> {
-                        val buffer = mediaCodec.getOutputBuffer(index)
-                            ?: throw IllegalStateException("MediaCodec retornou buffer nulo")
+                        val heldSinceNs = SystemClock.elapsedRealtimeNanos()
+                        var isEos = false
+                        try {
+                            val isConfig =
+                                (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                            isEos = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                            val isKeyFrame =
+                                (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
 
-                        val isConfig =
-                            (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
-                        val isEos =
-                            (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                        val isKeyFrame =
-                            (info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                            if (!isConfig && info.size > 0) {
+                                val buffer = mediaCodec.getOutputBuffer(index)
+                                    ?: throw IllegalStateException("MediaCodec retornou buffer nulo")
+                                val ptsUs = info.presentationTimeUs
 
-                        if (!isConfig && info.size > 0) {
-                            val ptsUs = info.presentationTimeUs
-
-                            if (!committed.get()) {
-                                previousPtsUs = Long.MIN_VALUE
-                                stableIntervals = 0
-                            } else if (!gateOpen) {
-                                if (previousPtsUs != Long.MIN_VALUE && ptsUs > previousPtsUs) {
-                                    val deltaUs = ptsUs - previousPtsUs
-                                    stableIntervals =
-                                        if (abs(deltaUs - nominalDeltaUs) <= toleranceUs) {
-                                            stableIntervals + 1
-                                        } else {
-                                            0
-                                        }
-                                }
-                                previousPtsUs = ptsUs
-
-                                if (
-                                    stableIntervals >= STABLE_INTERVALS_BEFORE_FILE &&
-                                    !syncRequested
-                                ) {
-                                    val params = Bundle().apply {
-                                        putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                                if (!committed.get()) {
+                                    previousPtsUs = Long.MIN_VALUE
+                                    stableIntervals = 0
+                                } else if (!gateOpen) {
+                                    if (previousPtsUs != Long.MIN_VALUE && ptsUs > previousPtsUs) {
+                                        val deltaUs = ptsUs - previousPtsUs
+                                        stableIntervals =
+                                            if (abs(deltaUs - nominalDeltaUs) <= toleranceUs) {
+                                                stableIntervals + 1
+                                            } else {
+                                                0
+                                            }
                                     }
-                                    runCatching { mediaCodec.setParameters(params) }
-                                    syncRequested = true
-                                }
+                                    previousPtsUs = ptsUs
 
-                                if (syncRequested && isKeyFrame) {
-                                    gateOpen = true
-                                    firstPtsUs = ptsUs
                                     if (
-                                        integratedAudio &&
-                                        audioStarted.compareAndSet(false, true)
+                                        stableIntervals >= STABLE_INTERVALS_BEFORE_FILE &&
+                                        !syncRequested
                                     ) {
-                                        runCatching { audioRecorder?.start() }
-                                            .onFailure { onError(it) }
+                                        val params = Bundle().apply {
+                                            putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                                        }
+                                        runCatching { mediaCodec.setParameters(params) }
+                                        syncRequested = true
+                                    }
+
+                                    if (syncRequested && isKeyFrame) {
+                                        gateOpen = true
+                                        firstPtsUs = ptsUs
+                                        if (
+                                            integratedAudio &&
+                                            audioStarted.compareAndSet(false, true)
+                                        ) {
+                                            runCatching { audioRecorder?.start() }
+                                                .onFailure { onError(it) }
+                                        }
                                     }
                                 }
-                            }
 
-                            if (gateOpen && muxerStarted && videoTrack >= 0) {
-                                buffer.position(info.offset)
-                                buffer.limit(info.offset + info.size)
+                                if (gateOpen && muxerStarted && videoTrack >= 0) {
+                                    buffer.position(info.offset)
+                                    buffer.limit(info.offset + info.size)
 
-                                val copy = ByteBuffer.allocateDirect(info.size).apply {
-                                    put(buffer)
-                                    rewind()
-                                }
-                                val adjusted = MediaCodec.BufferInfo().apply {
-                                    set(
-                                        0,
-                                        info.size,
-                                        (ptsUs - firstPtsUs).coerceAtLeast(0L),
-                                        info.flags
-                                    )
-                                }
-                                val track = videoTrack
-                                muxerWriteExecutor.execute {
-                                    runCatching {
-                                        mediaMuxer.writeSampleData(track, copy, adjusted)
-                                    }.onFailure {
-                                        if (!stopRequested.get() && !released.get()) onError(it)
+                                    val copy = samplePool.acquire(info.size)
+                                        ?: error("fila de vídeo saturada: ${samplePool.inFlightCount} samples, " +
+                                            "${samplePool.inFlightBytes} bytes; armazenamento não acompanha o bitrate")
+                                    var submitted = false
+                                    try {
+                                        copy.put(buffer)
+                                        copy.flip()
+                                        val adjusted = MediaCodec.BufferInfo().apply {
+                                            set(
+                                                0,
+                                                info.size,
+                                                (ptsUs - firstPtsUs).coerceAtLeast(0L),
+                                                info.flags
+                                            )
+                                        }
+                                        val track = videoTrack
+                                        muxerWriteExecutor.execute {
+                                            val writeSinceNs = SystemClock.elapsedRealtimeNanos()
+                                            try {
+                                                mediaMuxer.writeSampleData(track, copy, adjusted)
+                                            } catch (throwable: Throwable) {
+                                                recordPipelineFailure(throwable)
+                                            } finally {
+                                                maxWriteNs.accumulateAndGet(
+                                                    SystemClock.elapsedRealtimeNanos() - writeSinceNs,
+                                                    { previous, current -> maxOf(previous, current) }
+                                                )
+                                                samplePool.recycle(copy)
+                                            }
+                                        }
+                                        submitted = true
+                                    } finally {
+                                        if (!submitted) samplePool.recycle(copy)
                                     }
+                                    outputSamples++
+                                    if (lastOutputPtsUs != Long.MIN_VALUE &&
+                                        ptsUs - lastOutputPtsUs > nominalDeltaUs * 3L / 2L) outputGaps++
+                                    lastOutputPtsUs = ptsUs
                                 }
                             }
+                        } finally {
+                            mediaCodec.releaseOutputBuffer(index, false)
+                            maxHeldNs = maxOf(maxHeldNs, SystemClock.elapsedRealtimeNanos() - heldSinceNs)
                         }
 
-                        mediaCodec.releaseOutputBuffer(index, false)
-
+                        val nowNs = SystemClock.elapsedRealtimeNanos()
+                        if (nowNs - lastPressureLogNs >= 2_000_000_000L || isEos) {
+                            Log.i(LOG_TAG, "ENCODER_PRESSURE: samples=$outputSamples ptsGaps=$outputGaps " +
+                                "pending=${samplePool.inFlightCount} bytes=${samplePool.inFlightBytes} " +
+                                "peakPending=${samplePool.peakInFlightCount} peakBytes=${samplePool.peakInFlightBytes} " +
+                                "allocations=${samplePool.allocations} " +
+                                "windowMaxHoldMs=${maxHeldNs / 1_000_000.0} " +
+                                "windowMaxWriteMs=${maxWriteNs.getAndSet(0L) / 1_000_000.0}")
+                            maxHeldNs = 0L
+                            lastPressureLogNs = nowNs
+                        }
                         if (isEos) break
                     }
                 }
             }
         } catch (throwable: Throwable) {
-            if (!stopRequested.get() && !released.get()) {
-                onError(throwable)
-            }
+            recordPipelineFailure(throwable)
         } finally {
             // Garante que toda escrita já enfileirada termine antes do muxer ser
             // parado/liberado em closeCodecAndMuxer().
             runCatching {
                 muxerWriteExecutor.submit {}.get(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            }
+            }.onFailure { recordPipelineFailure(it) }
         }
     }
 
@@ -546,6 +598,7 @@ class DirectMediaCodecBackend(
     }
 
     companion object {
+        private const val LOG_TAG = "SteadyVaultCapture"
         private const val DEQUEUE_TIMEOUT_US = 10_000L
         private const val STOP_TIMEOUT_SECONDS = 4L
         private const val RELEASE_TIMEOUT_MS = 350L
@@ -553,3 +606,4 @@ class DirectMediaCodecBackend(
         private const val REMUX_BUFFER_BYTES = 16 * 1024 * 1024
     }
 }
+
