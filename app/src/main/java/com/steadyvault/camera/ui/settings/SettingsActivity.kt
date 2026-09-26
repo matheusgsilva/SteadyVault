@@ -41,6 +41,7 @@ import com.steadyvault.camera.core.settings.CameraProfileStore
 import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
 import com.steadyvault.camera.core.settings.VisualIdentityStore
 import com.steadyvault.camera.core.camera.CameraLensCatalog
+import com.steadyvault.camera.core.camera.Camera3AStateStore
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.processing.auto.AutoGapRepairQueueStore
 import com.steadyvault.camera.processing.auto.AutoGapRepairService
@@ -758,6 +759,7 @@ class SettingsActivity : FragmentActivity() {
         addSmallButton("Ver e apagar os dados salvos pelo app") { startActivity(Intent(this, StorageManagementActivity::class.java)) }
         addSmallButton("Ver capacidades reais da câmera e dos encoders") { showCapabilities() }
         addSmallButton("Reanalisar capacidades do hardware") { reanalyzeHardware() }
+        addSmallButton("Limpar estado de teste da câmera") { confirmCameraTestReset() }
         addSmallButton("Restaurar padrões estáveis") { confirmRestore() }
 
         bindAutoSaveListeners()
@@ -1445,6 +1447,33 @@ class SettingsActivity : FragmentActivity() {
             fileCacheMs = selected(playbackCache).toIntOrNull()?.coerceIn(250, 5_000) ?: oldPlayback.fileCacheMs
         )
         if (oldPlayback != newPlayback) PlaybackSettings.save(this, newPlayback)
+    }
+
+    private fun confirmCameraTestReset() {
+        OneUiDialog.confirm(
+            activity = this,
+            title = "Limpar estado de teste da câmera?",
+            message = "Apaga apenas preferências e caches técnicos de câmera: perfis, capacidades detectadas, modo efetivo e estado 3A temporário. Vídeos, cofres, PINs, lixeira e demais arquivos permanecem intactos.",
+            positiveLabel = "Limpar estado",
+            destructive = false
+        ) {
+            formReady = false
+            saveGeneration++
+            CaptureSettings.restoreDefaults(this)
+            CaptureCapabilityMatrix.invalidate(this)
+            CaptureStateStore.clearEffectiveMode(this)
+            Camera3AStateStore.clearAll()
+            capabilityMatrix = null
+            capabilityScanCompleted = false
+            capabilityScanInProgress = false
+            rebuildSettingsSafely("reset de teste da camera")
+            Haptics.success(this)
+            Toast.makeText(
+                this,
+                "Estado de teste da câmera limpo. Nenhuma mídia ou cofre foi apagado.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
     }
 
     private fun confirmRestore() {
