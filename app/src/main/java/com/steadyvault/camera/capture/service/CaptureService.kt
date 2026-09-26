@@ -1816,6 +1816,20 @@ class CaptureService : Service() {
                 )
         }
 
+        if (
+            profile.videoSize == UHD_SIZE &&
+            profile.targetFps == CaptureModeStore.FPS_60 &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+        ) {
+            val supported = runCatching {
+                camera.isSessionConfigurationSupported(sessionConfiguration)
+            }.getOrNull()
+            Log.i(
+                LOG_TAG,
+                "4K60_SESSION_SUPPORT: backend=${activeRecorderBackendName.ifBlank { "desconhecido" }} supported=$supported"
+            )
+        }
+
         try {
             camera.createCaptureSession(sessionConfiguration)
         } catch (throwable: Throwable) {
