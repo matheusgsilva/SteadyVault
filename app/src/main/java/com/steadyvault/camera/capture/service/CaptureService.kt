@@ -2094,7 +2094,7 @@ class CaptureService : Service() {
                                 )
                             } else {
                                 if (
-                                    profile.targetFps == CaptureModeStore.FPS_60 &&
+                                    profile.targetFps <= CaptureModeStore.FPS_60 &&
                                     supportsManualSensor(profile)
                                 ) {
                                     startWithFixedSensorCadence(
@@ -3056,10 +3056,9 @@ class CaptureService : Service() {
     }
 
     /**
-     * Captura headless precisa priorizar o instante do usuário. O AE recebe uma janela
-     * curtíssima antes do MediaRecorder começar: até 3 resultados e nunca mais de 50 ms.
-     * Se houver exposição/ISO válidos, a cadência é congelada antes do primeiro sample.
-     * Se não houver, inicia imediatamente com o request CLEAN automático, sem esperar mais.
+     * Mantém a mesma política de cadência em todos os modos regulares até 60 FPS,
+     * incluindo 30/24 FPS e resoluções até 720p. O AE recebe uma janela curta antes
+     * do primeiro sample; depois frame duration/exposure/ISO são congelados com headroom.
      */
     private fun startWithFixedSensorCadence(
         session: CameraCaptureSession,
@@ -3102,7 +3101,7 @@ class CaptureService : Service() {
                     LOG_TAG,
                     String.format(
                         Locale.US,
-                        "60FPS_HEADROOM: motivo=%s frameDuration=%.3fms exposure=%.3fms ISO=%d " +
+                        "SENSOR_HEADROOM: motivo=%s frameDuration=%.3fms exposure=%.3fms ISO=%d " +
                             "(AE observado %.3fms ISO=%d, perdaEstimativa=%.1f%%)",
                         reason,
                         plan.frameDurationNs / 1_000_000.0,
@@ -3116,7 +3115,7 @@ class CaptureService : Service() {
             } else {
                 Log.w(
                     LOG_TAG,
-                    "60FPS_HEADROOM indisponível ($reason); mantendo AE automático"
+                    "SENSOR_HEADROOM indisponível ($reason); mantendo AE automático"
                 )
             }
 
@@ -3170,7 +3169,7 @@ class CaptureService : Service() {
             ) {
                 Log.w(
                     LOG_TAG,
-                    "60FPS_HEADROOM warmup falhou frame=${failure.frameNumber}"
+                    "SENSOR_HEADROOM warmup falhou frame=${failure.frameNumber}"
                 )
             }
         }
@@ -4448,7 +4447,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-60fps-manual-headroom-1.8.281"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-manual-headroom-all-regular-1.8.282"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
