@@ -190,9 +190,6 @@ class CaptureService : Service() {
     @Volatile
     private var cameraRecoveryAttempt = 0
 
-    @Volatile
-    private var cadenceQualificationRetry = 0
-
     private var fpsFallbackWarningLogged = false
     private var activeRecorderBackendName = ""
     private var activeRecorderMime: String? = null
@@ -287,7 +284,6 @@ class CaptureService : Service() {
 
         recordingRequestedAtElapsedNs = intent?.getLongExtra(EXTRA_REQUESTED_AT_ELAPSED_NS, 0L)?.takeIf { it > 0L } ?: SystemClock.elapsedRealtimeNanos()
         cameraRecoveryAttempt = intent?.getIntExtra(EXTRA_CAMERA_RECOVERY_ATTEMPT, 0)?.coerceAtLeast(0) ?: 0
-        cadenceQualificationRetry = 0
         headlessCaptureRequested = intent?.getBooleanExtra(EXTRA_HEADLESS_CAPTURE, false) == true
         if (headlessCaptureRequested) {
             // Contrato encoder-only: widget, tela preta e atalhos headless nunca
@@ -2098,7 +2094,6 @@ class CaptureService : Service() {
                                 )
                             } else {
                                 if (
-                                    profile.videoSize == UHD_SIZE &&
                                     profile.targetFps == CaptureModeStore.FPS_60 &&
                                     supportsManualSensor(profile)
                                 ) {
@@ -3060,211 +3055,6 @@ class CaptureService : Service() {
             profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) != null
     }
 
-    private fun retry4k60CadenceQualification(
-        profile: CameraProfile,
-        token: Int,
-        reason: String
-    ) {
-        if (!isAttemptValid(token)) return
-
-        val retry = ++cadenceQualificationRetry
-        Log.w(
-            LOG_TAG,
-            "4K60_CADENCE_QUALIFY: aprovado=false tentativa=$retry/" +
-                "$MAX_4K60_CADENCE_RETRIES motivo=$reason"
-        )
-
-        if (retry > MAX_4K60_CADENCE_RETRIES) {
-            failSelectedConfigurationFromWorker(
-                token,
-                "o HAL não entregou 4K60 estável após " +
-                    "${MAX_4K60_CADENCE_RETRIES + 1} sessões reais; " +
-                    "o aparelho expõe UHD a 33,333 ms no Camera2"
-            )
-            return
-        }
-
-        val message =
-            "Ajustando 4K60 real • sessão $retry/$MAX_4K60_CADENCE_RETRIES"
-        sendStateOnMain(message)
-        updateNotificationOnMain(message)
-
-        releaseCameraOnly()
-        resetCadenceFocusDiagnostics()
-
-        mainHandler.postDelayed(
-            {
-                if (!isAttemptValid(token)) return@postDelayed
-                runCatching {
-                    openSelectedCamera(profile, token)
-                }.onFailure { throwable ->
-                    failSelectedConfigurationFromWorker(
-                        token,
-                        "não foi possível reabrir a câmera durante a qualificação 4K60: " +
-                            errorText(throwable)
-                    )
-                }
-            },
-            FOUR_K60_CADENCE_REOPEN_DELAY_MS
-        )
-    }
-
-    private fun qualify4k60CadenceBeforeCommit(
-        session: CameraCaptureSession,
-        request: CaptureRequest,
-        profile: CameraProfile,
-        token: Int
-    ) {
-        if (!isAttemptValid(token)) return
-
-        val backend = synchronized(resourceLock) { professionalRecorder }
-        if (backend !is DirectMediaCodecBackend) {
-            Log.i(
-                LOG_TAG,
-                "4K60_CADENCE_QUALIFY: ignorado backend=${backend?.backendName ?: "?"}"
-            )
-            session.setRepeatingRequest(
-                request,
-                createCadenceFocusDiagnosticCallback(profile, token),
-                mainHandler
-            )
-            commitRecorderStart(profile, token, highSpeed = false)
-            return
-        }
-
-        val completed = AtomicBoolean(false)
-        val nominalNs = frameDurationNs(profile.targetFps)
-        val gapThresholdNs = nominalNs * 3L / 2L
-        var previousTsNs = 0L
-        var seenFrames = 0
-        var checkedIntervals = 0
-        var gapCount = 0
-        var totalDeltaNs = 0L
-        var maxDeltaNs = 0L
-
-        fun approve() {
-            if (!completed.compareAndSet(false, true) || !isAttemptValid(token)) return
-
-            val fpsReal =
-                if (totalDeltaNs > 0L) {
-                    checkedIntervals.toDouble() * 1_000_000_000.0 /
-                        totalDeltaNs.toDouble()
-                } else {
-                    0.0
-                }
-
-            Log.i(
-                LOG_TAG,
-                String.format(
-                    Locale.US,
-                    "4K60_CADENCE_QUALIFY: aprovado=true frames=%d gaps=%d " +
-                        "fpsReal=%.3f maxDelta=%.3fms retry=%d",
-                    checkedIntervals,
-                    gapCount,
-                    fpsReal,
-                    maxDeltaNs / 1_000_000.0,
-                    cadenceQualificationRetry
-                )
-            )
-
-            resetCadenceFocusDiagnostics()
-            session.setRepeatingRequest(
-                request,
-                createCadenceFocusDiagnosticCallback(profile, token),
-                mainHandler
-            )
-            commitRecorderStart(profile, token, highSpeed = false)
-        }
-
-        fun reject(reason: String) {
-            if (!completed.compareAndSet(false, true) || !isAttemptValid(token)) return
-            runCatching { session.stopRepeating() }
-            retry4k60CadenceQualification(profile, token, reason)
-        }
-
-        val callback = object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(
-                captureSession: CameraCaptureSession,
-                captureRequest: CaptureRequest,
-                result: TotalCaptureResult
-            ) {
-                if (!isAttemptValid(token) || completed.get()) return
-
-                val sensorTsNs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
-                seenFrames++
-
-                if (seenFrames <= FOUR_K60_CADENCE_SKIP_FRAMES) {
-                    previousTsNs = sensorTsNs
-                    return
-                }
-
-                if (previousTsNs > 0L && sensorTsNs > previousTsNs) {
-                    val deltaNs = sensorTsNs - previousTsNs
-                    checkedIntervals++
-                    totalDeltaNs += deltaNs
-                    if (deltaNs > maxDeltaNs) maxDeltaNs = deltaNs
-                    if (deltaNs > gapThresholdNs) gapCount++
-                }
-                previousTsNs = sensorTsNs
-
-                if (
-                    checkedIntervals >= FOUR_K60_CADENCE_EARLY_MIN_INTERVALS &&
-                    gapCount >= FOUR_K60_CADENCE_EARLY_REJECT_GAPS
-                ) {
-                    reject(
-                        "gaps=$gapCount em $checkedIntervals intervalos " +
-                            "(regime ruim detectado cedo)"
-                    )
-                    return
-                }
-
-                if (checkedIntervals >= FOUR_K60_CADENCE_QUALIFY_INTERVALS) {
-                    val fpsReal =
-                        checkedIntervals.toDouble() * 1_000_000_000.0 /
-                            totalDeltaNs.coerceAtLeast(1L).toDouble()
-                    if (
-                        gapCount <= FOUR_K60_CADENCE_MAX_GAPS &&
-                        fpsReal >= FOUR_K60_CADENCE_MIN_REAL_FPS
-                    ) {
-                        approve()
-                    } else {
-                        reject(
-                            String.format(
-                                Locale.US,
-                                "fpsReal=%.3f gaps=%d/%d maxDelta=%.3fms",
-                                fpsReal,
-                                gapCount,
-                                checkedIntervals,
-                                maxDeltaNs / 1_000_000.0
-                            )
-                        )
-                    }
-                }
-            }
-
-            override fun onCaptureFailed(
-                captureSession: CameraCaptureSession,
-                captureRequest: CaptureRequest,
-                failure: android.hardware.camera2.CaptureFailure
-            ) {
-                reject("captureFailed frame=${failure.frameNumber} reason=${failure.reason}")
-            }
-        }
-
-        Log.i(
-            LOG_TAG,
-            "4K60_CADENCE_QUALIFY: iniciando retry=$cadenceQualificationRetry " +
-                "intervalos=$FOUR_K60_CADENCE_QUALIFY_INTERVALS " +
-                "maxGaps=$FOUR_K60_CADENCE_MAX_GAPS minFps=$FOUR_K60_CADENCE_MIN_REAL_FPS"
-        )
-
-        runCatching {
-            session.setRepeatingRequest(request, callback, mainHandler)
-        }.onFailure { throwable ->
-            reject("falha ao iniciar qualificação: ${errorText(throwable)}")
-        }
-    }
-
     /**
      * Captura headless precisa priorizar o instante do usuário. O AE recebe uma janela
      * curtíssima antes do MediaRecorder começar: até 3 resultados e nunca mais de 50 ms.
@@ -3312,7 +3102,7 @@ class CaptureService : Service() {
                     LOG_TAG,
                     String.format(
                         Locale.US,
-                        "4K60_HEADROOM: motivo=%s frameDuration=%.3fms exposure=%.3fms ISO=%d " +
+                        "60FPS_HEADROOM: motivo=%s frameDuration=%.3fms exposure=%.3fms ISO=%d " +
                             "(AE observado %.3fms ISO=%d, perdaEstimativa=%.1f%%)",
                         reason,
                         plan.frameDurationNs / 1_000_000.0,
@@ -3326,17 +3116,17 @@ class CaptureService : Service() {
             } else {
                 Log.w(
                     LOG_TAG,
-                    "4K60_HEADROOM indisponível ($reason); mantendo AE automático"
+                    "60FPS_HEADROOM indisponível ($reason); mantendo AE automático"
                 )
             }
 
             runCatching {
-                qualify4k60CadenceBeforeCommit(
-                    session = session,
-                    request = fixedRequest ?: autoRequest,
-                    profile = profile,
-                    token = token
+                session.setRepeatingRequest(
+                    fixedRequest ?: autoRequest,
+                    createCadenceFocusDiagnosticCallback(profile, token),
+                    mainHandler
                 )
+                commitRecorderStart(profile, token, highSpeed = false)
             }.onFailure {
                 failSelectedConfigurationFromWorker(
                     token,
@@ -3380,7 +3170,7 @@ class CaptureService : Service() {
             ) {
                 Log.w(
                     LOG_TAG,
-                    "4K60_HEADROOM warmup falhou frame=${failure.frameNumber}"
+                    "60FPS_HEADROOM warmup falhou frame=${failure.frameNumber}"
                 )
             }
         }
@@ -4620,14 +4410,6 @@ class CaptureService : Service() {
         private const val HYBRID_AE_MAX_CORRECTION_FRAMES = 6
         private const val HYBRID_AE_CORRECTION_TIMEOUT_MS = 250L
         private const val FOUR_K60_HEADROOM_WARMUP_MS = 500L
-        private const val FOUR_K60_CADENCE_SKIP_FRAMES = 12
-        private const val FOUR_K60_CADENCE_EARLY_MIN_INTERVALS = 45
-        private const val FOUR_K60_CADENCE_EARLY_REJECT_GAPS = 3
-        private const val FOUR_K60_CADENCE_QUALIFY_INTERVALS = 180
-        private const val FOUR_K60_CADENCE_MAX_GAPS = 1
-        private const val FOUR_K60_CADENCE_MIN_REAL_FPS = 59.2
-        private const val MAX_4K60_CADENCE_RETRIES = 3
-        private const val FOUR_K60_CADENCE_REOPEN_DELAY_MS = 180L
 
         const val ACTION_RECORDING_VISUAL_FINISHED =
             "com.steadyvault.camera.RECORDING_VISUAL_FINISHED"
@@ -4666,7 +4448,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-4k60-cadence-qualify-1.8.280"
+        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-60fps-manual-headroom-1.8.281"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
