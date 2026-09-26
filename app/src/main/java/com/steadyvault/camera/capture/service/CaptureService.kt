@@ -2702,6 +2702,7 @@ class CaptureService : Service() {
         val validResults = AtomicInteger(0)
         var latestExposureNs: Long? = null
         var latestSensitivityIso: Int? = null
+        var latestFocusDistanceDiopters: Float? = null
 
         fun applyHeadroomOrFallback(reason: String) {
             if (!locked.compareAndSet(false, true) || !isAttemptValid(token)) return
@@ -2711,7 +2712,13 @@ class CaptureService : Service() {
             val plan = if (exposureNs != null && sensitivityIso != null) {
                 fixedCadencePlan(profile, exposureNs, sensitivityIso)
             } else null
-            val fixedRequest = plan?.let { buildFixedCadenceRequest(profile, it) }
+            val fixedRequest = plan?.let {
+                buildFixedCadenceRequest(
+                    profile = profile,
+                    plan = it,
+                    focusDistanceDiopters = latestFocusDistanceDiopters
+                )
+            }
             val diagnosticCallback = createCadenceFocusDiagnosticCallback(profile, token)
 
             if (plan != null && exposureNs != null && sensitivityIso != null) {
@@ -2731,14 +2738,15 @@ class CaptureService : Service() {
                     String.format(
                         Locale.US,
                         "4K60_HEADROOM: motivo=%s frameDuration=%.3fms exposure=%.3fms ISO=%d " +
-                            "(AE observado %.3fms ISO=%d, perdaEstimativa=%.1f%%)",
+                            "(AE observado %.3fms ISO=%d, perdaEstimativa=%.1f%%) focusLock=%s",
                         reason,
                         plan.frameDurationNs / 1_000_000.0,
                         plan.exposureTimeNs / 1_000_000.0,
                         plan.sensitivityIso,
                         exposureNs / 1_000_000.0,
                         sensitivityIso,
-                        exposureLossPercent
+                        exposureLossPercent,
+                        latestFocusDistanceDiopters?.let { String.format(Locale.US, "%.3fD", it) } ?: "indisponível"
                     )
                 )
             } else {
@@ -2773,10 +2781,14 @@ class CaptureService : Service() {
 
                 val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                 val sensitivityIso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                val focusDistance = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
                 if (exposureNs == null || sensitivityIso == null) return
 
                 latestExposureNs = exposureNs
                 latestSensitivityIso = sensitivityIso
+                if (focusDistance != null && focusDistance >= 0f) {
+                    latestFocusDistanceDiopters = focusDistance
+                }
                 val count = validResults.incrementAndGet()
                 val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
                 val aeReady =
@@ -2815,7 +2827,8 @@ class CaptureService : Service() {
 
     private fun buildFixedCadenceRequest(
         profile: CameraProfile,
-        plan: SensorCadencePolicy.Plan
+        plan: SensorCadencePolicy.Plan,
+        focusDistanceDiopters: Float? = null
     ): CaptureRequest? {
         val camera = synchronized(resourceLock) { cameraDevice } ?: return null
         val surface = synchronized(resourceLock) { recorderSurface } ?: return null
@@ -2823,6 +2836,33 @@ class CaptureService : Service() {
             addTarget(surface)
             configureCaptureRequest(this, profile, plan)
             applyFinalWhiteBalance(this, profile)
+
+            val minimumFocusDistance = profile.characteristics.get(
+                CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE
+            ) ?: 0f
+            val focus = focusDistanceDiopters
+            if (minimumFocusDistance > 0f && focus != null) {
+                setSafely(this, CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                setSafely(this, CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
+                setSafely(
+                    this,
+                    CaptureRequest.LENS_FOCUS_DISTANCE,
+                    focus.coerceIn(0f, minimumFocusDistance)
+                )
+                Log.i(
+                    LOG_TAG,
+                    String.format(
+                        Locale.US,
+                        "4K60_FOCUS_LOCK: af=OFF distance=%.3fD",
+                        focus.coerceIn(0f, minimumFocusDistance)
+                    )
+                )
+            } else {
+                Log.w(
+                    LOG_TAG,
+                    "4K60_FOCUS_LOCK indisponível; mantendo AF do request"
+                )
+            }
         }.build()
     }
 
