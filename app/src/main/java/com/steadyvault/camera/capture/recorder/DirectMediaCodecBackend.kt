@@ -64,7 +64,7 @@ class DirectMediaCodecBackend(
     private val drainExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(
             {
-                runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
+                runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY) }
                 runnable.run()
             },
             "SteadyVault-MediaCodecDrain"
@@ -77,13 +77,7 @@ class DirectMediaCodecBackend(
     // laço de dequeueOutputBuffer, o que faria o MediaCodec parar de aceitar
     // frames novos da câmera e produzir engasgo/gap real no arquivo.
     private val muxerWriteExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(
-            {
-                runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY) }
-                runnable.run()
-            },
-            "SteadyVault-MuxerWrite"
-        )
+        Thread(runnable, "SteadyVault-MuxerWrite")
     }
 
     private var codec: MediaCodec? = null
