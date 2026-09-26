@@ -1460,14 +1460,13 @@ class SettingsActivity : FragmentActivity() {
         ) {
             formReady = false
             saveGeneration++
-            val preserved = CaptureSettings.snapshot(this)
             CaptureCapabilityMatrix.invalidate(this)
             CaptureStateStore.clearEffectiveMode(this)
             Camera3AStateStore.clearAll()
-            CaptureSettings.save(this, preserved)
+            val current = CaptureSettings.snapshot(this)
             Log.i(
                 "SteadyVaultTestReset",
-                "TEST_STATE_RESET: cameraPrefsPreserved=true capabilityCache=true effectiveMode=true 3A=true bitrate=${preserved.bitrateMbps} stabilization=${preserved.stabilization} fps=${preserved.fps} resolution=${preserved.resolution} mediaPreserved=true"
+                "TEST_STATE_RESET: captureSettingsUntouched=true capabilityCache=true effectiveMode=true 3A=true bitrate=${current.bitrateMbps} stabilization=${current.stabilization} fps=${current.fps} resolution=${current.resolution} mediaPreserved=true"
             )
             capabilityMatrix = null
             capabilityScanCompleted = false
