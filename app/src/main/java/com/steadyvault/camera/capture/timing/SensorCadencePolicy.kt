@@ -26,17 +26,19 @@ object SensorCadencePolicy {
         val frameDurationNs = (1_000_000_000.0 / fps.toDouble()).roundToLong()
         if (maxFrameDurationNs in 1 until frameDurationNs) return null
 
-        val motionExposureCapNs = (1_000_000_000.0 / (fps * 2.0)).roundToLong()
-        val absoluteExposureCapNs = minOf(exposureMaxNs, frameDurationNs - 500_000L)
-        if (absoluteExposureCapNs < exposureMinNs) return null
+        // Em 4K60 observamos a HAL operando com exposição praticamente igual ao
+        // período inteiro do frame (~16,667 ms), seguida de stalls exatos de um frame.
+        // Reserve 2 ms reais para readout/ISP. Se o ISO máximo não conseguir preservar
+        // toda a luminosidade, priorize a cadência em vez de devolver a exposição ao teto.
+        val headroomExposureCapNs = frameDurationNs - 2_000_000L
+        val exposureCapNs = minOf(exposureMaxNs, headroomExposureCapNs)
+        if (exposureCapNs < exposureMinNs) return null
 
-        var exposureTimeNs = observedExposureNs.coerceIn(exposureMinNs, minOf(absoluteExposureCapNs, motionExposureCapNs))
-        var requiredIso = observedSensitivityIso.toDouble() * observedExposureNs.toDouble() / exposureTimeNs.toDouble()
-        if (requiredIso > sensitivityMaxIso.toDouble()) {
-            val exposureForMaxIso = (observedSensitivityIso.toDouble() * observedExposureNs.toDouble() / sensitivityMaxIso.toDouble()).roundToLong()
-            exposureTimeNs = maxOf(exposureTimeNs, exposureForMaxIso).coerceIn(exposureMinNs, absoluteExposureCapNs)
-            requiredIso = observedSensitivityIso.toDouble() * observedExposureNs.toDouble() / exposureTimeNs.toDouble()
-        }
+        val exposureTimeNs = observedExposureNs.coerceIn(exposureMinNs, exposureCapNs)
+        val requiredIso =
+            observedSensitivityIso.toDouble() *
+                observedExposureNs.toDouble() /
+                exposureTimeNs.toDouble()
         val compensatedIso = requiredIso.roundToLong()
             .coerceIn(sensitivityMinIso.toLong(), sensitivityMaxIso.toLong())
             .toInt()
