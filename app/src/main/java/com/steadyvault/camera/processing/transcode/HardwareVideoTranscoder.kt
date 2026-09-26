@@ -368,86 +368,172 @@ class HardwareVideoTranscoder {
 
                                 when (request.frameRepair) {
                                     FrameRepairMode.FILL_MISSING_FRAMES,
-                                    FrameRepairMode.ADAPTIVE_BLEND,
-                                    FrameRepairMode.MOTION_COMPENSATED -> {
+                                    FrameRepairMode.ADAPTIVE_BLEND -> {
+                                        // Lógica restaurada das primeiras branches iOS-like:
+                                        // mantém os PTS reais como referência e cria somente
+                                        // os slots CFR que realmente ficaram vazios entre dois
+                                        // frames capturados.
                                         if (!loadedFrame) {
-                                            previousCorrection = MotionTrajectoryStabilizer.Correction()
-                                            currentCorrection = MotionTrajectoryStabilizer.Correction()
+                                            writeCurrentFrame(0L)
+                                            nextFillPtsUs = frameIntervalUs
+                                            loadedFrame = true
+                                        } else {
+                                            val intervalUs =
+                                                (sourceRelative - previousSourceRelativePts)
+                                                    .coerceAtLeast(1L)
+                                            val outputFramesInGap =
+                                                ((intervalUs + frameIntervalUs - 1L) /
+                                                    frameIntervalUs)
+                                                    .toInt()
+                                            val blendAllowed =
+                                                request.frameRepair ==
+                                                    FrameRepairMode.ADAPTIVE_BLEND &&
+                                                    outputFramesInGap <=
+                                                    request.maxInterpolatedFramesPerGap + 1
+
+                                            while (nextFillPtsUs < sourceRelative) {
+                                                val alpha =
+                                                    ((nextFillPtsUs -
+                                                        previousSourceRelativePts)
+                                                        .toDouble() /
+                                                        intervalUs.toDouble())
+                                                        .toFloat()
+                                                        .coerceIn(0f, 1f)
+
+                                                when {
+                                                    blendAllowed ->
+                                                        writeBlendedFrame(
+                                                            nextFillPtsUs,
+                                                            alpha
+                                                        )
+                                                    alpha < 0.5f ->
+                                                        writePreviousFrame(nextFillPtsUs)
+                                                    else ->
+                                                        writeCurrentFrame(nextFillPtsUs)
+                                                }
+                                                nextFillPtsUs += frameIntervalUs
+                                            }
+                                        }
+                                        previousSourceRelativePts =
+                                            max(previousSourceRelativePts, sourceRelative)
+                                    }
+
+                                    FrameRepairMode.MOTION_COMPENSATED -> {
+                                        // Mantido apenas para compatibilidade/manual.
+                                        if (!loadedFrame) {
+                                            previousCorrection =
+                                                MotionTrajectoryStabilizer.Correction()
+                                            currentCorrection =
+                                                MotionTrajectoryStabilizer.Correction()
                                             writeCurrentFrame(0L, currentCorrection)
                                             nextFillPtsUs = frameIntervalUs
                                             loadedFrame = true
                                         } else {
-                                            val intervalUs = (sourceRelative - previousSourceRelativePts).coerceAtLeast(1L)
-                                            val nominalSteps = kotlin.math.round(
-                                                intervalUs.toDouble() / frameIntervalUs.toDouble()
-                                            ).toInt().coerceAtLeast(1)
-                                            val missingFrames = (nominalSteps - 1).coerceAtLeast(0)
-                                            val motionAllowed = request.frameRepair == FrameRepairMode.MOTION_COMPENSATED &&
-                                                missingFrames in 1..minOf(
-                                                    request.maxInterpolatedFramesPerGap,
-                                                    MAX_DENSE_MOTION_GAP_FRAMES
+                                            val intervalUs =
+                                                (sourceRelative - previousSourceRelativePts)
+                                                    .coerceAtLeast(1L)
+                                            val nominalSteps =
+                                                kotlin.math.round(
+                                                    intervalUs.toDouble() /
+                                                        frameIntervalUs.toDouble()
                                                 )
-                                            val blendAllowed = request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND &&
-                                                missingFrames in 1..request.maxInterpolatedFramesPerGap
+                                                    .toInt()
+                                                    .coerceAtLeast(1)
+                                            val missingFrames =
+                                                (nominalSteps - 1).coerceAtLeast(0)
+                                            val motionAllowed =
+                                                missingFrames in
+                                                    1..minOf(
+                                                        request.maxInterpolatedFramesPerGap,
+                                                        MAX_DENSE_MOTION_GAP_FRAMES
+                                                    )
 
                                             previousCorrection = currentCorrection
-                                            currentCorrection = when {
-                                                // Optical flow denso é a parte mais cara do pipeline.
-                                                // Só faça GPU->CPU + Farneback bidirecional quando
-                                                // realmente existe pelo menos um slot temporal ausente.
-                                                motionAllowed -> {
-                                                    val field = outputSurface!!.currentMotionField()
+                                            currentCorrection =
+                                                if (motionAllowed) {
+                                                    val field =
+                                                        outputSurface!!
+                                                            .currentMotionField()
                                                     trajectoryStabilizer.update(
-                                                        motionXUv = field.globalForwardUvX,
-                                                        motionYUv = field.globalForwardUvY,
-                                                        rotationRad = if (field.globalRotationReliability >= 0.24f) {
-                                                            field.globalRotationRadians
-                                                        } else {
-                                                            0f
-                                                        },
-                                                        reliability = field.globalReliability,
-                                                        sceneChange = field.sceneChangeLikely,
-                                                        unstable = field.globalMotionIsUnstable,
-                                                        nearlyStatic = field.motionIsNearlyStatic
+                                                        motionXUv =
+                                                            field.globalForwardUvX,
+                                                        motionYUv =
+                                                            field.globalForwardUvY,
+                                                        rotationRad =
+                                                            if (
+                                                                field
+                                                                    .globalRotationReliability >=
+                                                                    0.24f
+                                                            ) {
+                                                                field
+                                                                    .globalRotationRadians
+                                                            } else {
+                                                                0f
+                                                            },
+                                                        reliability =
+                                                            field.globalReliability,
+                                                        sceneChange =
+                                                            field.sceneChangeLikely,
+                                                        unstable =
+                                                            field.globalMotionIsUnstable,
+                                                        nearlyStatic =
+                                                            field.motionIsNearlyStatic
+                                                    )
+                                                } else {
+                                                    decayCorrection(
+                                                        previousCorrection
                                                     )
                                                 }
-                                                request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ->
-                                                    decayCorrection(previousCorrection)
-                                                else ->
-                                                    MotionTrajectoryStabilizer.Correction()
-                                            }
 
-                                            // A posição visual é derivada somente da fração entre os dois
-                                            // quadros reais. A timeline de saída usa apenas a grade CFR.
-                                            // Não misturamos mais PTS original irregular com PTS reconstruído.
                                             for (step in 1 until nominalSteps) {
-                                                val alpha = step.toFloat() / nominalSteps.toFloat()
-                                                val correction = interpolateCorrection(
-                                                    previousCorrection,
-                                                    currentCorrection,
-                                                    alpha
-                                                )
-                                                when {
-                                                    motionAllowed -> writeMotionFrame(nextFillPtsUs, alpha, correction)
-                                                    blendAllowed -> writeBlendedFrame(nextFillPtsUs, alpha, correction)
-                                                    request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ->
-                                                        writeBlendedFrame(nextFillPtsUs, alpha, correction)
-                                                    alpha < 0.5f -> writePreviousFrame(nextFillPtsUs, correction)
-                                                    else -> writeCurrentFrame(nextFillPtsUs, correction)
+                                                val alpha =
+                                                    step.toFloat() /
+                                                        nominalSteps.toFloat()
+                                                val correction =
+                                                    interpolateCorrection(
+                                                        previousCorrection,
+                                                        currentCorrection,
+                                                        alpha
+                                                    )
+                                                if (motionAllowed) {
+                                                    writeMotionFrame(
+                                                        nextFillPtsUs,
+                                                        alpha,
+                                                        correction
+                                                    )
+                                                } else {
+                                                    writeBlendedFrame(
+                                                        nextFillPtsUs,
+                                                        alpha,
+                                                        correction
+                                                    )
                                                 }
                                                 nextFillPtsUs += frameIntervalUs
                                             }
 
-                                            writeCurrentFrame(nextFillPtsUs, currentCorrection)
+                                            writeCurrentFrame(
+                                                nextFillPtsUs,
+                                                currentCorrection
+                                            )
                                             nextFillPtsUs += frameIntervalUs
                                         }
                                         previousSourceRelativePts = sourceRelative
                                     }
+
                                     FrameRepairMode.SMOOTH_TIMELINE -> {
-                                        writeCurrentFrame(sourceDecodedFrames.toLong() * smoothStepUs)
+                                        writeCurrentFrame(
+                                            sourceDecodedFrames.toLong() *
+                                                smoothStepUs
+                                        )
                                     }
+
                                     FrameRepairMode.NONE -> {
-                                        writeCurrentFrame(max(lastWrittenPtsUs + 1L, sourceRelative))
+                                        writeCurrentFrame(
+                                            max(
+                                                lastWrittenPtsUs + 1L,
+                                                sourceRelative
+                                            )
+                                        )
                                     }
                                 }
                                 sourceDecodedFrames++
