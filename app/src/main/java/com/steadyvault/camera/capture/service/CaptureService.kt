@@ -1697,6 +1697,56 @@ class CaptureService : Service() {
         return if (raw.length <= 220) raw else raw.take(217) + "..."
     }
 
+    private fun logSelectedVendorTemplateDefaults(
+        profile: CameraProfile,
+        builder: CaptureRequest.Builder
+    ) {
+        val targets = listOf(
+            "org.codeaurora.qcamera3.sessionParameters.dynamicFPSConfig",
+            "org.codeaurora.qcamera3.sessionParameters.EISMode",
+            "org.codeaurora.qcamera3.sessionParameters.MultiCameraMode",
+            "org.codeaurora.qcamera3.sessionParameters.HDRVideoMode",
+            "org.codeaurora.qcamera3.sessionParameters.numPCRsBeforeStreamOn",
+            "org.codeaurora.qcamera3.sessionParameters.enableMCTFwithReferenceFrame",
+            "org.codeaurora.qcamera3.sessionParameters.overrideResourceCostValidation"
+        )
+        val available = profile.characteristics.availableCaptureRequestKeys
+            .associateBy { it.name }
+
+        targets.forEach { name ->
+            val key = available[name]
+            if (key == null) {
+                Log.i(LOG_TAG, "VENDOR_TEMPLATE_DEFAULT key=$name present=false")
+                return@forEach
+            }
+
+            @Suppress("UNCHECKED_CAST")
+            val value = runCatching {
+                builder.get(key as CaptureRequest.Key<Any>)
+            }.getOrNull()
+
+            val type = when (value) {
+                null -> "null"
+                is ByteArray -> "ByteArray"
+                is ShortArray -> "ShortArray"
+                is IntArray -> "IntArray"
+                is LongArray -> "LongArray"
+                is FloatArray -> "FloatArray"
+                is DoubleArray -> "DoubleArray"
+                is BooleanArray -> "BooleanArray"
+                is CharArray -> "CharArray"
+                is Array<*> -> "Array<${value.firstOrNull()?.javaClass?.simpleName ?: "?"}>"
+                else -> value.javaClass.name
+            }
+
+            Log.i(
+                LOG_TAG,
+                "VENDOR_TEMPLATE_DEFAULT key=$name present=true type=$type " +
+                    "value=${metadataValueForLog(value)}"
+            )
+        }
+    }
+
     private fun calculateOrientationHint(sensorOrientation: Int): Int =
         ((sensorOrientation % 360) + 360) % 360
 
@@ -1804,12 +1854,20 @@ class CaptureService : Service() {
         // Toda gravação usa a mesma sessão encoder-only. A tela de captura pode manter
         // sua interface, mas nunca recebe uma segunda saída Camera2 durante o vídeo.
         // Isso reserva ISP, memória e largura de banda exclusivamente para o arquivo.
-        val requestBuilder =
-            createRecordRequestBuilder(camera).apply {
-                addTarget(surface)
-                configureCaptureRequest(this, profile)
-                if (!profile.highSpeed) applyFinalWhiteBalance(this, profile)
-            }
+        val requestBuilder = createRecordRequestBuilder(camera)
+
+        if (
+            profile.videoSize == UHD_SIZE &&
+            profile.targetFps == CaptureModeStore.FPS_60
+        ) {
+            logSelectedVendorTemplateDefaults(profile, requestBuilder)
+        }
+
+        requestBuilder.apply {
+            addTarget(surface)
+            configureCaptureRequest(this, profile)
+            if (!profile.highSpeed) applyFinalWhiteBalance(this, profile)
+        }
 
         val request =
             requestBuilder.build()
