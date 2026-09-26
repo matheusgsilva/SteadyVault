@@ -311,6 +311,9 @@ class CaptureService : Service() {
         } else {
             currentSettings.zoomRatio
         }
+        Log.i(LOG_TAG, "CAMERA_SELECTION: requested=${preferredCameraId ?: currentSettings.selectedCameraId} " +
+            "opened=$profileCameraId selectedLabel=${storedOption?.label ?: "Automática"} " +
+            "requestedZoom=${currentSettings.zoomRatio} recordingZoom=$profileZoomRatio")
         preferredCameraId = profileCameraId
         // A configuração atualmente salva é a fonte da verdade. Não recarregue um
         // perfil histórico da câmera no instante em que o usuário toca em Gravar.
@@ -1990,6 +1993,9 @@ class CaptureService : Service() {
         // Toda gravação usa a mesma sessão encoder-only. A tela de captura pode manter
         // sua interface, mas nunca recebe uma segunda saída Camera2 durante o vídeo.
         // Isso reserva ISP, memória e largura de banda exclusivamente para o arquivo.
+        CaptureLensDiagnostics.logCatalog(
+            getSystemService(CameraManager::class.java), profile.cameraId, profile.characteristics
+        )
         val requestBuilder = createRecordRequestBuilder(camera)
 
         if (
@@ -2093,24 +2099,14 @@ class CaptureService : Service() {
                                     token = token
                                 )
                             } else {
-                                if (
-                                    profile.targetFps <= CaptureModeStore.FPS_60 &&
-                                    supportsManualSensor(profile)
-                                ) {
-                                    startWithFixedSensorCadence(
-                                        session = session,
-                                        autoRequest = request,
-                                        profile = profile,
-                                        token = token
-                                    )
-                                } else {
-                                    startStabilizedRecording(
-                                        session = session,
-                                        request = request,
-                                        profile = profile,
-                                        token = token
-                                    )
-                                }
+                                // Teste de cadência com AE automático durante toda a gravação.
+                                // Não trocar para SENSOR_HEADROOM/AE_OFF após o warmup.
+                                startStabilizedRecording(
+                                    session = session,
+                                    request = request,
+                                    profile = profile,
+                                    token = token
+                                )
                             }
                         } catch (throwable: Throwable) {
                             failSelectedConfigurationFromWorker(
@@ -2240,8 +2236,8 @@ class CaptureService : Service() {
     /**
      * Gravação regular com request congelado desde a primeira submissão.
      *
-     * Não há callback Camera2 por frame e não existe uma segunda chamada para
-     * substituir o repeating request antes do primeiro sample. O recorder é armado
+     * O callback apenas observa AE, lente e cadência; não substitui o repeating
+     * request nem congela exposição/ISO antes do primeiro sample. O recorder é armado
      * antes, mas a época do arquivo só é confirmada depois que o request definitivo
      * entra na sessão; o primeiro IDR dessa época passa a ser o tempo zero do MP4.
      */
@@ -2259,12 +2255,11 @@ class CaptureService : Service() {
         runCatching {
             armRecorderForFirstFrame(token)
 
-            val diagnosticCallback =
-                if (profile.targetFps >= CaptureModeStore.FPS_60) {
-                    createCadenceFocusDiagnosticCallback(profile, token)
-                } else {
-                    null
-                }
+            Log.i(LOG_TAG, "CAPTURE_AE_AUTO: fps=${profile.targetFps} " +
+                "aeRange=${profile.fpsRange.lower}-${profile.fpsRange.upper} " +
+                "aeMode=${request.get(CaptureRequest.CONTROL_AE_MODE)} " +
+                "aeLock=${request.get(CaptureRequest.CONTROL_AE_LOCK)} manualHeadroom=false")
+            val diagnosticCallback = createCadenceFocusDiagnosticCallback(profile, token)
             session.setRepeatingRequest(request, diagnosticCallback, mainHandler)
             commitRecorderStart(profile, token, highSpeed = false)
         }.onFailure {
@@ -2294,6 +2289,7 @@ class CaptureService : Service() {
     ): CameraCaptureSession.CaptureCallback {
         val nominalNs = frameDurationNs(profile.targetFps)
         val gapThresholdNs = nominalNs * 3L / 2L
+        val lensDiagnostics = CaptureLensDiagnostics(profile.cameraId)
 
         return object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureCompleted(
@@ -2302,6 +2298,7 @@ class CaptureService : Service() {
                 result: TotalCaptureResult
             ) {
                 if (!isAttemptValid(token) || !recorderStarted) return
+                lensDiagnostics.onResult(result)
                 if (
                     !vendorResultDumped &&
                     profile.videoSize == UHD_SIZE &&

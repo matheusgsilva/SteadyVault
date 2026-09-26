@@ -65,3 +65,44 @@ sem gaps no original, inclusive gravação longa e início pelo widget.
 
 Referência: https://developer.android.com/reference/android/media/MediaCodec
 (seção Data Processing: reter buffers pode paralisar o codec).
+
+## Atualização: AE automático e identificação da lente
+
+A comparação posterior (1080p60 HEVC) resultou em 57,711 FPS tanto a 200 Mbps
+quanto a 40 Mbps. A 40 Mbps o pico da fila foi de dois samples, com escrita
+máxima de 10,52 ms e apenas duas alocações do pool. A hipótese de saturação
+sustentada na fila/disco perdeu força. Ambos os testes ainda usavam AE manual.
+
+Esta atualização retira a chamada de `startWithFixedSensorCadence` do início
+regular da gravação. O request inicial usa AE ON, AE lock false e a faixa
+solicitada (30–30 ou 60–60). Não há segunda submissão para impor exposição,
+ISO ou frame duration. A lista de FPS permanece 30/60. As rotinas antigas de
+headroom ficam sem chamada no caminho ativo, preservadas para investigação.
+
+O usuário também suspeita de lente diferente da câmera Samsung. O seletor
+atual privilegia uma câmera lógica traseira e converte a seleção física em
+zoom. Não se alterou essa escolha neste teste. `physicalId=5` por si só não
+identifica lente principal, ultra-wide ou tele, nem prova qual a Samsung usa.
+
+Novos logs na tag SteadyVaultCapture:
+
+- `CAPTURE_AE_AUTO`: request inicial, faixa FPS, AE mode/lock e headroom desativado.
+- `CAMERA_SELECTION`: ID pedido, ID aberto e conversão de zoom.
+- `CAMERA_MAP` / `CAMERA_LENS`: IDs públicos e físicos, focais e tamanho do sensor.
+  O equivalente 35 mm é uma estimativa horizontal, antes do crop de vídeo.
+- `CAMERA_ACTIVE`: lente física ativa, focal, zoom/crop e exposição/AE retornados
+  pela câmera. Emitido inicialmente, em trocas de ID físico e a cada dois segundos,
+  inclusive sem gap. ID indisponível é registrado como unknown, nunca inferido.
+
+Testar novamente 1080p60 HEVC, 40 Mbps, mesma cena e iluminação. Confirmar
+`CAPTURE_AE_AUTO ... aeMode=1 aeLock=false manualHeadroom=false` e verificar
+os estados de AE em `CAMERA_ACTIVE`. Enviar desde `CAMERA_SELECTION` até
+`Cadência MP4`, usando o mesmo filtro de antes. Não é necessário testar 120 FPS.
+Para a lente, comparar o enquadramento em 1x com a câmera Samsung na mesma
+resolução/FPS e distância; os logs identificarão a lente do SteadyVault, mas
+não revelam automaticamente a lente usada pelo aplicativo Samsung.
+
+Validação desta atualização: compilação do novo módulo de diagnóstico contra
+classes Android API 34 e revisão do fluxo de requests/diff. O app completo
+não foi compilado neste ambiente; cadência e seleção óptica dependem do teste
+no aparelho. O módulo de diagnóstico apenas lê metadados e não altera requests.
