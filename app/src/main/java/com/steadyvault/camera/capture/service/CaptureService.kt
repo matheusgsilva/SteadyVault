@@ -214,6 +214,7 @@ class CaptureService : Service() {
     @Volatile private var cadenceDiagLensMovingFrames = 0
     @Volatile private var cadenceDiagCpuStartMs = 0L
     @Volatile private var cadenceDiagWallStartMs = 0L
+    @Volatile private var vendorResultDumped = false
 
 
 
@@ -1491,6 +1492,8 @@ class CaptureService : Service() {
     ) {
         if (profile.videoSize != UHD_SIZE || profile.targetFps != CaptureModeStore.FPS_60) return
 
+        logVendorMetadataInventory(profile.cameraId, profile.characteristics)
+
         val map = profile.characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         fun durationMs(block: () -> Long): Double =
             runCatching { block() }
@@ -1532,6 +1535,166 @@ class CaptureService : Service() {
                 "oemBitrate=${oem?.videoProfile?.bitrate ?: -1} " +
                 "requestedBitrate=${configuredVideoBitrate()}"
         )
+    }
+
+    private fun logVendorMetadataInventory(
+        logicalCameraId: String,
+        logicalCharacteristics: CameraCharacteristics
+    ) {
+        val manager = getSystemService(CameraManager::class.java)
+        val cameraIds = linkedSetOf(logicalCameraId).apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                addAll(logicalCharacteristics.physicalCameraIds)
+            }
+        }
+
+        Log.i(
+            LOG_TAG,
+            "VENDOR_TAG_SCAN: logical=$logicalCameraId physicalIds=" +
+                cameraIds.filter { it != logicalCameraId }.joinToString(",").ifBlank { "none" }
+        )
+
+        cameraIds.forEach { cameraId ->
+            val characteristics =
+                if (cameraId == logicalCameraId) logicalCharacteristics
+                else runCatching { manager.getCameraCharacteristics(cameraId) }.getOrNull()
+
+            if (characteristics == null) {
+                Log.w(LOG_TAG, "VENDOR_TAG_SCAN camera=$cameraId characteristics=unavailable")
+                return@forEach
+            }
+
+            val characteristicKeys = characteristics.keys
+            val requestKeys = characteristics.availableCaptureRequestKeys
+            val resultKeys = characteristics.availableCaptureResultKeys
+            val sessionKeys =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    characteristics.availableSessionKeys.orEmpty()
+                } else {
+                    emptyList()
+                }
+            val physicalRequestKeys =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    characteristics.availablePhysicalCameraRequestKeys.orEmpty()
+                } else {
+                    emptyList()
+                }
+
+            Log.i(
+                LOG_TAG,
+                "VENDOR_TAG_COUNTS camera=$cameraId characteristics=${characteristicKeys.size} " +
+                    "request=${requestKeys.size} result=${resultKeys.size} " +
+                    "session=${sessionKeys.size} physicalRequest=${physicalRequestKeys.size}"
+            )
+
+            logVendorKeyNames(cameraId, "characteristics", characteristicKeys.map { it.name })
+            logVendorKeyNames(cameraId, "request", requestKeys.map { it.name })
+            logVendorKeyNames(cameraId, "result", resultKeys.map { it.name })
+            logVendorKeyNames(cameraId, "session", sessionKeys.map { it.name })
+            logVendorKeyNames(cameraId, "physicalRequest", physicalRequestKeys.map { it.name })
+
+            @Suppress("UNCHECKED_CAST")
+            characteristicKeys
+                .filter { isVendorCameraKey(it.name) }
+                .sortedBy { it.name }
+                .forEach { key ->
+                    val value = runCatching {
+                        characteristics.get(key as CameraCharacteristics.Key<Any>)
+                    }.getOrNull()
+                    Log.i(
+                        LOG_TAG,
+                        "VENDOR_CHAR camera=$cameraId key=${key.name} value=${metadataValueForLog(value)}"
+                    )
+                }
+        }
+    }
+
+    private fun logVendorKeyNames(cameraId: String, category: String, names: List<String>) {
+        val vendorNames = names.filter(::isVendorCameraKey).distinct().sorted()
+        if (vendorNames.isEmpty()) {
+            Log.i(LOG_TAG, "VENDOR_KEYS camera=$cameraId category=$category none")
+            return
+        }
+        vendorNames.chunked(6).forEachIndexed { index, chunk ->
+            Log.i(
+                LOG_TAG,
+                "VENDOR_KEYS camera=$cameraId category=$category part=${index + 1} " +
+                    chunk.joinToString(" | ")
+            )
+        }
+    }
+
+    private fun isVendorCameraKey(name: String): Boolean =
+        !name.startsWith("android.", ignoreCase = true)
+
+    private fun logVendorCaptureResult(result: TotalCaptureResult) {
+        val vendorKeys = result.keys
+            .filter { isVendorCameraKey(it.name) }
+            .sortedBy { it.name }
+
+        val resultCameraId =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                runCatching { result.cameraId }.getOrDefault("?")
+            } else {
+                "?"
+            }
+
+        Log.i(
+            LOG_TAG,
+            "VENDOR_RESULT_SCAN: camera=$resultCameraId frame=${result.frameNumber} vendorKeys=${vendorKeys.size}"
+        )
+
+        @Suppress("UNCHECKED_CAST")
+        vendorKeys.forEach { key ->
+            val value = runCatching {
+                result.get(key as CaptureResult.Key<Any>)
+            }.getOrNull()
+            Log.i(
+                LOG_TAG,
+                "VENDOR_RESULT key=${key.name} value=${metadataValueForLog(value)}"
+            )
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            result.physicalCameraResults.forEach { (cameraId, physicalResult) ->
+                val physicalVendorKeys = physicalResult.keys
+                    .filter { isVendorCameraKey(it.name) }
+                    .sortedBy { it.name }
+                Log.i(
+                    LOG_TAG,
+                    "VENDOR_PHYSICAL_RESULT camera=$cameraId frame=${physicalResult.frameNumber} " +
+                        "vendorKeys=${physicalVendorKeys.size}"
+                )
+                @Suppress("UNCHECKED_CAST")
+                physicalVendorKeys.forEach { key ->
+                    val value = runCatching {
+                        physicalResult.get(key as CaptureResult.Key<Any>)
+                    }.getOrNull()
+                    Log.i(
+                        LOG_TAG,
+                        "VENDOR_PHYSICAL_RESULT camera=$cameraId key=${key.name} " +
+                            "value=${metadataValueForLog(value)}"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun metadataValueForLog(value: Any?): String {
+        val raw = when (value) {
+            null -> "null"
+            is ByteArray -> value.joinToString(prefix = "[", postfix = "]")
+            is ShortArray -> value.joinToString(prefix = "[", postfix = "]")
+            is IntArray -> value.joinToString(prefix = "[", postfix = "]")
+            is LongArray -> value.joinToString(prefix = "[", postfix = "]")
+            is FloatArray -> value.joinToString(prefix = "[", postfix = "]")
+            is DoubleArray -> value.joinToString(prefix = "[", postfix = "]")
+            is BooleanArray -> value.joinToString(prefix = "[", postfix = "]")
+            is CharArray -> value.concatToString()
+            is Array<*> -> value.joinToString(prefix = "[", postfix = "]") { it.toString() }
+            else -> value.toString()
+        }
+        return if (raw.length <= 220) raw else raw.take(217) + "..."
     }
 
     private fun calculateOrientationHint(sensorOrientation: Int): Int =
@@ -1921,6 +2084,7 @@ class CaptureService : Service() {
         cadenceDiagLensMovingFrames = 0
         cadenceDiagCpuStartMs = Process.getElapsedCpuTime()
         cadenceDiagWallStartMs = SystemClock.elapsedRealtime()
+        vendorResultDumped = false
     }
 
     private fun createCadenceFocusDiagnosticCallback(
@@ -1937,6 +2101,14 @@ class CaptureService : Service() {
                 result: TotalCaptureResult
             ) {
                 if (!isAttemptValid(token) || !recorderStarted) return
+                if (
+                    !vendorResultDumped &&
+                    profile.videoSize == UHD_SIZE &&
+                    profile.targetFps == CaptureModeStore.FPS_60
+                ) {
+                    vendorResultDumped = true
+                    logVendorCaptureResult(result)
+                }
 
                 val sensorTs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
                 val frameNumber = result.frameNumber
