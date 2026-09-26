@@ -204,9 +204,16 @@ class HardwareVideoTranscoder {
             var lastWrittenPtsUs = -1L
             var loadedFrame = false
             var previousSourceRelativePts = 0L
-            val trajectoryStabilizer = MotionTrajectoryStabilizer()
-            var previousCorrection = MotionTrajectoryStabilizer.Correction()
-            var currentCorrection = MotionTrajectoryStabilizer.Correction()
+            // Reparo de gaps deve sintetizar movimento, não estabilizar/re-enquadrar
+            // o vídeo inteiro. Correção global fixa evita "zoom pumping" entre frames.
+            val neutralCorrection = MotionTrajectoryStabilizer.Correction(
+                xUv = 0f,
+                yUv = 0f,
+                rotationRad = 0f,
+                zoom = 1f,
+                jankDetected = false,
+                confidence = 1f
+            )
 
             fun startMuxerIfReady(format: MediaFormat) {
                 if (muxerStarted) return
@@ -371,9 +378,7 @@ class HardwareVideoTranscoder {
                                     FrameRepairMode.ADAPTIVE_BLEND,
                                     FrameRepairMode.MOTION_COMPENSATED -> {
                                         if (!loadedFrame) {
-                                            previousCorrection = MotionTrajectoryStabilizer.Correction()
-                                            currentCorrection = MotionTrajectoryStabilizer.Correction()
-                                            writeCurrentFrame(0L, currentCorrection)
+                                            writeCurrentFrame(0L, neutralCorrection)
                                             nextFillPtsUs = frameIntervalUs
                                             loadedFrame = true
                                         } else {
@@ -390,31 +395,11 @@ class HardwareVideoTranscoder {
                                             val blendAllowed = request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND &&
                                                 missingFrames in 1..request.maxInterpolatedFramesPerGap
 
-                                            previousCorrection = currentCorrection
-                                            currentCorrection = when {
-                                                // Optical flow denso é a parte mais cara do pipeline.
-                                                // Só faça GPU->CPU + Farneback bidirecional quando
-                                                // realmente existe pelo menos um slot temporal ausente.
-                                                motionAllowed -> {
-                                                    val field = outputSurface!!.currentMotionField()
-                                                    trajectoryStabilizer.update(
-                                                        motionXUv = field.globalForwardUvX,
-                                                        motionYUv = field.globalForwardUvY,
-                                                        rotationRad = if (field.globalRotationReliability >= 0.24f) {
-                                                            field.globalRotationRadians
-                                                        } else {
-                                                            0f
-                                                        },
-                                                        reliability = field.globalReliability,
-                                                        sceneChange = field.sceneChangeLikely,
-                                                        unstable = field.globalMotionIsUnstable,
-                                                        nearlyStatic = field.motionIsNearlyStatic
-                                                    )
-                                                }
-                                                request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ->
-                                                    decayCorrection(previousCorrection)
-                                                else ->
-                                                    MotionTrajectoryStabilizer.Correction()
+                                            // Optical flow continua sendo calculado somente quando
+                                            // existe um frame ausente. Não derive mais zoom/translação/
+                                            // rotação global dele: isso causava "zoom pumping".
+                                            if (motionAllowed) {
+                                                outputSurface!!.currentMotionField()
                                             }
 
                                             // A posição visual é derivada somente da fração entre os dois
@@ -422,11 +407,7 @@ class HardwareVideoTranscoder {
                                             // Não misturamos mais PTS original irregular com PTS reconstruído.
                                             for (step in 1 until nominalSteps) {
                                                 val alpha = step.toFloat() / nominalSteps.toFloat()
-                                                val correction = interpolateCorrection(
-                                                    previousCorrection,
-                                                    currentCorrection,
-                                                    alpha
-                                                )
+                                                val correction = neutralCorrection
                                                 when {
                                                     motionAllowed -> writeMotionFrame(nextFillPtsUs, alpha, correction)
                                                     blendAllowed -> writeBlendedFrame(nextFillPtsUs, alpha, correction)
@@ -438,7 +419,7 @@ class HardwareVideoTranscoder {
                                                 nextFillPtsUs += frameIntervalUs
                                             }
 
-                                            writeCurrentFrame(nextFillPtsUs, currentCorrection)
+                                            writeCurrentFrame(nextFillPtsUs, neutralCorrection)
                                             nextFillPtsUs += frameIntervalUs
                                         }
                                         previousSourceRelativePts = sourceRelative
@@ -472,7 +453,7 @@ class HardwareVideoTranscoder {
                     ) {
                         val targetEndExclusiveUs = sourceSpanUs.coerceAtLeast(lastSourceRelativePts + frameIntervalUs)
                         while (nextFillPtsUs < targetEndExclusiveUs) {
-                            writeCurrentFrame(nextFillPtsUs, currentCorrection)
+                            writeCurrentFrame(nextFillPtsUs, neutralCorrection)
                             nextFillPtsUs += frameIntervalUs
                         }
                     }
