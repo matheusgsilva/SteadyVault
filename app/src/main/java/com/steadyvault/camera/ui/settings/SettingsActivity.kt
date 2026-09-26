@@ -14,6 +14,7 @@ import android.media.audiofx.NoiseSuppressor
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.widget.AdapterView
@@ -1463,6 +1464,10 @@ class SettingsActivity : FragmentActivity() {
             CaptureCapabilityMatrix.invalidate(this)
             CaptureStateStore.clearEffectiveMode(this)
             Camera3AStateStore.clearAll()
+            Log.i(
+                "SteadyVaultTestReset",
+                "TEST_STATE_RESET: cameraPrefs=true capabilityCache=true effectiveMode=true 3A=true mediaPreserved=true"
+            )
             capabilityMatrix = null
             capabilityScanCompleted = false
             capabilityScanInProgress = false
