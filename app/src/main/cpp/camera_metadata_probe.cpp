@@ -13,20 +13,26 @@ namespace {
 
 constexpr const char* kLogTag = "SteadyVaultCapture";
 
-using FromJavaMetadataFn = ACameraMetadata* (*)(JNIEnv*, jobject);
+struct ACameraManager;
+using CreateManagerFn = ACameraManager* (*)();
+using DeleteManagerFn = void (*)(ACameraManager*);
+using GetCharacteristicsFn = camera_status_t (*)(ACameraManager*, const char*, ACameraMetadata**);
 using FreeMetadataFn = void (*)(ACameraMetadata*);
 using GetTagFromNameFn = camera_status_t (*)(const ACameraMetadata*, const char*, uint32_t*);
 using GetConstEntryFn = camera_status_t (*)(const ACameraMetadata*, uint32_t, ACameraMetadata_const_entry*);
 
 struct Api {
     void* handle = nullptr;
-    FromJavaMetadataFn fromJava = nullptr;
+    CreateManagerFn createManager = nullptr;
+    DeleteManagerFn deleteManager = nullptr;
+    GetCharacteristicsFn getCharacteristics = nullptr;
     FreeMetadataFn freeMetadata = nullptr;
     GetTagFromNameFn getTagFromName = nullptr;
     GetConstEntryFn getConstEntry = nullptr;
 
     bool ready() const {
-        return handle && fromJava && freeMetadata && getTagFromName && getConstEntry;
+        return handle && createManager && deleteManager && getCharacteristics &&
+            freeMetadata && getTagFromName && getConstEntry;
     }
 };
 
@@ -35,8 +41,12 @@ Api loadApi() {
     api.handle = dlopen("libcamera2ndk.so", RTLD_NOW | RTLD_LOCAL);
     if (!api.handle) return api;
 
-    api.fromJava = reinterpret_cast<FromJavaMetadataFn>(
-        dlsym(api.handle, "ACameraMetadata_fromCameraMetadata"));
+    api.createManager = reinterpret_cast<CreateManagerFn>(
+        dlsym(api.handle, "ACameraManager_create"));
+    api.deleteManager = reinterpret_cast<DeleteManagerFn>(
+        dlsym(api.handle, "ACameraManager_delete"));
+    api.getCharacteristics = reinterpret_cast<GetCharacteristicsFn>(
+        dlsym(api.handle, "ACameraManager_getCameraCharacteristics"));
     api.freeMetadata = reinterpret_cast<FreeMetadataFn>(
         dlsym(api.handle, "ACameraMetadata_free"));
     api.getTagFromName = reinterpret_cast<GetTagFromNameFn>(
@@ -129,10 +139,10 @@ jobjectArray toJavaArray(JNIEnv* env, const std::vector<std::string>& rows) {
 
 extern "C"
 JNIEXPORT jobjectArray JNICALL
-Java_com_steadyvault_camera_capture_service_NativeCameraMetadataProbe_nativeInspect(
+Java_com_steadyvault_camera_capture_service_NativeCameraMetadataProbe_nativeInspectCharacteristics(
     JNIEnv* env,
     jclass,
-    jobject cameraMetadata,
+    jstring cameraId,
     jobjectArray names) {
 
     std::vector<std::string> rows;
@@ -142,7 +152,9 @@ Java_com_steadyvault_camera_capture_service_NativeCameraMetadataProbe_nativeInsp
         std::ostringstream out;
         out << "ndkReady=false"
             << " lib=" << (api.handle ? "ok" : "missing")
-            << " fromJava=" << (api.fromJava ? "ok" : "missing")
+            << " managerCreate=" << (api.createManager ? "ok" : "missing")
+            << " managerDelete=" << (api.deleteManager ? "ok" : "missing")
+            << " characteristics=" << (api.getCharacteristics ? "ok" : "missing")
             << " free=" << (api.freeMetadata ? "ok" : "missing")
             << " getTag=" << (api.getTagFromName ? "ok" : "missing")
             << " getEntry=" << (api.getConstEntry ? "ok" : "missing");
@@ -151,16 +163,28 @@ Java_com_steadyvault_camera_capture_service_NativeCameraMetadataProbe_nativeInsp
         return toJavaArray(env, rows);
     }
 
-    ACameraMetadata* metadata = api.fromJava(env, cameraMetadata);
-    if (!metadata) {
-        rows.emplace_back("ndkReady=true metadata=false");
+    const char* cameraIdChars = env->GetStringUTFChars(cameraId, nullptr);
+    ACameraManager* manager = api.createManager();
+    ACameraMetadata* metadata = nullptr;
+    const camera_status_t characteristicsStatus =
+        manager && cameraIdChars
+            ? api.getCharacteristics(manager, cameraIdChars, &metadata)
+            : ACAMERA_ERROR_INVALID_PARAMETER;
+
+    if (cameraIdChars) env->ReleaseStringUTFChars(cameraId, cameraIdChars);
+
+    if (characteristicsStatus != ACAMERA_OK || !metadata) {
+        std::ostringstream out;
+        out << "ndkReady=true metadata=false characteristicsStatus=" << characteristicsStatus;
+        rows.push_back(out.str());
+        if (manager) api.deleteManager(manager);
         dlclose(api.handle);
         return toJavaArray(env, rows);
     }
 
     const jsize size = names ? env->GetArrayLength(names) : 0;
     rows.reserve(static_cast<size_t>(size) + 1);
-    rows.emplace_back("ndkReady=true metadata=true");
+    rows.emplace_back("ndkReady=true metadata=true source=independent-ndk-characteristics");
 
     for (jsize i = 0; i < size; ++i) {
         auto nameObj = static_cast<jstring>(env->GetObjectArrayElement(names, i));
@@ -192,7 +216,7 @@ Java_com_steadyvault_camera_capture_service_NativeCameraMetadataProbe_nativeInsp
             } else {
                 out << " type=UNKNOWN_ABSENT"
                     << " count=0"
-                    << " note=tag-resolved-but-no-entry-in-this-metadata";
+                    << " note=tag-resolved-but-no-entry-in-static-metadata";
             }
         }
 
@@ -203,6 +227,7 @@ Java_com_steadyvault_camera_capture_service_NativeCameraMetadataProbe_nativeInsp
     }
 
     api.freeMetadata(metadata);
+    api.deleteManager(manager);
     dlclose(api.handle);
     return toJavaArray(env, rows);
 }
