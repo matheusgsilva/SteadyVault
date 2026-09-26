@@ -45,12 +45,20 @@ class DirectMediaCodecBackend(
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
 
+    // Orientação sempre por metadado (setOrientationHint no muxer), igual ao
+    // DirectMediaRecorderBackend. Nunca giramos os pixels fisicamente: um único
+    // caminho de orientação para todos os FPS, sem swap de largura/altura.
+    private val normalizedRotation = ((orientationHint % 360) + 360) % 360
+    private val encoderWidth = width
+    private val encoderHeight = height
+    private val muxerOrientationHint = normalizedRotation
+
     override val backendName: String = "MediaCodec direto"
     override val videoBitrateBps: Long get() = videoBitrate.toLong()
     override val audioBitrateBps: Long get() = if (integratedAudio) audioBitrate.toLong() else 0L
 
     val profileDescription: String
-        get() = "${width}x${height} ${targetFps} FPS " +
+        get() = "${encoderWidth}x${encoderHeight} ${targetFps} FPS " +
             "${videoMime.substringAfter('/').uppercase()} ${videoBitrate / 1_000_000} Mbps • hardware"
 
     private val drainExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -61,6 +69,15 @@ class DirectMediaCodecBackend(
             },
             "SteadyVault-MediaCodecDrain"
         )
+    }
+
+    // Gravar em disco é a parte mais lenta e mais variável do pipeline (I/O de
+    // armazenamento pode ter picos, principalmente com o cofre em bitrate alto).
+    // Isolar isso num executor próprio evita que um pico de escrita segure o
+    // laço de dequeueOutputBuffer, o que faria o MediaCodec parar de aceitar
+    // frames novos da câmera e produzir engasgo/gap real no arquivo.
+    private val muxerWriteExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "SteadyVault-MuxerWrite")
     }
 
     private var codec: MediaCodec? = null
@@ -89,20 +106,31 @@ class DirectMediaCodecBackend(
 
         val codecInfo = selectEncoder()
             ?: throw IllegalStateException(
-                "nenhum encoder de hardware suporta ${width}x${height} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
+                "nenhum encoder de hardware suporta ${encoderWidth}x${encoderHeight} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
             )
         val capabilities = codecInfo.getCapabilitiesForType(videoMime)
-        val format = MediaFormat.createVideoFormat(videoMime, width, height).apply {
+        val format = MediaFormat.createVideoFormat(videoMime, encoderWidth, encoderHeight).apply {
             setInteger(
                 MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
             )
             setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
-            // Mantém o mesmo conjunto mínimo usado no Cadence Probe, que apresentou
-            // a melhor cadência no S25 Ultra. Não forçamos operating-rate, priority
-            // nem CBR: esses parâmetros extras podem ativar caminhos diferentes de
-            // rate-control no codec do fabricante.
+
+            // A saída SDR precisa carregar sinalização explícita de vídeo HD.
+            // Sem estas chaves alguns codecs Qualcomm/Samsung escrevem metadados
+            // legados BT.470/SMPTE170M no MP4 4K, alterando gama/contraste na reprodução.
+            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+            setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+
+            // Prioriza processamento em tempo real e informa explicitamente ao
+            // encoder a taxa de operação esperada. Isso não corrige gaps que já
+            // chegam da Camera2/HAL, mas reduz a chance de o próprio MediaCodec
+            // introduzir atraso quando o sistema estiver sob contenção.
+            setInteger(MediaFormat.KEY_PRIORITY, 0)
+            setInteger(MediaFormat.KEY_OPERATING_RATE, targetFps)
+
             setInteger(
                 MediaFormat.KEY_I_FRAME_INTERVAL,
                 iFrameIntervalSeconds.coerceAtLeast(1)
@@ -114,14 +142,14 @@ class DirectMediaCodecBackend(
             codec = mediaCodec
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
 
-            val surface = mediaCodec.createInputSurface()
-            inputSurface = surface
+            val encoderSurface = mediaCodec.createInputSurface()
+            inputSurface = encoderSurface
 
             val mediaMuxer = MediaMuxer(
                 outputFile.absolutePath,
                 MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
             )
-            mediaMuxer.setOrientationHint(orientationHint)
+            mediaMuxer.setOrientationHint(muxerOrientationHint)
             muxer = mediaMuxer
 
             if (integratedAudio) {
@@ -150,7 +178,7 @@ class DirectMediaCodecBackend(
             }
 
             prepared = true
-            return surface
+            return encoderSurface
         } catch (throwable: Throwable) {
             release()
             throw throwable
@@ -210,6 +238,7 @@ class DirectMediaCodecBackend(
         audioTempFile = null
         audioStarted.set(false)
         drainExecutor.shutdownNow()
+        muxerWriteExecutor.shutdownNow()
 
         prepared = false
         armed = false
@@ -305,15 +334,26 @@ class DirectMediaCodecBackend(
                                 buffer.position(info.offset)
                                 buffer.limit(info.offset + info.size)
 
+                                val copy = ByteBuffer.allocateDirect(info.size).apply {
+                                    put(buffer)
+                                    rewind()
+                                }
                                 val adjusted = MediaCodec.BufferInfo().apply {
                                     set(
-                                        info.offset,
+                                        0,
                                         info.size,
                                         (ptsUs - firstPtsUs).coerceAtLeast(0L),
                                         info.flags
                                     )
                                 }
-                                mediaMuxer.writeSampleData(videoTrack, buffer, adjusted)
+                                val track = videoTrack
+                                muxerWriteExecutor.execute {
+                                    runCatching {
+                                        mediaMuxer.writeSampleData(track, copy, adjusted)
+                                    }.onFailure {
+                                        if (!stopRequested.get() && !released.get()) onError(it)
+                                    }
+                                }
                             }
                         }
 
@@ -326,6 +366,12 @@ class DirectMediaCodecBackend(
         } catch (throwable: Throwable) {
             if (!stopRequested.get() && !released.get()) {
                 onError(throwable)
+            }
+        } finally {
+            // Garante que toda escrita já enfileirada termine antes do muxer ser
+            // parado/liberado em closeCodecAndMuxer().
+            runCatching {
+                muxerWriteExecutor.submit {}.get(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             }
         }
     }
@@ -355,7 +401,7 @@ class DirectMediaCodecBackend(
                 MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
             )
             mergedMuxer = localMuxer
-            localMuxer.setOrientationHint(orientationHint)
+            localMuxer.setOrientationHint(muxerOrientationHint)
 
             val videoTargetTrack =
                 localMuxer.addTrack(videoExtractor.getTrackFormat(videoSourceTrack))
@@ -455,10 +501,10 @@ class DirectMediaCodecBackend(
                     val caps = info.getCapabilitiesForType(videoMime)
                     val videoCaps = caps.videoCapabilities
                     videoCaps != null &&
-                        videoCaps.isSizeSupported(width, height) &&
+                        videoCaps.isSizeSupported(encoderWidth, encoderHeight) &&
                         videoCaps.areSizeAndRateSupported(
-                            width,
-                            height,
+                            encoderWidth,
+                            encoderHeight,
                             targetFps.toDouble()
                         )
                 }.getOrDefault(false)
