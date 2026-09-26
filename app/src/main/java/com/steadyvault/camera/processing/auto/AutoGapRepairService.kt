@@ -224,47 +224,37 @@ class AutoGapRepairService : Service() {
             if (cancelledForCaptureOrUser()) return pauseJob(job, pauseReason())
 
             val analysis = VideoAnalysis.read(source)
-            if (!analysis.hasRepairableProblems) {
+            if (!analysis.hasCadenceProblems || analysis.estimatedMissingFrames <= 0) {
                 AutoGapRepairQueueStore.markSkipped(
                     this,
                     job.id,
-                    "Vídeo validado: cadência e sincronismo já estão dentro dos limites"
+                    "Cadência analisada: nenhum quadro ausente precisa ser preenchido"
                 )
-                publish(100, "Nenhum problema temporal detectado em ${source.name}")
+                publish(100, "Sem gaps para reparar em ${source.name}")
                 return true
             }
 
             val settings = AutoGapRepairSettings.snapshot(this)
-            val needsFrameSynthesis = analysis.estimatedMissingFrames > 0
-            val requestedMode = if (analysis.hdrHlg10 || !needsFrameSynthesis) {
-                // O transcoder atual não faz tone mapping HDR. Corrigir somente timestamps
-                // preserva os pixels HLG10 sem transformar o original em SDR.
+            val needsFrameSynthesis = true
+            val requestedMode = if (analysis.hdrHlg10) {
+                // HDR continua sem recodificação visual para preservar HLG10.
                 FrameRepairMode.SMOOTH_TIMELINE
             } else {
                 settings.mode
             }
-            val modes = if (analysis.hdrHlg10) {
-                // Arquivos HDR antigos não entram no transcoder SDR para evitar
-                // alteração de gama/cor. O reparo fica restrito à timeline.
-                listOf(FrameRepairMode.SMOOTH_TIMELINE)
-            } else if (!needsFrameSynthesis) {
-                // Primeiro tenta correção sem recodificar. Se a validação rígida ainda
-                // detectar jitter ou A/V fora do limite, recodifica para uma grade CFR.
-                listOf(
-                    FrameRepairMode.SMOOTH_TIMELINE,
-                    FrameRepairMode.FILL_MISSING_FRAMES
-                )
-            } else {
-                // SDR com frame realmente ausente: o automático ignora uma preferência
-                // antiga de "repetir quadro" e sempre tenta primeiro reconstrução visual.
-                // Isso evita uma saída temporalmente CFR porém ainda perceptivelmente
-                // engasgada por duplicação do vizinho.
-                listOf(
-                    FrameRepairMode.MOTION_COMPENSATED,
-                    FrameRepairMode.ADAPTIVE_BLEND,
-                    FrameRepairMode.FILL_MISSING_FRAMES
-                )
-            }
+
+            // Recupera a ordem usada na branch ios-like-robust-processing:
+            // respeita o modo configurado (normalmente ADAPTIVE_BLEND), depois tenta
+            // preenchimento por vizinho e só por último regulariza timestamps.
+            val modes = buildList {
+                add(requestedMode)
+                if (!analysis.hdrHlg10 && requestedMode != FrameRepairMode.FILL_MISSING_FRAMES) {
+                    add(FrameRepairMode.FILL_MISSING_FRAMES)
+                }
+                if (requestedMode != FrameRepairMode.SMOOTH_TIMELINE) {
+                    add(FrameRepairMode.SMOOTH_TIMELINE)
+                }
+            }.distinct()
 
             var lastFailure: Throwable? = null
             for ((index, mode) in modes.withIndex()) {
@@ -322,19 +312,29 @@ class AutoGapRepairService : Service() {
                     if (cancelledForCaptureOrUser()) throw InterruptedException("Reparo pausado para captura")
                     require(result.output.isFile && result.output.length() > 0L) { "O reparo não produziu arquivo válido" }
                     publish(98, "Validando a cópia reparada…")
-                    val repairedAnalysis = VideoValidator.validateRepair(result.output, result.analysis)
-                    require(repairedAnalysis.cadenceScore >= 90) {
-                        "A saída ainda não atingiu a qualidade mínima de cadência"
-                    }
-                    if (
-                        needsFrameSynthesis &&
-                        (mode == FrameRepairMode.MOTION_COMPENSATED ||
-                            mode == FrameRepairMode.ADAPTIVE_BLEND)
-                    ) {
-                        require(result.blendedFrames > 0) {
-                            "A tentativa não reconstruiu visualmente nenhum quadro ausente"
-                        }
-                    }
+                    // Só publique a cópia quando o reparo realmente eliminar os
+                    // problemas de cadência. Isso evita aceitar um MP4 estruturalmente válido
+                    // que ainda contenha o mesmo salto de ~33 ms do original.
+                    val repairedAnalysis = VideoValidator.validateRepair(
+                        result.output,
+                        result.analysis
+                    )
+                    android.util.Log.i(
+                        "SteadyVaultGapRepair",
+                        String.format(
+                            java.util.Locale.US,
+                            "Reparo validado: modo=%s fps=%.3f frames=%d gaps=%d ausentes=%d curtos=%d deltaMin=%.3fms deltaMax=%.3fms jitter=%d%%",
+                            mode.name,
+                            repairedAnalysis.exactFps,
+                            repairedAnalysis.frameCount,
+                            repairedAnalysis.largeGapCount,
+                            repairedAnalysis.estimatedMissingFrames,
+                            repairedAnalysis.shortIntervalCount,
+                            repairedAnalysis.minimumFrameDeltaUs / 1000.0,
+                            repairedAnalysis.maximumFrameDeltaUs / 1000.0,
+                            repairedAnalysis.frameJitterPercent
+                        )
+                    )
                     val finalFile = VaultRepository.commitOptimizedFile(
                         this,
                         result.output,
@@ -643,15 +643,25 @@ class AutoGapRepairService : Service() {
             startImmediately: Boolean
         ) {
             if (!source.isFile) return
+            if (!AutoGapRepairSettings.snapshot(context).enabled) return
+
+            AutoGapRepairQueueStore.enqueue(context, source, targetFps)
+
             if (startImmediately) {
-                AutoGapRepairSettings.setEnabled(context, true)
-                userPauseRequested = false
+                // O reparo de um gap confirmado faz parte da finalização da gravação.
+                // Ele pode continuar mesmo com a UI ainda visível, mas nunca concorre
+                // com uma nova captura: capturePriorityRequested/CaptureStateStore
+                // continuam tendo precedência absoluta.
                 immediateWidgetDrainRequested = true
             }
-            if (!AutoGapRepairSettings.snapshot(context).enabled) return
-            AutoGapRepairQueueStore.enqueue(context, source, targetFps)
-            if (capturePriorityRequested || CaptureStateStore.isBusy(context)) return
-            if (interactiveBlocksProcessing() || userPauseRequested) return
+
+            if (
+                capturePriorityRequested ||
+                interactiveBlocksProcessing() ||
+                userPauseRequested ||
+                CaptureStateStore.isBusy(context)
+            ) return
+
             startSelf(context, ACTION_RESUME)
         }
 
