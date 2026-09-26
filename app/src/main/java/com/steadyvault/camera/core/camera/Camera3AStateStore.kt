@@ -61,4 +61,10 @@ object Camera3AStateStore {
             SystemClock.elapsedRealtime() - it.capturedAtElapsedMs <= maximumAgeMs
         }
     }
+
+    fun clearAll() {
+        whiteBalance.clear()
+        exposure.clear()
+        focus.clear()
+    }
 }
