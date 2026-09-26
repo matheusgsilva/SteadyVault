@@ -1238,9 +1238,28 @@ class CaptureService : Service() {
             "${cameraProfile.videoSize.width}x${cameraProfile.videoSize.height}_${cameraProfile.targetFps}fps"
         val finalFile = VaultRepository.createRecordingFile(this, profileLabel)
 
+        val requestedBitrate = configuredVideoBitrate()
+        val exactOem4k60 =
+            cameraProfile.videoSize == UHD_SIZE &&
+                cameraProfile.targetFps == CaptureModeStore.FPS_60 &&
+                !cameraProfile.hdrHlg10 &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                DirectMediaRecorderBackend.findExactSelection(
+                    cameraId = cameraProfile.cameraId,
+                    width = cameraProfile.videoSize.width,
+                    height = cameraProfile.videoSize.height,
+                    fps = cameraProfile.targetFps,
+                    mime = encoderProfile.mime,
+                    hdrHlg10 = false,
+                    requestedBitrate = requestedBitrate
+                ) != null
+
+        log4k60PipelineCapabilities(cameraProfile, encoderProfile, exactOem4k60)
+
         val preferDirectCodec =
             cameraProfile.targetFps == CaptureModeStore.FPS_60 &&
-                !cameraProfile.hdrHlg10
+                !cameraProfile.hdrHlg10 &&
+                !exactOem4k60
 
         val backend: RecordingBackend =
             if (preferDirectCodec) {
@@ -1396,6 +1415,56 @@ class CaptureService : Service() {
                 throw fallbackFailure
             }
         }
+    }
+
+    private fun log4k60PipelineCapabilities(
+        profile: CameraProfile,
+        encoderProfile: EncoderProfile,
+        exactOem4k60: Boolean
+    ) {
+        if (profile.videoSize != UHD_SIZE || profile.targetFps != CaptureModeStore.FPS_60) return
+
+        val map = profile.characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        fun durationMs(block: () -> Long): Double =
+            runCatching { block() }
+                .getOrNull()
+                ?.takeIf { it > 0L }
+                ?.div(1_000_000.0)
+                ?: -1.0
+
+        val privateMs = map?.let {
+            durationMs { it.getOutputMinFrameDuration(ImageFormat.PRIVATE, profile.videoSize) }
+        } ?: -1.0
+        val mediaRecorderMs = map?.let {
+            durationMs { it.getOutputMinFrameDuration(MediaRecorder::class.java, profile.videoSize) }
+        } ?: -1.0
+        val mediaCodecMs = map?.let {
+            durationMs { it.getOutputMinFrameDuration(MediaCodec::class.java, profile.videoSize) }
+        } ?: -1.0
+
+        val oem = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            DirectMediaRecorderBackend.findExactSelection(
+                cameraId = profile.cameraId,
+                width = profile.videoSize.width,
+                height = profile.videoSize.height,
+                fps = profile.targetFps,
+                mime = encoderProfile.mime,
+                hdrHlg10 = profile.hdrHlg10,
+                requestedBitrate = configuredVideoBitrate()
+            )
+        } else null
+
+        Log.i(
+            LOG_TAG,
+            "4K60_PIPELINE_CAPS: camera=${profile.cameraId} " +
+                "PRIVATE=${"%.3f".format(Locale.US, privateMs)}ms " +
+                "MediaCodec=${"%.3f".format(Locale.US, mediaCodecMs)}ms " +
+                "MediaRecorder=${"%.3f".format(Locale.US, mediaRecorderMs)}ms " +
+                "oemExact=$exactOem4k60 " +
+                "oemFps=${oem?.videoProfile?.frameRate ?: -1} " +
+                "oemBitrate=${oem?.videoProfile?.bitrate ?: -1} " +
+                "requestedBitrate=${configuredVideoBitrate()}"
+        )
     }
 
     private fun calculateOrientationHint(sensorOrientation: Int): Int =
