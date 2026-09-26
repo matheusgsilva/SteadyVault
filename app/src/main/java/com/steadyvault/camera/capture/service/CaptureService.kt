@@ -1736,23 +1736,19 @@ class CaptureService : Service() {
                             } else {
                                 if (
                                     profile.videoSize == UHD_SIZE &&
-                                    profile.targetFps == CaptureModeStore.FPS_60 &&
-                                    supportsManualSensor(profile)
+                                    profile.targetFps == CaptureModeStore.FPS_60
                                 ) {
-                                    startWithFixedSensorCadence(
-                                        session = session,
-                                        autoRequest = request,
-                                        profile = profile,
-                                        token = token
-                                    )
-                                } else {
-                                    startStabilizedRecording(
-                                        session = session,
-                                        request = request,
-                                        profile = profile,
-                                        token = token
+                                    Log.i(
+                                        LOG_TAG,
+                                        "4K60_AE_AUTO_TEST: manualSensor=false focusLock=false AE=${profile.fpsRange.lower}-${profile.fpsRange.upper}"
                                     )
                                 }
+                                startStabilizedRecording(
+                                    session = session,
+                                    request = request,
+                                    profile = profile,
+                                    token = token
+                                )
                             }
                         } catch (throwable: Throwable) {
                             failSelectedConfigurationFromWorker(
