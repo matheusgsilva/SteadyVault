@@ -1362,7 +1362,6 @@ class CaptureService : Service() {
                     width = cameraProfile.videoSize.width,
                     height = cameraProfile.videoSize.height,
                     targetFps = cameraProfile.targetFps,
-                    sourceFps = cameraProfile.sourceFps,
                     videoMime = encoderProfile.mime,
                     videoBitrate = encoderProfile.bitrate,
                     hdrHlg10 = cameraProfile.hdrHlg10,
