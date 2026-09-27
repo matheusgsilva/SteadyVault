@@ -103,7 +103,11 @@ class DirectMediaCodecBackend(
             setFloat(MediaFormat.KEY_OPERATING_RATE, targetFps.toFloat())
 
             val encoderCaps = capabilities.encoderCapabilities
-            if (encoderCaps.isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)) {
+            if (
+                encoderCaps?.isBitrateModeSupported(
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                ) == true
+            ) {
                 setInteger(
                     MediaFormat.KEY_BITRATE_MODE,
                     MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
