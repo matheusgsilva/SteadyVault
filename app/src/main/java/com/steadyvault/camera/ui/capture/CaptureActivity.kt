@@ -3119,7 +3119,15 @@ class CaptureActivity : ComponentActivity() {
         }
 
         CameraProfileStore.saveCurrent(this)
-        val targetResolution = preferredResolutionForFps(targetFps)
+        val requestedResolution = settings.resolution
+        val targetResolution = CaptureModeCatalog.preferredResolution(
+            context = this,
+            fps = targetFps,
+            requestedResolution = requestedResolution,
+            matrix = selectedCapabilityMatrix()?.takeIf { it.modes.isNotEmpty() },
+            scanInProgress = capabilityMatrix == null && capabilityScanInProgress
+        )
+        CaptureSettings.saveResolutionForFps(this, targetFps, targetResolution)
         val profile = configuredProfile(targetFps, targetResolution)
         CaptureStateStore.clearEffectiveMode(this)
         CaptureSettings.updateResolutionAndFps(this, targetResolution, targetFps)
