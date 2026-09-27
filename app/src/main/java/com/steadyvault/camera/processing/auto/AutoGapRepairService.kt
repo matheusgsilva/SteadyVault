@@ -95,7 +95,6 @@ class AutoGapRepairService : Service() {
                 ensureForegroundStarted("Preparando pós-processamento manual…")
                 manualDrainRequested = true
                 userPauseRequested = false
-                interactivePriorityRequested = false
                 val path = intent.getStringExtra(EXTRA_SOURCE_PATH).orEmpty()
                 val fps = intent.getIntExtra(EXTRA_TARGET_FPS, 0)
                 val source = File(path)
