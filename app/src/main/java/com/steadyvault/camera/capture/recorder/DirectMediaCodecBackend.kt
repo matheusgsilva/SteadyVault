@@ -6,6 +6,7 @@ import android.media.MediaCodecList
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.view.Surface
@@ -101,6 +102,18 @@ class DirectMediaCodecBackend(
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameIntervalSeconds.coerceAtLeast(1))
             setInteger(MediaFormat.KEY_PRIORITY, 0)
             setFloat(MediaFormat.KEY_OPERATING_RATE, targetFps.toFloat())
+
+            // Surface-input não garante CFR por si só: o encoder apenas recebe os
+            // buffers produzidos pela câmera. Se a HAL atrasar um frame, repetimos o
+            // último após um período nominal e, no Android 12+, proibimos a Surface
+            // de descartar buffers para "alcançar" o produtor.
+            setLong(
+                MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,
+                1_000_000L / targetFps.coerceAtLeast(1)
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 0)
+            }
 
             val encoderCaps = capabilities.encoderCapabilities
             if (
@@ -234,6 +247,11 @@ class DirectMediaCodecBackend(
         var syncRequested = false
         var gateOpen = false
         var firstPtsUs = 0L
+        var writtenFrames = 0L
+        var firstWrittenPtsUs = Long.MIN_VALUE
+        var lastWrittenPtsUs = Long.MIN_VALUE
+        var maxWrittenGapUs = 0L
+        var longGapCount = 0L
 
         val nominalDeltaUs = 1_000_000L / targetFps.coerceAtLeast(1)
         val toleranceUs = maxOf(1_500L, nominalDeltaUs / 8L)
@@ -320,6 +338,18 @@ class DirectMediaCodecBackend(
                                     )
                                 }
                                 mediaMuxer.writeSampleData(videoTrack, buffer, adjusted)
+
+                                val writtenPtsUs = adjusted.presentationTimeUs
+                                if (firstWrittenPtsUs == Long.MIN_VALUE) {
+                                    firstWrittenPtsUs = writtenPtsUs
+                                }
+                                if (lastWrittenPtsUs != Long.MIN_VALUE) {
+                                    val gapUs = writtenPtsUs - lastWrittenPtsUs
+                                    if (gapUs > maxWrittenGapUs) maxWrittenGapUs = gapUs
+                                    if (gapUs > nominalDeltaUs + toleranceUs) longGapCount++
+                                }
+                                lastWrittenPtsUs = writtenPtsUs
+                                writtenFrames++
                             }
                         }
 
@@ -328,6 +358,18 @@ class DirectMediaCodecBackend(
                         if (isEos) break
                     }
                 }
+            }
+
+            if (writtenFrames > 1L && lastWrittenPtsUs > firstWrittenPtsUs) {
+                val durationUs = lastWrittenPtsUs - firstWrittenPtsUs
+                val measuredFps =
+                    (writtenFrames - 1L) * 1_000_000.0 / durationUs.toDouble()
+                android.util.Log.i(
+                    "SteadyVaultCapture",
+                    "MediaCodec cadence: frames=$writtenFrames, fps=" +
+                        String.format(java.util.Locale.US, "%.3f", measuredFps) +
+                        ", maxGapUs=$maxWrittenGapUs, longGaps=$longGapCount"
+                )
             }
         } catch (throwable: Throwable) {
             if (!stopRequested.get() && !released.get()) {
