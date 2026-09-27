@@ -1667,35 +1667,28 @@ class CaptureService : Service() {
 
         runCatching {
             armRecorderForFirstFrame(token)
-            val manualSensor = supportsManualSensor(profile)
+
+            // No S25 Ultra, 60 FPS regular fica mais estável deixando a HAL Samsung
+            // controlar exposição/ISO continuamente dentro da faixa AE 60-60.
+            // Não force SENSOR_FRAME_DURATION, SENSOR_EXPOSURE_TIME ou ISO aqui.
             if (
-                !recordingSettings.autoFpsLowLight &&
                 profile.targetFps == CaptureModeStore.FPS_60 &&
-                !profile.hdrHlg10 &&
-                manualSensor
+                !profile.hdrHlg10
             ) {
-                // Recupera o caminho AE60 CLEAN usado nas branches iOS-like:
-                // captura primeiro a exposição real do AE e fixa frame-duration/ISO/exposure
-                // para impedir oscilações periódicas da HAL durante 60 FPS.
-                val recent = Camera3AStateStore.recentExposure(profile.cameraId)
-                val immediatePlan = recent?.let {
-                    fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso)
-                }
-                if (immediatePlan != null) {
-                    val fixedRequest = buildFixedCadenceRequest(profile, immediatePlan)
-                        ?: throw IllegalStateException("câmera não disponível para request de cadência fixa")
-                    session.setRepeatingRequest(fixedRequest, null, mainHandler)
-                    commitRecorderStart(profile, token, highSpeed = false)
-                } else {
-                    startWithFixedSensorCadence(session, request, profile, token)
-                }
-            } else {
-                // 30 FPS, HDR e Auto FPS continuam com AE contínuo.
-                session.setRepeatingRequest(request, null, mainHandler)
-                commitRecorderStart(profile, token, highSpeed = false)
+                Log.i(
+                    LOG_TAG,
+                    "CLEAN AE60 ativo: AE=${profile.fpsRange.lower}-${profile.fpsRange.upper} " +
+                        "sem SENSOR_FRAME_DURATION/exposure/ISO manual"
+                )
             }
+
+            session.setRepeatingRequest(request, null, mainHandler)
+            commitRecorderStart(profile, token, highSpeed = false)
         }.onFailure {
-            failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}")
+            failSelectedConfigurationFromWorker(
+                token,
+                "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}"
+            )
         }
     }
 
@@ -3557,7 +3550,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediarecorder-1080p60-fps-1.8.275"
+        private const val CAPTURE_PIPELINE_REVISION = "mediarecorder-clean-ae60-1.8.276"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
