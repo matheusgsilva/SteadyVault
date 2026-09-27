@@ -423,6 +423,13 @@ class AutoGapRepairService : Service() {
                 lastFailure = failure
                 workFile?.takeIf { it.exists() }?.delete()
                 workFile = null
+
+                // Falha de preservação de qualidade não depende do algoritmo visual:
+                // tentar blend/quadro vizinho recodificaria o vídeo inteiro novamente
+                // e só repetiria o mesmo problema de bitrate.
+                if (failure?.message?.contains("reduziu demais o bitrate do original") == true) {
+                    break
+                }
             }
 
             AutoGapRepairQueueStore.markError(
