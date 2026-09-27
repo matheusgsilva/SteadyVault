@@ -408,7 +408,7 @@ object WidgetRenderer {
             if (zoomAvailable) {
                 views.setBoolean(R.id.widgetZoom, "setEnabled", true)
                 views.setFloat(R.id.widgetZoom, "setAlpha", 1f)
-                views.setTextViewText(R.id.widgetZoom, BackgroundRecordingZoom.label(CaptureSettings.snapshot(context).zoomRatio))
+                views.setTextViewText(R.id.widgetZoom, BackgroundRecordingZoom.label(BackgroundRecordingZoom.selected(context)))
                 views.setTextColor(R.id.widgetZoom, context.getColor(android.R.color.white))
                 views.setTextViewCompoundDrawables(R.id.widgetZoom, 0, R.drawable.ic_zoom, 0, 0)
                 views.setInt(R.id.widgetZoom, "setBackgroundResource", accentBackground)
@@ -504,7 +504,7 @@ object WidgetRenderer {
         clickIntent: PendingIntent,
         type: WidgetType
     ) {
-        val label = BackgroundRecordingZoom.label(CaptureSettings.snapshot(context).zoomRatio)
+        val label = BackgroundRecordingZoom.label(BackgroundRecordingZoom.selected(context))
         views.setBoolean(R.id.widgetZoom, "setEnabled", enabled)
         views.setFloat(R.id.widgetZoom, "setAlpha", 1f)
         views.setTextViewText(R.id.widgetZoom, label)
