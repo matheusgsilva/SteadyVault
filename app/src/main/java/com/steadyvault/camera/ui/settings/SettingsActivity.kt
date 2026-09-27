@@ -372,7 +372,7 @@ class SettingsActivity : FragmentActivity() {
             snapshot.whiteBalanceMode
         )
         yellowReduction = addSpinner(
-            "Correção de dominante amarela",
+            "Temperatura / tonalidade de cor",
             yellowReductionOptions(snapshot.yellowReduction),
             snapshot.yellowReduction
         )
@@ -407,14 +407,14 @@ class SettingsActivity : FragmentActivity() {
             exposureOptions(snapshot.exposureCompensation),
             snapshot.exposureCompensation.toString()
         )
-        addInfo("Com compensação de exposição em 0, o app aplica proteção automática leve de altas luzes (~−0,4 EV em 60 FPS). Qualquer compensação manual diferente de 0 prevalece. O FPS permanece exatamente no valor configurado.")
+        addInfo("A compensação escolhida é aplicada diretamente à câmera. O padrão agora é +2 para levantar cenas noturnas sem alterar o FPS; ajuste para 0 se quiser a medição neutra do aparelho.")
         addSmallButton("Aplicar perfil de teste de cadência 4K60") {
             val current = CaptureSettings.snapshot(this)
             val testProfile = current.copy(
                 resolution = CaptureSettings.RESOLUTION_4K,
                 fps = CaptureModeStore.FPS_60,
                 hdrHlg10 = false,
-                stabilization = CaptureSettings.STABILIZATION_OFF,
+                stabilization = CaptureSettings.STABILIZATION_PREVIEW,
                 focusMode = CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
                 noiseReduction = CaptureSettings.PROCESSING_AUTO,
                 edgeMode = CaptureSettings.PROCESSING_AUTO,
@@ -445,7 +445,7 @@ class SettingsActivity : FragmentActivity() {
                 iFrameIntervalSeconds = 1,
                 hdrHlg10 = false,
                 colorProfile = CaptureSettings.COLOR_NATURAL,
-                stabilization = CaptureSettings.STABILIZATION_EIS,
+                stabilization = CaptureSettings.STABILIZATION_PREVIEW,
                 focusMode = CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
                 autoFpsLowLight = true,
                 noiseReduction = CaptureSettings.PROCESSING_AUTO,
@@ -455,7 +455,7 @@ class SettingsActivity : FragmentActivity() {
                 lockWhiteBalance = false,
                 lockAeAwbForCadence = false,
                 previewMode = CaptureSettings.PREVIEW_OFF,
-                exposureCompensation = 0,
+                exposureCompensation = 2,
                 zoomRatio = 1f,
                 audioSampleRate = 48_000,
                 audioBitrateKbps = 320
@@ -1243,6 +1243,8 @@ class SettingsActivity : FragmentActivity() {
         if (building) return
         if (::autoGapRepairMode.isInitialized && spinner === autoGapRepairMode) {
             AutoGapRepairSettings.setMode(this, FrameRepairMode.from(selected(spinner)))
+            AutoGapRepairService.resumeByUser(this)
+            refreshAutoGapRepairQueueCard()
             return
         }
         if (::autoGapRepairMaxFrames.isInitialized && spinner === autoGapRepairMaxFrames) {
@@ -1250,6 +1252,8 @@ class SettingsActivity : FragmentActivity() {
                 this,
                 selected(spinner).toIntOrNull() ?: 4
             )
+            AutoGapRepairService.resumeByUser(this)
+            refreshAutoGapRepairQueueCard()
             return
         }
         when (spinner) {
@@ -1433,7 +1437,10 @@ class SettingsActivity : FragmentActivity() {
         resolutionSelections.forEach { (fpsValue, resolutionValue) ->
             CaptureSettings.saveResolutionForFps(this, fpsValue, resolutionValue)
         }
-        if (old != value) CaptureSettings.save(this, value)
+        if (old != value) {
+            CaptureSettings.save(this, value)
+            AutoGapRepairService.resumeByUser(this)
+        }
         val oldPlayback = PlaybackSettings.snapshot(this)
         val newPlayback = oldPlayback.copy(
             intelligentPlayback = intelligentPlayback.isChecked,
@@ -2061,14 +2068,18 @@ class SettingsActivity : FragmentActivity() {
                 FeatureOptionSpec(CaptureSettings.YELLOW_REDUCTION_AUTO, "Automático conservador", "Corrige usando os ganhos medidos pela câmera."),
                 FeatureOptionSpec(CaptureSettings.YELLOW_REDUCTION_LIGHT, "Leve", "Ajuste manual sutil dos canais de cor."),
                 FeatureOptionSpec(CaptureSettings.YELLOW_REDUCTION_MEDIUM, "Médio", "Correção visível para luz quente."),
-                FeatureOptionSpec(CaptureSettings.YELLOW_REDUCTION_STRONG, "Forte", "Correção para ambientes muito amarelados.")
+                FeatureOptionSpec(CaptureSettings.YELLOW_REDUCTION_STRONG, "Reduz amarelo — forte", "Esfria bastante ambientes muito amarelados."),
+                FeatureOptionSpec(CaptureSettings.YELLOW_REDUCTION_WARM_LIGHT, "Quente leve", "Adiciona calor sutil, próximo de uma aparência noturna mais acolhedora."),
+                FeatureOptionSpec(CaptureSettings.YELLOW_REDUCTION_WARM_MEDIUM, "Quente médio", "Aumenta tons quentes de forma visível sem exagerar."),
+                FeatureOptionSpec(CaptureSettings.YELLOW_REDUCTION_WARM_STRONG, "Quente forte", "Aquece bastante a cena para um visual mais amarelado.")
             ),
             currentValue = currentValue
         ) { value ->
             when (value) {
                 CaptureSettings.YELLOW_REDUCTION_OFF -> Support.SUPPORTED
                 CaptureSettings.YELLOW_REDUCTION_AUTO,
-                CaptureSettings.YELLOW_REDUCTION_LIGHT -> manual
+                CaptureSettings.YELLOW_REDUCTION_LIGHT,
+                CaptureSettings.YELLOW_REDUCTION_WARM_LIGHT -> manual
                 else -> strongFallback
             }
         }
