@@ -2226,7 +2226,6 @@ class SettingsActivity : FragmentActivity() {
     private fun resolutionOptions(selectedFps: Int): List<ChoiceSpinnerAdapter.Option> {
         val fpsCapability = modeCatalog().profile(selectedFps)
         return listOf(
-            CaptureSettings.RESOLUTION_8K,
             CaptureSettings.RESOLUTION_4K,
             CaptureSettings.RESOLUTION_1080P,
             CaptureSettings.RESOLUTION_720P
