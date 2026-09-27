@@ -695,7 +695,7 @@ class CaptureService : Service() {
             .putInt(CONFIG_WIDTH, camera.videoSize.width)
             .putInt(CONFIG_HEIGHT, camera.videoSize.height)
             .putInt(CONFIG_FPS, camera.targetFps)
-            .remove(CONFIG_HIGH_SPEED)
+            .putBoolean(CONFIG_HIGH_SPEED, camera.highSpeed)
             .putLong(CONFIG_DYNAMIC_RANGE, camera.dynamicRangeProfile)
             .putString(CONFIG_MIME, encoder.mime)
             .apply()
@@ -708,7 +708,7 @@ class CaptureService : Service() {
     ): Pair<CameraProfile, EncoderProfile>? {
         val prefs = getSharedPreferences(CONFIG_CACHE_PREFS, MODE_PRIVATE)
         if (prefs.getString(CONFIG_SIGNATURE, null) != signature) return null
-        if (prefs.getBoolean(CONFIG_HIGH_SPEED, false)) return null
+        val rememberedHighSpeed = prefs.getBoolean(CONFIG_HIGH_SPEED, false)
         val cameraId = prefs.getString(CONFIG_CAMERA_ID, null) ?: return null
         val width = prefs.getInt(CONFIG_WIDTH, 0)
         val height = prefs.getInt(CONFIG_HEIGHT, 0)
@@ -725,7 +725,16 @@ class CaptureService : Service() {
         val characteristics = runCatching {
             getSystemService(CameraManager::class.java).getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return null
-        val fpsRange = resolveFpsRange(characteristics, rememberedSize, fps, false) ?: return null
+        val advertisedHighSpeedRange =
+            if (!allowHdr && fps >= CaptureModeStore.FPS_60) {
+                highSpeedRangeFor(characteristics, rememberedSize, fps)
+            } else {
+                null
+            }
+        if (rememberedHighSpeed && advertisedHighSpeedRange == null) return null
+        val fpsRange = advertisedHighSpeedRange
+            ?: resolveFpsRange(characteristics, rememberedSize, fps, false)
+            ?: return null
         val dynamicRange = when {
             allowHdr && supportsHlg10(characteristics) -> storedDynamicRange
             allowHdr -> return null
@@ -737,7 +746,7 @@ class CaptureService : Service() {
             videoSize = rememberedSize,
             targetFps = fps,
             fpsRange = fpsRange,
-            highSpeed = false,
+            highSpeed = advertisedHighSpeedRange != null,
             dynamicRangeProfile = dynamicRange
         )
         if (mime !in recordingSettings.codecMimes(profile.hdrHlg10)) return null
@@ -780,13 +789,20 @@ class CaptureService : Service() {
             else -> standardDynamicRangeProfile()
         }
         val size = recordingSettings.exactPreferredSize() ?: return null
+        val advertisedHighSpeedRange =
+            if (!allowHdr && targetFps >= CaptureModeStore.FPS_60) {
+                highSpeedRangeFor(characteristics, size, targetFps)
+            } else {
+                null
+            }
         val profile = createCameraProfile(
             cameraId = cameraId,
             characteristics = characteristics,
             videoSize = size,
             targetFps = targetFps,
-            fpsRange = resolveStandardFpsRange(characteristics, targetFps),
-            highSpeed = false,
+            fpsRange = advertisedHighSpeedRange
+                ?: resolveStandardFpsRange(characteristics, targetFps),
+            highSpeed = advertisedHighSpeedRange != null,
             dynamicRangeProfile = dynamicRange
         )
         if (!matchesRequestedMode(profile, targetFps)) return null
@@ -881,24 +897,48 @@ class CaptureService : Service() {
         fpsRange.lower == targetFps && fpsRange.upper == targetFps
 
     private fun CameraProfile.matchesRequestedFpsContract(): Boolean =
-        !highSpeed && hasExactFpsRange()
+        hasExactFpsRange()
 
 
     private fun Size.toPolicyDimensions() = StrictCaptureModePolicy.Dimensions(width, height)
 
-    /** A gravação usa somente Surface do MediaRecorder; não há MediaCodec/MediaMuxer manual. */
+    /**
+     * O MediaCodec recebe Camera2 por uma Surface PRIVATE. Para esse backend, a
+     * duração publicada para MediaRecorder não é a fonte de verdade.
+     */
     private fun encoderSurfaceMinFrameDurationNs(
         map: android.hardware.camera2.params.StreamConfigurationMap,
         size: Size,
-        preferMediaRecorder: Boolean = true
+        preferMediaRecorder: Boolean = false
     ): Long {
-        val recorderDuration = runCatching {
+        fun recorderDuration() = runCatching {
             map.getOutputMinFrameDuration(MediaRecorder::class.java, size)
         }.getOrNull()?.takeIf { it > 0L }
-        if (recorderDuration != null) return recorderDuration
-        return runCatching {
+
+        fun privateDuration() = runCatching {
             map.getOutputMinFrameDuration(ImageFormat.PRIVATE, size)
-        }.getOrNull()?.takeIf { it > 0L } ?: 0L
+        }.getOrNull()?.takeIf { it > 0L }
+
+        return if (preferMediaRecorder) {
+            recorderDuration() ?: privateDuration() ?: 0L
+        } else {
+            privateDuration() ?: recorderDuration() ?: 0L
+        }
+    }
+
+    private fun highSpeedRangeFor(
+        characteristics: CameraCharacteristics,
+        size: Size,
+        targetFps: Int
+    ): Range<Int>? {
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: return null
+        val sizes = runCatching { map.highSpeedVideoSizes.toList() }.getOrDefault(emptyList())
+        if (size !in sizes) return null
+        val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size).toList() }
+            .getOrDefault(emptyList())
+        return ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
+            ?: ranges.firstOrNull { it.upper == targetFps && it.lower <= targetFps }
     }
 
     private fun cadenceConfidence(profile: CameraProfile): CaptureCadencePolicy.Confidence {
@@ -910,7 +950,7 @@ class CaptureService : Service() {
         val minFrameDurationNs = encoderSurfaceMinFrameDurationNs(
             map,
             profile.videoSize,
-            preferMediaRecorder = true
+            preferMediaRecorder = activeRecorderBackendName.startsWith("OEM MediaRecorder")
         )
         return CaptureCadencePolicy.confidence(
             minFrameDurationNs = minFrameDurationNs,
@@ -1658,35 +1698,22 @@ class CaptureService : Service() {
 
         runCatching {
             armRecorderForFirstFrame(token)
-            val manualSensor = supportsManualSensor(profile)
-            if (
-                !recordingSettings.autoFpsLowLight &&
-                profile.targetFps == CaptureModeStore.FPS_60 &&
-                !profile.hdrHlg10 &&
-                manualSensor
-            ) {
-                // Recupera o caminho AE60 CLEAN usado nas branches iOS-like:
-                // captura primeiro a exposição real do AE e fixa frame-duration/ISO/exposure
-                // para impedir oscilações periódicas da HAL durante 60 FPS.
-                val recent = Camera3AStateStore.recentExposure(profile.cameraId)
-                val immediatePlan = recent?.let {
-                    fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso)
-                }
-                if (immediatePlan != null) {
-                    val fixedRequest = buildFixedCadenceRequest(profile, immediatePlan)
-                        ?: throw IllegalStateException("câmera não disponível para request de cadência fixa")
-                    session.setRepeatingRequest(fixedRequest, createRecordingCadenceCallback(profile, token), mainHandler)
-                    commitRecorderStart(profile, token, highSpeed = false)
-                } else {
-                    startWithFixedSensorCadence(session, request, profile, token)
-                }
-            } else {
-                // 30 FPS, HDR e Auto FPS continuam com AE contínuo.
-                session.setRepeatingRequest(request, createRecordingCadenceCallback(profile, token), mainHandler)
-                commitRecorderStart(profile, token, highSpeed = false)
-            }
+
+            // Samsung 4K60: preserve o caminho OEM de AE contínuo com faixa fixa
+            // 60-60. Não desligamos AE e não forçamos SENSOR_FRAME_DURATION,
+            // SENSOR_EXPOSURE_TIME ou ISO. Os testes no S25 mostraram gaps de
+            // 33,5 ms já no SENSOR_TIMESTAMP quando o caminho manual era ativado.
+            session.setRepeatingRequest(
+                request,
+                createRecordingCadenceCallback(profile, token),
+                mainHandler
+            )
+            commitRecorderStart(profile, token, highSpeed = false)
         }.onFailure {
-            failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}")
+            failSelectedConfigurationFromWorker(
+                token,
+                "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}"
+            )
         }
     }
 
@@ -3527,12 +3554,17 @@ class CaptureService : Service() {
         if (requestedAt <= 0L) return
         val elapsedMs = ((SystemClock.elapsedRealtimeNanos() - requestedAt) / 1_000_000L).coerceAtLeast(0L)
         val map = profile.characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val minFrameDurationNs = map?.let {
+        val privateMinNs = map?.let {
+            encoderSurfaceMinFrameDurationNs(it, profile.videoSize, preferMediaRecorder = false)
+        } ?: 0L
+        val recorderMinNs = map?.let {
             encoderSurfaceMinFrameDurationNs(it, profile.videoSize, preferMediaRecorder = true)
         } ?: 0L
         val cadence = cadenceConfidence(profile)
         val cadenceMessage = "Gravação ${sizeName(profile.videoSize)} ${profile.targetFps} FPS iniciada em ${elapsedMs} ms • " +
-            "cadênciaHAL=$cadence • minFrame=${if (minFrameDurationNs > 0L) minFrameDurationNs / 1_000_000.0 else -1.0}ms • câmera=${profile.cameraId}"
+            "cadênciaHAL=$cadence • privateMin=${if (privateMinNs > 0L) privateMinNs / 1_000_000.0 else -1.0}ms • " +
+            "recorderMin=${if (recorderMinNs > 0L) recorderMinNs / 1_000_000.0 else -1.0}ms • " +
+            "highSpeed=${profile.highSpeed} • câmera=${profile.cameraId}"
         Log.i(LOG_TAG, cadenceMessage)
     }
 
@@ -3609,7 +3641,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-highlight-guard-fixed-fps-1.8.274"
+        private const val CAPTURE_PIPELINE_REVISION = "samsung-4k60-clean-ae-private-surface-1.8.275"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
