@@ -505,7 +505,6 @@ class CaptureActivity : ComponentActivity() {
             if (!photoButton.isEnabled) return@setOnClickListener
             Haptics.photo(this)
             photoRequestedFromPreview = false
-            activateCurrentCameraProfile(CameraProfileStore.FunctionMode.PHOTO)
             beginPhotoFlow(isBurst = false)
         }
 
@@ -513,7 +512,6 @@ class CaptureActivity : ComponentActivity() {
             if (!burstButton.isEnabled) return@setOnClickListener
             Haptics.photo(this)
             photoRequestedFromPreview = false
-            activateCurrentCameraProfile(CameraProfileStore.FunctionMode.PHOTO)
             beginPhotoFlow(isBurst = true)
         }
 
@@ -683,7 +681,6 @@ class CaptureActivity : ComponentActivity() {
             if (isFinishing || isDestroyed || CaptureStateStore.isBusy(this) || PhotoCaptureStateStore.isBusy(this)) return@post
             Haptics.photo(this)
             photoRequestedFromPreview = false
-            activateCurrentCameraProfile(CameraProfileStore.FunctionMode.PHOTO)
             beginPhotoFlow(isBurst = false)
         }
     }
@@ -4038,7 +4035,7 @@ class CaptureActivity : ComponentActivity() {
     private fun renderBackgroundRecordingZoom() {
         if (!::backgroundRecordingZoomButton.isInitialized) return
         backgroundRecordingZoomButton.visibility = View.VISIBLE
-        val label = BackgroundRecordingZoom.label(CaptureSettings.snapshot(this).zoomRatio)
+        val label = BackgroundRecordingZoom.label(BackgroundRecordingZoom.selected(this))
         backgroundRecordingZoomButton.text = label
         backgroundRecordingZoomButton.contentDescription = "Alterar zoom da foto e do vídeo rápidos. Atual: $label"
     }
