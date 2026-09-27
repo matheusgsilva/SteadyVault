@@ -646,7 +646,10 @@ class AutoGapRepairService : Service() {
             if (startImmediately) {
                 AutoGapRepairSettings.setEnabled(context, true)
                 userPauseRequested = false
+                interactivePriorityRequested = false
                 immediateWidgetDrainRequested = true
+                AutoGapRepairQueueStore.recoverInterrupted(context)
+                AutoGapRepairQueueStore.removeMissingSources(context)
             }
             if (!AutoGapRepairSettings.snapshot(context).enabled) return
             AutoGapRepairQueueStore.enqueue(context, source, targetFps)
@@ -690,6 +693,10 @@ class AutoGapRepairService : Service() {
 
         fun resumeAfterCapture(context: Context) {
             capturePriorityRequested = false
+            userPauseRequested = false
+            AutoGapRepairQueueStore.recoverInterrupted(context)
+            AutoGapRepairQueueStore.removeMissingSources(context)
+            if (AutoGapRepairQueueStore.hasPending(context)) immediateWidgetDrainRequested = true
             resumeIfEnabled(context)
         }
 
@@ -720,6 +727,8 @@ class AutoGapRepairService : Service() {
 
         fun resumeByUser(context: Context) {
             userPauseRequested = false
+            AutoGapRepairQueueStore.recoverInterrupted(context)
+            AutoGapRepairQueueStore.removeMissingSources(context)
             resumeIfEnabled(context)
         }
 
@@ -732,6 +741,7 @@ class AutoGapRepairService : Service() {
                 CaptureStateStore.isBusy(context)
             ) return
             AutoGapRepairQueueStore.recoverInterrupted(context)
+            AutoGapRepairQueueStore.removeMissingSources(context)
             if (!AutoGapRepairQueueStore.hasPending(context)) return
             startSelf(context, ACTION_RESUME)
         }
