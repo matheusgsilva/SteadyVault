@@ -367,7 +367,7 @@ class DirectMediaCodecBackend(
                 android.util.Log.i(
                     "SteadyVaultCapture",
                     "MediaCodec cadence: frames=$writtenFrames, fps=" +
-                        String.format(java.util.Locale.US, "%.3f", measuredFps) +
+                        java.lang.String.format(java.util.Locale.US, "%.3f", measuredFps) +
                         ", maxGapUs=$maxWrittenGapUs, longGaps=$longGapCount"
                 )
             }
