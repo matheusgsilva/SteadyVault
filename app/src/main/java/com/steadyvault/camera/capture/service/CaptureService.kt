@@ -1013,6 +1013,17 @@ class CaptureService : Service() {
 
         val backend: RecordingBackend =
             if (preferDirectCodec) {
+                val integratedAudio = hasAudioPermission() && runCatching {
+                    startForegroundNow(
+                        "Preparando gravação direta…",
+                        includeMicrophone = true
+                    )
+                    true
+                }.getOrElse {
+                    Log.w(LOG_TAG, "Microfone indisponível; gravando vídeo sem áudio", it)
+                    false
+                }
+
                 DirectMediaCodecBackend(
                     outputFile = finalFile,
                     width = cameraProfile.videoSize.width,
@@ -1022,6 +1033,18 @@ class CaptureService : Service() {
                     videoBitrate = encoderProfile.bitrate,
                     iFrameIntervalSeconds = recordingSettings.iFrameIntervalSeconds,
                     orientationHint = calculateOrientationHint(cameraProfile.sensorOrientation),
+                    integratedAudio = integratedAudio,
+                    audioSampleRate = recordingSettings.audioSampleRate,
+                    audioBitrate = recordingSettings.audioBitrateKbps * 1_000,
+                    requestedAudioChannels = when (recordingSettings.audioChannels) {
+                        CaptureSettings.CHANNELS_MONO -> 1
+                        CaptureSettings.CHANNELS_STEREO -> 2
+                        else -> 0
+                    },
+                    audioGainDb = recordingSettings.audioGainDb,
+                    audioAgc = recordingSettings.audioAgc,
+                    audioNoiseSuppressor = recordingSettings.audioNoiseSuppressor,
+                    audioLowCut = recordingSettings.audioLowCut,
                     onError = { throwable ->
                         if (!stopping.get() && serviceActive.get()) {
                             failAndStop("MediaCodec direto: ${errorText(throwable)}")
