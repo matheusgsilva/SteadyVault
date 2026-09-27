@@ -325,11 +325,15 @@ class AutoGapRepairService : Service() {
                     preset = OptimizationPreset.REPAIR_ONLY,
                     frameRepair = mode,
                     codec = OutputCodec.SOURCE,
-                    rateMode = OptimizationRateMode.AUTO,
+                    rateMode = OptimizationRateMode.CBR,
                     targetFps = job.targetFps.takeIf { it > 0 } ?: analysis.estimatedFps,
                     targetWidth = 0,
                     targetHeight = 0,
-                    bitrateMbps = analysis.sourceBitrateMbps.roundToInt().coerceIn(4, 240),
+                    // Reparo não é etapa de compressão. Use folga de bitrate para
+                    // reduzir perda geracional durante a recodificação obrigatória.
+                    bitrateMbps = (analysis.sourceBitrateMbps * 1.20)
+                        .roundToInt()
+                        .coerceIn(4, 240),
                     keepAudio = true,
                     replaceOriginal = false,
                     maxInterpolatedFramesPerGap = settings.maxInterpolatedFramesPerGap,
@@ -359,6 +363,12 @@ class AutoGapRepairService : Service() {
                     val repairedAnalysis = VideoValidator.validateRepair(result.output, result.analysis)
                     require(repairedAnalysis.cadenceScore >= 90) {
                         "A saída ainda não atingiu a qualidade mínima de cadência"
+                    }
+                    if (result.transcoded && analysis.sourceBitrateMbps > 0.0) {
+                        val minimumPreservedBitrate = analysis.sourceBitrateMbps * 0.90
+                        require(repairedAnalysis.sourceBitrateMbps >= minimumPreservedBitrate) {
+                            "A recodificação reduziu demais o bitrate do original; reparo descartado para preservar qualidade"
+                        }
                     }
                     if (
                         needsFrameSynthesis &&
