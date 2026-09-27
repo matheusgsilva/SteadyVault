@@ -64,6 +64,7 @@ class AutoGapRepairService : Service() {
     @Volatile private var lastPublishedMessage = ""
     @Volatile private var lastPublishedAtMs = 0L
     @Volatile private var foregroundStarted = false
+    @Volatile private var discardCurrentRequested = false
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
@@ -124,6 +125,21 @@ class AutoGapRepairService : Service() {
                 cancelCurrent.set(true)
                 if (!workerRunning.get()) stopSelf(startId)
                 else publish(currentProgress, "Reparo pausado pelo usuário…", force = true)
+            }
+            ACTION_DISCARD_SOURCE -> {
+                val path = intent.getStringExtra(EXTRA_SOURCE_PATH)
+                    ?.let(::File)?.absoluteFile?.normalize()?.path.orEmpty()
+                if (path.isNotBlank()) {
+                    AutoGapRepairQueueStore.removeSource(this, File(path))
+                    if (currentSourcePath == path && workerRunning.get()) {
+                        discardCurrentRequested = true
+                        cancelCurrent.set(true)
+                        publish(currentProgress, "Cancelando reparo do vídeo excluído…", force = true)
+                    } else {
+                        AutoGapRepairQueueStore.removeMissingSources(this)
+                        kickWorker()
+                    }
+                }
             }
         }
         return if (
@@ -186,6 +202,9 @@ class AutoGapRepairService : Service() {
             }
         } finally {
             currentJobId = null
+            val discardedCurrent = discardCurrentRequested
+            discardCurrentRequested = false
+            if (discardedCurrent) cancelCurrent.set(false)
             workerRunning.set(false)
             processingActive = false
             releaseWakeLock()
@@ -604,6 +623,7 @@ class AutoGapRepairService : Service() {
         private const val ACTION_MANUAL_REPAIR = "com.steadyvault.camera.AUTO_GAP_REPAIR_MANUAL"
         private const val ACTION_PAUSE_CAPTURE = "com.steadyvault.camera.AUTO_GAP_REPAIR_PAUSE_CAPTURE"
         private const val ACTION_PAUSE_USER = "com.steadyvault.camera.AUTO_GAP_REPAIR_PAUSE_USER"
+        private const val ACTION_DISCARD_SOURCE = "com.steadyvault.camera.AUTO_GAP_REPAIR_DISCARD_SOURCE"
         const val EXTRA_SOURCE_PATH = "source_path"
         private const val EXTRA_TARGET_FPS = "target_fps"
         private const val CHANNEL_ID = "steadyvault_auto_gap_repair"
@@ -714,6 +734,18 @@ class AutoGapRepairService : Service() {
         fun resumeForBackground(context: Context) {
             interactivePriorityRequested = false
             resumeIfEnabled(context)
+        }
+
+        fun cancelAndForget(context: Context, source: File) {
+            val normalized = source.absoluteFile.normalize()
+            AutoGapRepairQueueStore.removeSource(context, normalized)
+            runCatching {
+                context.startService(
+                    Intent(context, AutoGapRepairService::class.java)
+                        .setAction(ACTION_DISCARD_SOURCE)
+                        .putExtra(EXTRA_SOURCE_PATH, normalized.path)
+                )
+            }
         }
 
         fun pauseByUser(context: Context) {
