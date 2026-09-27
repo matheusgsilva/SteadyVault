@@ -86,7 +86,10 @@ class VideoOptimizer {
 
         val canResample = config.frameRepair == FrameRepairMode.FILL_MISSING_FRAMES ||
             config.frameRepair == FrameRepairMode.ADAPTIVE_BLEND ||
-            config.frameRepair == FrameRepairMode.MOTION_COMPENSATED
+            config.frameRepair == FrameRepairMode.MOTION_COMPENSATED ||
+            config.frameRepair == FrameRepairMode.QUALITY_LOW_MOTION ||
+            config.frameRepair == FrameRepairMode.QUALITY_MEDIUM_MOTION ||
+            config.frameRepair == FrameRepairMode.QUALITY_HIGH_MOTION
         if (requestedFps != null && abs(requestedFps.toDouble() - analysis.exactFps) > 0.75 && !canResample) {
             throw IllegalArgumentException("Para converter o FPS real, use um modo de reparo com interpolação")
         }
@@ -129,7 +132,10 @@ class VideoOptimizer {
                 // Portanto podemos usar o campo de alta qualidade nesses poucos pontos
                 // sem pagar esse custo nos milhares de frames normais do vídeo.
                 highQualityMotion =
-                    config.frameRepair == FrameRepairMode.MOTION_COMPENSATED,
+                    config.frameRepair == FrameRepairMode.MOTION_COMPENSATED ||
+                        config.frameRepair == FrameRepairMode.QUALITY_LOW_MOTION ||
+                        config.frameRepair == FrameRepairMode.QUALITY_MEDIUM_MOTION ||
+                        config.frameRepair == FrameRepairMode.QUALITY_HIGH_MOTION,
                 trimStartUs = trimStartUs,
                 trimEndUs = trimEndUs
             ),
