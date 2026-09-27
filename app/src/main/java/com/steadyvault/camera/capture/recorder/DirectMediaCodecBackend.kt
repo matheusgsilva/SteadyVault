@@ -15,6 +15,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.abs
 
 /**
@@ -63,10 +64,25 @@ class DirectMediaCodecBackend(
         )
     }
 
+    private val muxerExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "SteadyVault-MuxerWriter")
+    }
+
+    private val encodedSampleQueue = EncodedSampleWriteQueue(
+        maxBytes = MAX_PENDING_MUXER_BYTES,
+        maxSamples = MAX_PENDING_MUXER_SAMPLES
+    )
+    private val encodedBufferPool = EncodedSampleBufferPool(
+        maxRetainedBytes = MAX_RETAINED_POOL_BYTES,
+        maxReusableBufferBytes = MAX_REUSABLE_BUFFER_BYTES
+    )
+    private val muxerFailure = AtomicReference<Throwable?>(null)
+
     private var codec: MediaCodec? = null
     private var inputSurface: Surface? = null
     private var muxer: MediaMuxer? = null
     private var drainFuture: Future<*>? = null
+    private var muxerFuture: Future<*>? = null
     private var audioRecorder: DirectAacAudioRecorder? = null
     private var audioTempFile: File? = null
     private val audioStarted = AtomicBoolean(false)
@@ -180,11 +196,19 @@ class DirectMediaCodecBackend(
         }
 
         runCatching { codec?.signalEndOfInputStream() }
-        runCatching { drainFuture?.get(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS) }
+        val drainCompleted = runCatching {
+            drainFuture?.get(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            true
+        }.getOrDefault(false)
+
+        encodedSampleQueue.close()
+        val writerCompleted = awaitMuxerWriter(MUXER_STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        val writerHealthy = muxerFailure.get() == null
 
         closeCodecAndMuxer()
         started = false
 
+        if (!drainCompleted || !writerCompleted || !writerHealthy) return false
         if (!outputFile.isFile || outputFile.length() <= 0L) return false
         if (!integratedAudio) return true
         if (!audioOk) return false
@@ -203,6 +227,10 @@ class DirectMediaCodecBackend(
         stopRequested.set(true)
         runCatching { codec?.signalEndOfInputStream() }
         runCatching { drainFuture?.get(RELEASE_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+        encodedSampleQueue.close()
+        if (!awaitMuxerWriter(RELEASE_MUXER_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            runCatching { muxerFuture?.cancel(true) }
+        }
         closeCodecAndMuxer()
         runCatching { audioRecorder?.release() }
         runCatching { audioTempFile?.delete() }
@@ -210,6 +238,7 @@ class DirectMediaCodecBackend(
         audioTempFile = null
         audioStarted.set(false)
         drainExecutor.shutdownNow()
+        muxerExecutor.shutdownNow()
 
         prepared = false
         armed = false
@@ -228,6 +257,8 @@ class DirectMediaCodecBackend(
         var syncRequested = false
         var gateOpen = false
         var firstPtsUs = 0L
+        var firstCommittedPtsUs = Long.MIN_VALUE
+        var committedIntervals = 0
 
         val nominalDeltaUs = 1_000_000L / targetFps.coerceAtLeast(1)
         val toleranceUs = maxOf(1_500L, nominalDeltaUs / 8L)
@@ -246,6 +277,7 @@ class DirectMediaCodecBackend(
                         videoTrack = mediaMuxer.addTrack(mediaCodec.outputFormat)
                         mediaMuxer.start()
                         muxerStarted = true
+                        startMuxerWriter(mediaMuxer, videoTrack)
                     }
 
                     index >= 0 -> {
@@ -264,10 +296,16 @@ class DirectMediaCodecBackend(
 
                             if (!committed.get()) {
                                 previousPtsUs = Long.MIN_VALUE
+                                firstCommittedPtsUs = Long.MIN_VALUE
+                                committedIntervals = 0
                                 stableIntervals = 0
                             } else if (!gateOpen) {
+                                if (firstCommittedPtsUs == Long.MIN_VALUE) {
+                                    firstCommittedPtsUs = ptsUs
+                                }
                                 if (previousPtsUs != Long.MIN_VALUE && ptsUs > previousPtsUs) {
                                     val deltaUs = ptsUs - previousPtsUs
+                                    committedIntervals++
                                     stableIntervals =
                                         if (abs(deltaUs - nominalDeltaUs) <= toleranceUs) {
                                             stableIntervals + 1
@@ -276,6 +314,12 @@ class DirectMediaCodecBackend(
                                         }
                                 }
                                 previousPtsUs = ptsUs
+
+                                rejectUnsustainedStartupCadenceIfNeeded(
+                                    firstPtsUs = firstCommittedPtsUs,
+                                    currentPtsUs = ptsUs,
+                                    intervals = committedIntervals
+                                )
 
                                 if (
                                     stableIntervals >= STABLE_INTERVALS_BEFORE_FILE &&
@@ -302,31 +346,121 @@ class DirectMediaCodecBackend(
                             }
 
                             if (gateOpen && muxerStarted && videoTrack >= 0) {
-                                buffer.position(info.offset)
-                                buffer.limit(info.offset + info.size)
-
-                                val adjusted = MediaCodec.BufferInfo().apply {
-                                    set(
-                                        info.offset,
-                                        info.size,
-                                        (ptsUs - firstPtsUs).coerceAtLeast(0L),
-                                        info.flags
-                                    )
-                                }
-                                mediaMuxer.writeSampleData(videoTrack, buffer, adjusted)
+                                enqueueEncodedSample(
+                                    source = buffer,
+                                    offset = info.offset,
+                                    size = info.size,
+                                    presentationTimeUs = (ptsUs - firstPtsUs).coerceAtLeast(0L),
+                                    flags = info.flags
+                                )
                             }
                         }
 
                         mediaCodec.releaseOutputBuffer(index, false)
 
+                        muxerFailure.get()?.let { throw it }
                         if (isEos) break
                     }
                 }
             }
         } catch (throwable: Throwable) {
+            muxerFailure.compareAndSet(null, throwable)
             if (!stopRequested.get() && !released.get()) {
                 onError(throwable)
             }
+        } finally {
+            encodedSampleQueue.close()
+        }
+    }
+
+    private fun enqueueEncodedSample(
+        source: ByteBuffer,
+        offset: Int,
+        size: Int,
+        presentationTimeUs: Long,
+        flags: Int
+    ) {
+        val storage = encodedBufferPool.acquire(size)
+        try {
+            source.position(offset)
+            source.limit(offset + size)
+            source.get(storage, 0, size)
+            val accepted = encodedSampleQueue.offer(
+                EncodedSample(
+                    data = storage,
+                    size = size,
+                    presentationTimeUs = presentationTimeUs,
+                    flags = flags
+                )
+            )
+            if (!accepted) {
+                throw IllegalStateException(
+                    "fila do MP4 saturou: " +
+                        "${encodedSampleQueue.pendingSamples()} samples / " +
+                        "${encodedSampleQueue.pendingBytes() / (1024 * 1024)} MiB"
+                )
+            }
+        } catch (throwable: Throwable) {
+            encodedBufferPool.release(storage)
+            throw throwable
+        }
+    }
+
+    private fun startMuxerWriter(mediaMuxer: MediaMuxer, videoTrack: Int) {
+        check(muxerFuture == null) { "writer do muxer iniciado duas vezes" }
+        muxerFuture = muxerExecutor.submit {
+            val info = MediaCodec.BufferInfo()
+            try {
+                while (true) {
+                    val sample = encodedSampleQueue.take(MUXER_POLL_TIMEOUT_MS)
+                    if (sample == null) {
+                        if (encodedSampleQueue.isClosedAndEmpty()) break
+                        continue
+                    }
+                    try {
+                        val buffer = ByteBuffer.wrap(sample.data, 0, sample.size)
+                        info.set(
+                            0,
+                            sample.size,
+                            sample.presentationTimeUs,
+                            sample.flags
+                        )
+                        mediaMuxer.writeSampleData(videoTrack, buffer, info)
+                    } finally {
+                        encodedBufferPool.release(sample.data)
+                    }
+                }
+            } catch (throwable: Throwable) {
+                muxerFailure.compareAndSet(null, throwable)
+                encodedSampleQueue.close()
+                if (!stopRequested.get() && !released.get()) {
+                    onError(throwable)
+                }
+            }
+        }
+    }
+
+    private fun awaitMuxerWriter(timeout: Long, unit: TimeUnit): Boolean =
+        runCatching {
+            muxerFuture?.get(timeout, unit)
+            true
+        }.getOrDefault(false)
+
+    private fun rejectUnsustainedStartupCadenceIfNeeded(
+        firstPtsUs: Long,
+        currentPtsUs: Long,
+        intervals: Int
+    ) {
+        if (targetFps < 60 || firstPtsUs == Long.MIN_VALUE || intervals < 1) return
+        val spanUs = currentPtsUs - firstPtsUs
+        if (spanUs < STARTUP_CADENCE_VALIDATION_US) return
+
+        val measuredFps = intervals.toDouble() * 1_000_000.0 / spanUs.toDouble()
+        if (measuredFps < targetFps * MIN_STARTUP_FPS_RATIO) {
+            throw IllegalStateException(
+                "câmera não sustentou ${targetFps} FPS: " +
+                    "cadência inicial ${String.format(java.util.Locale.US, "%.1f", measuredFps)} FPS"
+            )
         }
     }
 
@@ -502,8 +636,17 @@ class DirectMediaCodecBackend(
     companion object {
         private const val DEQUEUE_TIMEOUT_US = 10_000L
         private const val STOP_TIMEOUT_SECONDS = 4L
+        private const val MUXER_STOP_TIMEOUT_SECONDS = 15L
         private const val RELEASE_TIMEOUT_MS = 350L
+        private const val RELEASE_MUXER_TIMEOUT_MS = 1_500L
+        private const val MUXER_POLL_TIMEOUT_MS = 50L
         private const val STABLE_INTERVALS_BEFORE_FILE = 4
+        private const val STARTUP_CADENCE_VALIDATION_US = 750_000L
+        private const val MIN_STARTUP_FPS_RATIO = 0.90
+        private const val MAX_PENDING_MUXER_BYTES = 96L * 1024L * 1024L
+        private const val MAX_PENDING_MUXER_SAMPLES = 720
+        private const val MAX_RETAINED_POOL_BYTES = 32L * 1024L * 1024L
+        private const val MAX_REUSABLE_BUFFER_BYTES = 4 * 1024 * 1024
         private const val REMUX_BUFFER_BYTES = 16 * 1024 * 1024
     }
 }
