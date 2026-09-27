@@ -6,6 +6,7 @@ import com.steadyvault.camera.capture.recorder.DirectMediaRecorderBackend
 import com.steadyvault.camera.capture.recorder.DirectMediaCodecBackend
 import com.steadyvault.camera.capture.timing.RecordingStabilizationPolicy
 import com.steadyvault.camera.capture.timing.CaptureCadencePolicy
+import com.steadyvault.camera.capture.timing.FrameCadenceTracker
 import com.steadyvault.camera.capture.timing.StrictCaptureModePolicy
 import com.steadyvault.camera.capture.timing.SensorCadencePolicy
 
@@ -191,6 +192,7 @@ class CaptureService : Service() {
     private var fpsFallbackWarningLogged = false
     private var activeRecorderBackendName = ""
     private var activeRecorderMime: String? = null
+    private var cameraCadenceTracker: FrameCadenceTracker? = null
 
     @Volatile
     private var hybridAeBaselineExposureProduct = 0.0
@@ -313,6 +315,7 @@ class CaptureService : Service() {
             ?: recordingSettings.fps
         activeRecorderBackendName = ""
         activeRecorderMime = null
+        cameraCadenceTracker = null
         fpsFallbackWarningLogged = false
         val storedTargetResolution = CaptureSettings.resolutionForFps(this, requestedTargetFps)
         val resolvedTargetResolution = resolveCaptureResolutionForFps(
@@ -1627,7 +1630,7 @@ class CaptureService : Service() {
 
         runCatching {
             armRecorderForFirstFrame(token)
-            session.setRepeatingBurst(requests, null, mainHandler)
+            session.setRepeatingBurst(requests, createRecordingCadenceCallback(profile, token), mainHandler)
             commitRecorderStart(profile, token, highSpeed = true)
         }.onFailure {
             failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}")
@@ -1672,14 +1675,14 @@ class CaptureService : Service() {
                 if (immediatePlan != null) {
                     val fixedRequest = buildFixedCadenceRequest(profile, immediatePlan)
                         ?: throw IllegalStateException("câmera não disponível para request de cadência fixa")
-                    session.setRepeatingRequest(fixedRequest, null, mainHandler)
+                    session.setRepeatingRequest(fixedRequest, createRecordingCadenceCallback(profile, token), mainHandler)
                     commitRecorderStart(profile, token, highSpeed = false)
                 } else {
                     startWithFixedSensorCadence(session, request, profile, token)
                 }
             } else {
                 // 30 FPS, HDR e Auto FPS continuam com AE contínuo.
-                session.setRepeatingRequest(request, null, mainHandler)
+                session.setRepeatingRequest(request, createRecordingCadenceCallback(profile, token), mainHandler)
                 commitRecorderStart(profile, token, highSpeed = false)
             }
         }.onFailure {
@@ -1713,7 +1716,7 @@ class CaptureService : Service() {
             val lockedRequest = buildLockedAuto3ARequest(profile) ?: warmupRequest
 
             runCatching {
-                session.setRepeatingRequest(lockedRequest, null, mainHandler)
+                session.setRepeatingRequest(lockedRequest, createRecordingCadenceCallback(profile, token), mainHandler)
                 armRecorderForFirstFrame(token)
                 commitRecorderStart(profile, token, highSpeed = false)
 
@@ -2155,7 +2158,7 @@ class CaptureService : Service() {
 
             runCatching {
                 armRecorderForFirstFrame(token)
-                session.setRepeatingRequest(lockedRequest ?: warmupRequest, null, mainHandler)
+                session.setRepeatingRequest(lockedRequest ?: warmupRequest, createRecordingCadenceCallback(profile, token), mainHandler)
                 commitRecorderStart(profile, token, highSpeed = false)
             }.onFailure {
                 failSelectedConfigurationFromWorker(
@@ -2271,7 +2274,7 @@ class CaptureService : Service() {
 
                 val fixedRequest = plan?.let { buildFixedCadenceRequest(profile, it) }
                 runCatching {
-                    captureSession.setRepeatingRequest(fixedRequest ?: autoRequest, null, mainHandler)
+                    captureSession.setRepeatingRequest(fixedRequest ?: autoRequest, createRecordingCadenceCallback(profile, token), mainHandler)
                 }
             }
         }
@@ -3458,6 +3461,67 @@ class CaptureService : Service() {
         super.onDestroy()
     }
 
+    private fun createRecordingCadenceCallback(
+        profile: CameraProfile,
+        token: Int
+    ): CameraCaptureSession.CaptureCallback {
+        val tracker = cameraCadenceTracker ?: FrameCadenceTracker(profile.targetFps).also {
+            cameraCadenceTracker = it
+        }
+        val nominalMs = tracker.nominalDeltaNs / 1_000_000.0
+
+        return object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult
+            ) {
+                if (!isAttemptValid(token) || !recorderStarted || stopping.get()) return
+
+                val timestampNs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+                val observation = tracker.observe(timestampNs)
+
+                if (observation.nonMonotonic) {
+                    Log.w(
+                        LOG_TAG,
+                        "CAM TIMESTAMP não monotônico: frame=${observation.frameNumber} deltaNs=${observation.deltaNs}"
+                    )
+                    return
+                }
+
+                if (observation.gapDetected) {
+                    Log.w(
+                        LOG_TAG,
+                        String.format(
+                            Locale.US,
+                            "CAM GAP frame=%d delta=%.3fms nominal=%.3fms estMissing=%d gaps=%d",
+                            observation.frameNumber,
+                            (observation.deltaNs ?: 0L) / 1_000_000.0,
+                            nominalMs,
+                            observation.estimatedMissingFrames,
+                            observation.gapCount
+                        )
+                    )
+                }
+
+                if (observation.summaryDue) {
+                    Log.i(
+                        LOG_TAG,
+                        String.format(
+                            Locale.US,
+                            "CAM CADENCE frames=%d intervals=%d avg=%.2f FPS gaps=%d worst=%.3fms",
+                            observation.frameNumber,
+                            observation.intervalCount,
+                            observation.measuredFps ?: 0.0,
+                            observation.gapCount,
+                            observation.worstDeltaNs / 1_000_000.0
+                        )
+                    )
+                }
+            }
+        }
+    }
+
     private fun logRecordingStartup(profile: CameraProfile) {
         val requestedAt = recordingRequestedAtElapsedNs
         if (requestedAt <= 0L) return
@@ -3481,7 +3545,7 @@ class CaptureService : Service() {
             append(", faixaAE=").append(profile.fpsRange.lower).append('-').append(profile.fpsRange.upper)
             append(", câmera=").append(profile.cameraId)
             append(", resolução=").append(profile.videoSize.width).append('x').append(profile.videoSize.height)
-            append(", backend=MediaRecorder direto")
+            append(", backend=").append(activeRecorderBackendName.ifBlank { backend?.backendName ?: "desconhecido" })
         }
         fpsFallbackWarningLogged = true
         Log.i(LOG_TAG, info)
