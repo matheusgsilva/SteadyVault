@@ -1118,7 +1118,14 @@ class CaptureService : Service() {
             runCatching { backend.release() }
             runCatching { finalFile.delete() }
 
-            if (!preferDirectCodec) throw codecFailure
+            if (preferDirectCodec) {
+                val detail = "MediaCodec direto recusado em 60 FPS: ${errorText(codecFailure)}"
+                Log.e(LOG_TAG, detail, codecFailure)
+                AppLogRepository.error(this, "recording_backend", detail)
+                throw codecFailure
+            }
+
+            throw codecFailure
 
             Log.w(
                 LOG_TAG,
@@ -2771,7 +2778,7 @@ class CaptureService : Service() {
             append(", faixaAE=").append(profile.fpsRange.lower).append('-').append(profile.fpsRange.upper)
             append(", câmera=").append(profile.cameraId)
             append(", resolução=").append(profile.videoSize.width).append('x').append(profile.videoSize.height)
-            append(", backend=MediaRecorder direto")
+            append(", backend=").append(backend?.backendName ?: "indisponível")
         }
         fpsFallbackWarningLogged = true
         Log.i(LOG_TAG, info)
