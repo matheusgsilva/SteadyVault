@@ -195,6 +195,9 @@ class PhotoService : Service() {
         } ?: activatedSettings).let { settings ->
             requestedZoomRatio?.let { settings.copy(zoomRatio = it) } ?: settings
         }
+        if (quickCaptureZoom != null) {
+            CaptureSettings.save(this, captureSettings)
+        }
         latestAwbGains = null
         latestColorTransform = null
         previewSurfaceFallbackAttempted = false
