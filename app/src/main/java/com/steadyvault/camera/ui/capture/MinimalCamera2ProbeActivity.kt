@@ -4,7 +4,9 @@ import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
 import android.hardware.camera2.*
+import android.media.MediaFormat
 import android.media.MediaRecorder
+import com.steadyvault.camera.capture.recorder.DirectMediaRecorderBackend
 import java.util.concurrent.Executor
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.camera2.params.OutputConfiguration
@@ -37,6 +39,7 @@ class MinimalCamera2ProbeActivity : Activity() {
     private var camera: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var recorder: MediaRecorder? = null
+    private var directBackend: DirectMediaRecorderBackend? = null
     private var recorderSurface: Surface? = null
     private var started = false
     private var firstTimestampNs = 0L
@@ -63,25 +66,37 @@ class MinimalCamera2ProbeActivity : Activity() {
 
     private fun runProbe() {
         try {
-            val output = File(getExternalFilesDir(null), "minimal_camera2_probe_" + java.lang.System.currentTimeMillis() + ".mp4")
-            recorder = MediaRecorder(this).apply {
-                setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
-                setVideoSource(MediaRecorder.VideoSource.SURFACE)
-                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                setVideoEncoder(MediaRecorder.VideoEncoder.HEVC)
-                setVideoSize(WIDTH, HEIGHT)
-                setVideoFrameRate(FPS)
-                setVideoEncodingBitRate(120_000_000)
-                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                setAudioSamplingRate(48_000)
-                setAudioEncodingBitRate(320_000)
-                setAudioChannels(2)
-                setOrientationHint(90)
-                setOutputFile(output.absolutePath)
-                prepare()
-            }
-            recorderSurface = recorder!!.surface
-            Log.i(TAG, "PROBE CONFIG camera=$CAMERA_ID size=${WIDTH}x${HEIGHT} fps=$FPS backend=MediaRecorder durationMs=$DURATION_MS file=${output.absolutePath}")
+            val output = File(
+                getExternalFilesDir(null),
+                "minimal_camera2_probe_" + java.lang.System.currentTimeMillis() + ".mp4"
+            )
+            val backend = DirectMediaRecorderBackend(
+                context = this,
+                outputFile = output,
+                cameraId = CAMERA_ID,
+                width = WIDTH,
+                height = HEIGHT,
+                targetFps = FPS,
+                videoMime = MediaFormat.MIMETYPE_VIDEO_HEVC,
+                videoBitrate = 120_000_000,
+                hdrHlg10 = false,
+                orientationHint = 90,
+                integratedAudio = true,
+                audioSampleRate = 48_000,
+                audioBitrate = 320_000,
+                audioChannels = 2,
+                onError = { error ->
+                    Log.e(TAG, "PROBE BACKEND ERROR: ${error.message}", error)
+                }
+            )
+            directBackend = backend
+            recorderSurface = backend.prepare()
+            Log.i(
+                TAG,
+                "PROBE CONFIG backend=${backend.backendName} profile=${backend.profileDescription} " +
+                    "camera=$CAMERA_ID size=${WIDTH}x${HEIGHT} fps=$FPS durationMs=$DURATION_MS " +
+                    "file=${output.absolutePath}"
+            )
 
             val manager = getSystemService(CameraManager::class.java)
             manager.openCamera(CAMERA_ID, object : CameraDevice.StateCallback() {
@@ -262,8 +277,9 @@ class MinimalCamera2ProbeActivity : Activity() {
                         }
                     }
                 }
+                directBackend?.arm()
                 s.setRepeatingRequest(request, callback, handler)
-                recorder?.start()
+                directBackend?.commitStart()
                 started = true
                 Log.i(
                     TAG,
@@ -312,7 +328,7 @@ class MinimalCamera2ProbeActivity : Activity() {
 
     private fun finishProbe() {
         if (started) {
-            runCatching { recorder?.stop() }
+            runCatching { directBackend?.stop() }
             started = false
         }
         val intervals = (frameCount - 1).coerceAtLeast(0)
@@ -322,11 +338,13 @@ class MinimalCamera2ProbeActivity : Activity() {
 
         runCatching { session?.close() }
         runCatching { camera?.close() }
+        runCatching { directBackend?.release() }
         runCatching { recorder?.reset() }
         runCatching { recorder?.release() }
         session = null
         camera = null
         recorder = null
+        directBackend = null
         recorderSurface = null
         runOnUiThread { if (!isFinishing) finish() }
     }
@@ -335,6 +353,7 @@ class MinimalCamera2ProbeActivity : Activity() {
         super.onDestroy()
         runCatching { session?.close() }
         runCatching { camera?.close() }
+        runCatching { directBackend?.release() }
         runCatching { recorder?.release() }
         if (::thread.isInitialized) thread.quitSafely()
     }
