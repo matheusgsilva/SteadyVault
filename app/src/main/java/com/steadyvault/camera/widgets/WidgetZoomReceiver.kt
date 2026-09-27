@@ -20,9 +20,11 @@ class WidgetZoomReceiver : BroadcastReceiver() {
         }
         val settings = CaptureSettings.snapshot(context)
         val choices = BackgroundRecordingZoom.choices
-        val currentIndex = choices.indices.minByOrNull { abs(choices[it] - settings.zoomRatio) } ?: 1
-        val next = choices[(currentIndex + 1) % choices.size]
-        CaptureSettings.save(context, settings.copy(zoomRatio = next))
+        val current = BackgroundRecordingZoom.selected(context)
+        val currentIndex = choices.indices.minByOrNull { abs(choices[it] - current) } ?: 1
+        val requested = choices[(currentIndex + 1) % choices.size]
+        val effective = BackgroundRecordingZoom.set(context, requested)
+        CaptureSettings.save(context, settings.copy(zoomRatio = effective))
         Haptics.tap(context)
         WidgetRenderer.updateZoomControl(context)
     }
