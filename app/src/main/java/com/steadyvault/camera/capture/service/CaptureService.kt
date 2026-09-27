@@ -1570,7 +1570,9 @@ class CaptureService : Service() {
             createRecordRequestBuilder(camera).apply {
                 addTarget(surface)
                 configureCaptureRequest(this, profile)
-                if (!profile.highSpeed) applyFinalWhiteBalance(this, profile)
+                if (!profile.highSpeed && profile.targetFps < CaptureModeStore.FPS_60) {
+                    applyFinalWhiteBalance(this, profile)
+                }
             }
 
         val request =
@@ -1590,6 +1592,7 @@ class CaptureService : Service() {
                 setDynamicRangeProfile(profile.dynamicRangeProfile)
                 if (
                     !profile.highSpeed &&
+                    profile.targetFps < CaptureModeStore.FPS_60 &&
                     profile.streamUseCaseSupported
                 ) {
                     setStreamUseCase(
@@ -2513,6 +2516,10 @@ class CaptureService : Service() {
             configureConstrainedHighSpeedRequest(builder, profile)
             return
         }
+        if (profile.targetFps >= CaptureModeStore.FPS_60 && manualCadence == null) {
+            configureMinimal60FpsRequest(builder, profile)
+            return
+        }
         setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
         if (manualCadence == null) {
             setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
@@ -2713,6 +2720,97 @@ class CaptureService : Service() {
      * reduzido. Não reaproveite o request regular: estabilização e pós-processamento
      * extra podem fazer a HAL Samsung aceitar a sessão mas quebrar a cadência.
      */
+    /**
+     * Experimento de cadência 60 FPS: mantém somente os controles indispensáveis
+     * para vídeo contínuo. Nada de zoom, perfis de cor, WB manual, estabilização
+     * ou pós-processamento que possa criar uma etapa extra dentro da HAL.
+     */
+    private fun configureMinimal60FpsRequest(
+        builder: CaptureRequest.Builder,
+        profile: CameraProfile
+    ) {
+        setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+        setSafely(builder, CaptureRequest.CONTROL_CAPTURE_INTENT, CameraMetadata.CONTROL_CAPTURE_INTENT_VIDEO_RECORD)
+        setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+        setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
+        setSafely(builder, CaptureRequest.CONTROL_AE_LOCK, false)
+        setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
+
+        val afModes = profile.characteristics.get(
+            CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES
+        ) ?: intArrayOf()
+        when {
+            afModes.contains(CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO) ->
+                setSafely(builder, CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            afModes.contains(CameraMetadata.CONTROL_AF_MODE_OFF) ->
+                setSafely(builder, CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+        }
+
+        val awbModes = profile.characteristics.get(
+            CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES
+        ) ?: intArrayOf()
+        if (awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_AUTO)) {
+            setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+        }
+
+        setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+        OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
+        setSafely(builder, CaptureRequest.CONTROL_ENABLE_ZSL, false)
+        setSafely(builder, CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
+        setSafely(builder, CaptureRequest.STATISTICS_FACE_DETECT_MODE, CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF)
+
+        val noiseModes = profile.characteristics.get(
+            CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES
+        ) ?: intArrayOf()
+        if (noiseModes.contains(CameraMetadata.NOISE_REDUCTION_MODE_OFF)) {
+            setSafely(builder, CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF)
+        }
+
+        val edgeModes = profile.characteristics.get(
+            CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES
+        ) ?: intArrayOf()
+        if (edgeModes.contains(CameraMetadata.EDGE_MODE_OFF)) {
+            setSafely(builder, CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_OFF)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val distortionModes = profile.characteristics.get(
+                CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES
+            ) ?: intArrayOf()
+            if (distortionModes.contains(CameraMetadata.DISTORTION_CORRECTION_MODE_OFF)) {
+                setSafely(builder, CaptureRequest.DISTORTION_CORRECTION_MODE, CameraMetadata.DISTORTION_CORRECTION_MODE_OFF)
+            }
+        }
+
+        val aberrationModes = profile.characteristics.get(
+            CameraCharacteristics.COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES
+        ) ?: intArrayOf()
+        if (aberrationModes.contains(CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF)) {
+            setSafely(builder, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF)
+        }
+
+        val hotPixelModes = profile.characteristics.get(
+            CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES
+        ) ?: intArrayOf()
+        if (hotPixelModes.contains(CameraMetadata.HOT_PIXEL_MODE_OFF)) {
+            setSafely(builder, CaptureRequest.HOT_PIXEL_MODE, CameraMetadata.HOT_PIXEL_MODE_OFF)
+        }
+
+        val shadingModes = profile.characteristics.get(
+            CameraCharacteristics.SHADING_AVAILABLE_MODES
+        ) ?: intArrayOf()
+        if (shadingModes.contains(CameraMetadata.SHADING_MODE_OFF)) {
+            setSafely(builder, CaptureRequest.SHADING_MODE, CameraMetadata.SHADING_MODE_OFF)
+        }
+
+        Log.i(
+            LOG_TAG,
+            "MINIMAL60 ativo: AE=${profile.fpsRange.lower}-${profile.fpsRange.upper} " +
+                "AF=continuous/off AWB=auto EIS=off OIS=off NR=off EDGE=off " +
+                "DISTORTION=off ABERRATION=off FACE=off ZSL=off streamUseCase=off"
+        )
+    }
+
     private fun configureConstrainedHighSpeedRequest(
         builder: CaptureRequest.Builder,
         profile: CameraProfile
@@ -3768,7 +3866,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "samsung-4k60-physical-output-1.8.276"
+        private const val CAPTURE_PIPELINE_REVISION = "minimal60-camera2-controls-1.8.277"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
