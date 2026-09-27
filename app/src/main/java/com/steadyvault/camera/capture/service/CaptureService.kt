@@ -1462,44 +1462,88 @@ class CaptureService : Service() {
     private fun calculateOrientationHint(sensorOrientation: Int): Int =
         ((sensorOrientation % 360) + 360) % 360
 
+    private fun directPhysicalProfile(profile: CameraProfile): CameraProfile {
+        val physicalId = profile.physicalCameraId ?: return profile
+        if (profile.highSpeed || profile.targetFps < CaptureModeStore.FPS_60) return profile
+
+        val manager = getSystemService(CameraManager::class.java)
+        val physical = runCatching { manager.getCameraCharacteristics(physicalId) }
+            .getOrNull() ?: return profile
+
+        val eisModes = physical.get(
+            CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES
+        ) ?: intArrayOf()
+        val exactRange = physical.get(
+            CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
+        )?.firstOrNull { it.lower == profile.targetFps && it.upper == profile.targetFps }
+            ?: profile.fpsRange
+
+        val direct = profile.copy(
+            cameraId = physicalId,
+            characteristics = physical,
+            fpsRange = exactRange,
+            previewStabilizationSupported =
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    eisModes.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION),
+            eisSupported = eisModes.contains(CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON),
+            oisCapability = oisCapability(physicalId, physical),
+            streamUseCaseSupported = supportsVideoRecordStreamUseCase(physical),
+            sensorOrientation = physical.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: profile.sensorOrientation,
+            physicalCameraId = null
+        )
+
+        Log.i(
+            LOG_TAG,
+            "DIRECT PHYSICAL profile logical=${profile.cameraId} -> camera=${direct.cameraId} " +
+                "size=${direct.videoSize.width}x${direct.videoSize.height} " +
+                "fps=${direct.fpsRange.lower}-${direct.fpsRange.upper}"
+        )
+        return direct
+    }
+
     private fun openSelectedCamera(profile: CameraProfile, token: Int) {
         if (!isAttemptValid(token)) return
 
+        val effectiveProfile = directPhysicalProfile(profile)
         sendStateOnMain(
-            "Abrindo ${sizeName(profile.videoSize)} • " +
-                    "${fpsModeName(profile)} • " +
-                    "${encoderName()} • " +
-                    stabilizationName(profile)
+            "Abrindo ${sizeName(effectiveProfile.videoSize)} • " +
+                "${fpsModeName(effectiveProfile)} • " +
+                "${encoderName()} • " +
+                stabilizationName(effectiveProfile)
         )
 
         val manager = getSystemService(CameraManager::class.java)
-
         if (
             checkSelfPermission(Manifest.permission.CAMERA) !=
             PackageManager.PERMISSION_GRANTED
-        ) {
-            throw SecurityException("permissão da câmera foi revogada")
+        ) throw SecurityException("permissão da câmera foi revogada")
+
+        if (effectiveProfile.cameraId != profile.cameraId) {
+            Log.i(
+                LOG_TAG,
+                "DIRECT PHYSICAL opening camera=${effectiveProfile.cameraId} insteadOfLogical=${profile.cameraId}"
+            )
         }
 
-        try {
-            manager.openCamera(
-                profile.cameraId,
-                cameraExecutor,
-                object : CameraDevice.StateCallback() {
+        manager.openCamera(
+            effectiveProfile.cameraId,
+            cameraExecutor,
+            object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     if (!isAttemptValid(token)) {
                         camera.close()
                         return
                     }
-            
-                    synchronized(resourceLock) {
-                        cameraDevice = camera
-                    }
+                    synchronized(resourceLock) { cameraDevice = camera }
+                    Log.i(
+                        LOG_TAG,
+                        "DIRECT PHYSICAL opened camera=${camera.id} profilePhysical=${effectiveProfile.physicalCameraId ?: "none"}"
+                    )
 
                     if (headlessCaptureRequested) {
-                        maybeCreateHeadlessSession(camera, profile, token)
+                        maybeCreateHeadlessSession(camera, effectiveProfile, token)
                     } else {
-                        createRecordingSessionSafely(camera, profile, token)
+                        createRecordingSessionSafely(camera, effectiveProfile, token)
                     }
                 }
 
@@ -1518,11 +1562,8 @@ class CaptureService : Service() {
                         if (cameraDevice === camera) cameraDevice = null
                     }
                 }
-                }
-            )
-        } catch (throwable: CameraAccessException) {
-            throw throwable
-        }
+            }
+        )
     }
 
     /**
@@ -3789,7 +3830,7 @@ class CaptureService : Service() {
         val cadenceMessage = "Gravação ${sizeName(profile.videoSize)} ${profile.targetFps} FPS iniciada em ${elapsedMs} ms • " +
             "cadênciaHAL=$cadence • privateMin=${if (privateMinNs > 0L) privateMinNs / 1_000_000.0 else -1.0}ms • " +
             "recorderMin=${if (recorderMinNs > 0L) recorderMinNs / 1_000_000.0 else -1.0}ms • " +
-            "highSpeed=${profile.highSpeed} • câmera=${profile.cameraId} • physical=${profile.physicalCameraId ?: "none"}"
+            "highSpeed=${profile.highSpeed} • câmera=${profile.cameraId} • physical=${profile.physicalCameraId ?: "direct"}"
         Log.i(LOG_TAG, cadenceMessage)
     }
 
@@ -3866,7 +3907,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "minimal60-camera2-controls-1.8.277"
+        private const val CAPTURE_PIPELINE_REVISION = "direct-physical-camera-60fps-1.8.278"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
