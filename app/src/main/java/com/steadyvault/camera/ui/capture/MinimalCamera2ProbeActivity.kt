@@ -5,6 +5,12 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.hardware.camera2.*
 import android.media.MediaRecorder
+import java.util.concurrent.Executor
+import android.hardware.camera2.params.SessionConfiguration
+import android.hardware.camera2.params.OutputConfiguration
+import android.hardware.camera2.params.DynamicRangeProfiles
+import android.graphics.ImageFormat
+import android.graphics.ColorSpace
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -210,7 +216,13 @@ class MinimalCamera2ProbeActivity : Activity() {
                 "HOTPIXEL=off SHADING=off FACE=off ZSL=off intent=VIDEO_RECORD"
         )
 
-        device.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
+        val outputConfiguration = OutputConfiguration(surface).apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                setDynamicRangeProfile(DynamicRangeProfiles.STANDARD)
+            }
+        }
+        val sessionExecutor = Executor { command -> handler.post(command) }
+        val stateCallback = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(s: CameraCaptureSession) {
                 session = s
                 val callback = object : CameraCaptureSession.CaptureCallback() {
@@ -227,7 +239,13 @@ class MinimalCamera2ProbeActivity : Activity() {
                             if (delta > worstDeltaNs) worstDeltaNs = delta
                             if (delta >= GAP_THRESHOLD_NS) {
                                 gapCount++
-                                Log.w(TAG, "PROBE GAP frame=$frameCount delta=${"%.3f".format(delta / 1_000_000.0)}ms nominal=${"%.3f".format(NOMINAL_NS / 1_000_000.0)}ms gaps=$gapCount")
+                                Log.w(
+                                    TAG,
+                                    "PROBE GAP frame=$frameCount " +
+                                        "delta=${"%.3f".format(delta / 1_000_000.0)}ms " +
+                                        "nominal=${"%.3f".format(NOMINAL_NS / 1_000_000.0)}ms " +
+                                        "gaps=$gapCount"
+                                )
                             }
                         }
                         previousTimestampNs = ts
@@ -235,21 +253,61 @@ class MinimalCamera2ProbeActivity : Activity() {
                         if (intervals > 0 && intervals % 120 == 0) {
                             val elapsedNs = ts - firstTimestampNs
                             val avg = intervals * 1_000_000_000.0 / elapsedNs
-                            Log.i(TAG, "PROBE CADENCE frames=$frameCount intervals=$intervals avg=${"%.2f".format(avg)} FPS gaps=$gapCount worst=${"%.3f".format(worstDeltaNs / 1_000_000.0)}ms")
+                            Log.i(
+                                TAG,
+                                "PROBE CADENCE frames=$frameCount intervals=$intervals " +
+                                    "avg=${"%.2f".format(avg)} FPS gaps=$gapCount " +
+                                    "worst=${"%.3f".format(worstDeltaNs / 1_000_000.0)}ms"
+                            )
                         }
                     }
                 }
                 s.setRepeatingRequest(request, callback, handler)
                 recorder?.start()
                 started = true
-                Log.i(TAG, "PROBE START template=PREVIEW AE=60-60 outputs=1 physicalBinding=false")
+                Log.i(
+                    TAG,
+                    "PROBE START SESSIONCONFIG regular outputConfig=1 dynamicRange=STANDARD " +
+                        "sessionParameters=true colorSpace=BT709-if-supported " +
+                        "template=PREVIEW AE=60-60 physicalBinding=false streamUseCase=off"
+                )
                 handler.postDelayed({ finishProbe() }, DURATION_MS)
             }
+
             override fun onConfigureFailed(s: CameraCaptureSession) {
                 Log.e(TAG, "PROBE FAIL session configure")
                 finishProbe()
             }
-        }, handler)
+        }
+
+        val sessionConfiguration = SessionConfiguration(
+            SessionConfiguration.SESSION_REGULAR,
+            listOf(outputConfiguration),
+            sessionExecutor,
+            stateCallback
+        ).apply {
+            setSessionParameters(request)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val supported = runCatching {
+                    characteristics.get(
+                        CameraCharacteristics.REQUEST_AVAILABLE_COLOR_SPACE_PROFILES
+                    )?.getSupportedColorSpacesForDynamicRange(
+                        ImageFormat.PRIVATE,
+                        DynamicRangeProfiles.STANDARD
+                    )
+                }.getOrNull()
+                if (supported?.contains(ColorSpace.Named.BT709) == true) {
+                    setColorSpace(ColorSpace.Named.BT709)
+                }
+            }
+        }
+
+        Log.i(
+            TAG,
+            "PROBE SESSION MIRROR OutputConfiguration + SessionConfiguration(REGULAR) + " +
+                "sessionParameters + STANDARD dynamic range + BT709-if-supported"
+        )
+        device.createCaptureSession(sessionConfiguration)
     }
 
     private fun finishProbe() {
