@@ -107,14 +107,6 @@ class DirectMediaCodecBackend(
             // buffers produzidos pela câmera. Se a HAL atrasar um frame, repetimos o
             // último após um período nominal e, no Android 12+, proibimos a Surface
             // de descartar buffers para "alcançar" o produtor.
-            val nominalFrameUs = 1_000_000L / targetFps.coerceAtLeast(1)
-            // Não repetir no intervalo nominal: no S25 isso inseriu frames demais
-            // (~73 fps). Só preenche um buraco quando a câmera realmente passa
-            // de ~1,5 frame sem entregar um novo buffer.
-            setLong(
-                MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,
-                nominalFrameUs * 3L / 2L
-            )
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 0)
             }
