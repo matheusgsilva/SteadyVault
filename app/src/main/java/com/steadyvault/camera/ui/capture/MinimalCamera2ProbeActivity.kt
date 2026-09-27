@@ -40,6 +40,8 @@ class MinimalCamera2ProbeActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.decorView.setBackgroundColor(android.graphics.Color.BLACK)
+        Log.i(TAG, "PROBE ACTIVITY CREATED package=$packageName")
         thread = HandlerThread("MinimalCamera2Probe").apply { start() }
         handler = Handler(thread.looper)
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED ||
@@ -48,6 +50,7 @@ class MinimalCamera2ProbeActivity : Activity() {
             finishProbe()
             return
         }
+        Log.i(TAG, "PROBE permissions OK; iniciando teste mínimo Camera2 1080p60")
         handler.post { runProbe() }
     }
 
