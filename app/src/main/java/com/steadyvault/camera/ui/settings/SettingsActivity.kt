@@ -2227,6 +2227,7 @@ class SettingsActivity : FragmentActivity() {
         val fpsCapability = modeCatalog().profile(selectedFps)
         return listOf(
             CaptureSettings.RESOLUTION_4K,
+            CaptureSettings.RESOLUTION_2K,
             CaptureSettings.RESOLUTION_1080P,
             CaptureSettings.RESOLUTION_720P
         ).map { value ->
