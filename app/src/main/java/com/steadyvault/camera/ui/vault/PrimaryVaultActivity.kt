@@ -1698,6 +1698,7 @@ class PrimaryVaultActivity : FragmentActivity() {
                     1 -> showMediaDetails(item)
                     2 -> {
                         VideoProcessingService.cancel(this)
+                        AutoGapRepairService.cancelAndForget(this, item.file)
                         Toast.makeText(this, "Cancelando processamento…", Toast.LENGTH_SHORT).show()
                         scheduleOptimizationRefresh()
                     }
@@ -1848,6 +1849,7 @@ class PrimaryVaultActivity : FragmentActivity() {
             message = "Aguardando o arquivo ser liberado com segurança…"
         )
         VideoProcessingService.cancel(this)
+        AutoGapRepairService.cancelAndForget(this, item.file)
         val deadline = SystemClock.uptimeMillis() + PROCESSING_RELEASE_TIMEOUT_MS
         fun check() {
             if (isFinishing || isDestroyed) {
