@@ -134,6 +134,10 @@ class DirectMediaCodecBackend(
 
             val surface = mediaCodec.createInputSurface()
             inputSurface = surface
+            Log.i(
+                LOG_TAG,
+                "MediaCodec input surface=STANDARD createInputSurface() • persistentAppSurface=false"
+            )
 
             val mediaMuxer = MediaMuxer(
                 outputFile.absolutePath,
