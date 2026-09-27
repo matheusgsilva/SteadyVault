@@ -214,6 +214,15 @@ object AutoGapRepairQueueStore {
     fun hasPending(context: Context): Boolean = load(context).any { it.status == Status.PENDING }
 
     @Synchronized
+    fun removeSource(context: Context, source: File): Int {
+        val path = source.absoluteFile.normalize().path
+        val jobs = load(context)
+        val kept = jobs.filterNot { it.sourcePath == path }
+        if (kept.size != jobs.size) save(context, kept)
+        return jobs.size - kept.size
+    }
+
+    @Synchronized
     fun removeMissingSources(context: Context) {
         val jobs = load(context).filter { job ->
             job.status in setOf(Status.SUCCESS, Status.SKIPPED) || File(job.sourcePath).isFile
