@@ -21,5 +21,18 @@ object HardwareSupportPolicy {
 
     fun shouldExpose(support: Support): Boolean = support != Support.UNSUPPORTED
 
+    fun shouldExpose(support: Support, scanCompleted: Boolean): Boolean =
+        shouldExpose(support) || !scanCompleted
+
     fun isSelectable(support: Support): Boolean = support != Support.UNSUPPORTED
+
+    fun isSelectable(
+        support: Support,
+        scanCompleted: Boolean,
+        hasSnapshot: Boolean
+    ): Boolean = when (support) {
+        Support.SUPPORTED -> true
+        Support.UNVERIFIED -> !scanCompleted || hasSnapshot
+        Support.UNSUPPORTED -> false
+    }
 }
