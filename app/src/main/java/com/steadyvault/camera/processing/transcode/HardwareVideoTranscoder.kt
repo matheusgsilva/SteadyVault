@@ -153,8 +153,7 @@ class HardwareVideoTranscoder {
                 encoderCapabilities?.complexityRange?.let { complexityRange ->
                     val complexity = when (request.preset) {
                         OptimizationPreset.HIGH_QUALITY -> complexityRange.upper
-                        OptimizationPreset.REPAIR_ONLY ->
-                            complexityRange.lower + (complexityRange.upper - complexityRange.lower) / 2
+                        OptimizationPreset.REPAIR_ONLY -> complexityRange.upper
                     }
                     setInteger(MediaFormat.KEY_COMPLEXITY, complexity.coerceIn(complexityRange.lower, complexityRange.upper))
                 }
