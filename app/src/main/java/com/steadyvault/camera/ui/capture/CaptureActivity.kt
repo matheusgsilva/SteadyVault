@@ -3725,13 +3725,16 @@ class CaptureActivity : ComponentActivity() {
         photoRequestedFromPreview = false
         activePreviewPhotoCapture = fromPreview
         val action = if (isBurst) PhotoService.ACTION_BURST else PhotoService.ACTION_CAPTURE
+        val currentSettings = CaptureSettings.snapshot(this)
         val preferredCameraId = idlePreview.currentCameraId().takeIf { fromPreview }
-            ?: CaptureSettings.snapshot(this).selectedCameraId
+            ?: currentSettings.selectedCameraId
+        val captureZoomRatio = currentSettings.zoomRatio
         val started = runCatching {
             val intent = Intent(this, PhotoService::class.java)
                 .setAction(action)
                 .putExtra(PhotoService.EXTRA_FROM_WIDGET, false)
                 .putExtra(PhotoService.EXTRA_FROM_PREVIEW, fromPreview)
+                .putExtra(PhotoService.EXTRA_ZOOM_RATIO, captureZoomRatio)
             preferredCameraId?.takeIf { it.isNotBlank() }?.let {
                 intent.putExtra(PhotoService.EXTRA_PREFERRED_CAMERA_ID, it)
             }
