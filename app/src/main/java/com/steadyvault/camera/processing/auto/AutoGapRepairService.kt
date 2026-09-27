@@ -364,12 +364,6 @@ class AutoGapRepairService : Service() {
                     require(repairedAnalysis.cadenceScore >= 90) {
                         "A saída ainda não atingiu a qualidade mínima de cadência"
                     }
-                    if (result.transcoded && analysis.sourceBitrateMbps > 0.0) {
-                        val minimumPreservedBitrate = analysis.sourceBitrateMbps * 0.90
-                        require(repairedAnalysis.sourceBitrateMbps >= minimumPreservedBitrate) {
-                            "A recodificação reduziu demais o bitrate do original; reparo descartado para preservar qualidade"
-                        }
-                    }
                     if (
                         needsFrameSynthesis &&
                         (mode == FrameRepairMode.MOTION_COMPENSATED ||
@@ -424,12 +418,6 @@ class AutoGapRepairService : Service() {
                 workFile?.takeIf { it.exists() }?.delete()
                 workFile = null
 
-                // Falha de preservação de qualidade não depende do algoritmo visual:
-                // tentar blend/quadro vizinho recodificaria o vídeo inteiro novamente
-                // e só repetiria o mesmo problema de bitrate.
-                if (failure?.message?.contains("reduziu demais o bitrate do original") == true) {
-                    break
-                }
             }
 
             AutoGapRepairQueueStore.markError(
