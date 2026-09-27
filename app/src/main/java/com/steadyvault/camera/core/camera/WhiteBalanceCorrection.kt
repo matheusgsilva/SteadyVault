@@ -20,17 +20,24 @@ object WhiteBalanceCorrection {
             CaptureSettings.YELLOW_REDUCTION_MEDIUM -> 0.12f
             CaptureSettings.YELLOW_REDUCTION_STRONG -> 0.20f
             CaptureSettings.YELLOW_REDUCTION_AUTO -> automatic
+            CaptureSettings.YELLOW_REDUCTION_WARM_LIGHT -> -0.06f
+            CaptureSettings.YELLOW_REDUCTION_WARM_MEDIUM -> -0.12f
+            CaptureSettings.YELLOW_REDUCTION_WARM_STRONG -> -0.20f
             else -> 0f
         }
     }
 
-    fun adjustedGains(gains: RggbChannelVector, strength: Float): RggbChannelVector =
-        RggbChannelVector(
-            (gains.red * (1f - strength * 0.55f)).coerceIn(1f, 8f),
+    fun adjustedGains(gains: RggbChannelVector, strength: Float): RggbChannelVector {
+        val cool = strength.coerceAtLeast(0f)
+        val warm = (-strength).coerceAtLeast(0f)
+        return RggbChannelVector(
+            (gains.red * (1f - cool * 0.55f + warm * 0.85f)).coerceIn(1f, 8f),
             gains.greenEven.coerceIn(1f, 8f),
             gains.greenOdd.coerceIn(1f, 8f),
-            (gains.blue * (1f + strength)).coerceIn(1f, 8f)
+            (gains.blue * (1f + cool - warm * 0.70f)).coerceIn(1f, 8f)
         )
+    }
 
     fun useIncandescentFallback(strength: Float): Boolean = strength >= 0.10f
+    fun useWarmFallback(strength: Float): Boolean = strength <= -0.10f
 }
