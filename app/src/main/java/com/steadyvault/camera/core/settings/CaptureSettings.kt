@@ -7,6 +7,7 @@ import android.util.Size
 object CaptureSettings {
     const val RESOLUTION_8K = "8K"
     const val RESOLUTION_4K = "4K"
+    const val RESOLUTION_2K = "2K"
     const val RESOLUTION_1080P = "1080P"
     const val RESOLUTION_720P = "720P"
 
@@ -102,6 +103,7 @@ object CaptureSettings {
         fun exactPreferredSize(): Size? = when (resolution) {
             RESOLUTION_8K -> EIGHT_K_SIZE
             RESOLUTION_4K -> UHD_SIZE
+            RESOLUTION_2K -> QHD_SIZE
             RESOLUTION_1080P -> FHD_SIZE
             RESOLUTION_720P -> HD_SIZE
             else -> null
@@ -268,6 +270,7 @@ object CaptureSettings {
             RESOLUTION_8K -> if (fps == 60) 180 else 100
             RESOLUTION_720P -> if (fps == 60) 15 else 10
             RESOLUTION_1080P -> if (fps == 60) 28 else 20
+            RESOLUTION_2K -> if (fps == 60) 40 else 30
             RESOLUTION_4K -> if (fps == 60) 60 else 48
             else -> if (fps == 60) 60 else 48
         }
@@ -277,6 +280,7 @@ object CaptureSettings {
     fun resolutionLabel(value: String): String = when (value) {
         RESOLUTION_8K -> "8K UHD"
         RESOLUTION_4K -> "4K UHD"
+        RESOLUTION_2K -> "2K / QHD"
         RESOLUTION_1080P -> "1080p"
         RESOLUTION_720P -> "720p"
         else -> "Desconhecida"
@@ -307,11 +311,12 @@ object CaptureSettings {
 
     val EIGHT_K_SIZE = Size(7680, 4320)
     val UHD_SIZE = Size(3840, 2160)
+    val QHD_SIZE = Size(2560, 1440)
     val FHD_SIZE = Size(1920, 1080)
     val HD_SIZE = Size(1280, 720)
 
     private fun resolutionKey(fps: Int) = "resolution_$fps"
-    private val SUPPORTED_RESOLUTIONS = linkedSetOf(RESOLUTION_4K, RESOLUTION_1080P, RESOLUTION_720P)
+    private val SUPPORTED_RESOLUTIONS = linkedSetOf(RESOLUTION_4K, RESOLUTION_2K, RESOLUTION_1080P, RESOLUTION_720P)
     private val SUPPORTED_CODECS = linkedSetOf(CODEC_HEVC, CODEC_AVC)
     private val SUPPORTED_STABILIZATIONS = linkedSetOf(STABILIZATION_AUTO, STABILIZATION_PREVIEW, STABILIZATION_EIS, STABILIZATION_OIS, STABILIZATION_OFF)
     private val SUPPORTED_FOCUS_MODES = linkedSetOf(
