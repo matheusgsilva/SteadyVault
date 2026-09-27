@@ -1118,76 +1118,14 @@ class CaptureService : Service() {
             runCatching { backend.release() }
             runCatching { finalFile.delete() }
 
-            if (preferDirectCodec) {
-                val detail = "MediaCodec direto recusado em 60 FPS: ${errorText(codecFailure)}"
-                Log.e(LOG_TAG, detail, codecFailure)
-                AppLogRepository.error(this, "recording_backend", detail)
-                throw codecFailure
+            val detail = if (preferDirectCodec) {
+                "MediaCodec direto recusado em 60 FPS: ${errorText(codecFailure)}"
+            } else {
+                "Backend de gravação recusado: ${errorText(codecFailure)}"
             }
-
+            Log.e(LOG_TAG, detail, codecFailure)
+            AppLogRepository.error(this, "recording_backend", detail)
             throw codecFailure
-
-            Log.w(
-                LOG_TAG,
-                "MediaCodec direto recusado; usando MediaRecorder como fallback",
-                codecFailure
-            )
-            AppLogRepository.error(
-                this,
-                "recording_backend",
-                "MediaCodec direto recusado; fallback MediaRecorder: ${errorText(codecFailure)}"
-            )
-
-            val fallbackFile = VaultRepository.createRecordingFile(this, profileLabel)
-            val integratedAudio = hasAudioPermission() && runCatching {
-                startForegroundNow(
-                    "Preparando gravação direta…",
-                    includeMicrophone = true
-                )
-                true
-            }.getOrDefault(false)
-
-            val fallback = DirectMediaRecorderBackend(
-                context = this,
-                outputFile = fallbackFile,
-                cameraId = cameraProfile.cameraId,
-                width = cameraProfile.videoSize.width,
-                height = cameraProfile.videoSize.height,
-                targetFps = cameraProfile.targetFps,
-                videoMime = encoderProfile.mime,
-                videoBitrate = encoderProfile.bitrate,
-                hdrHlg10 = cameraProfile.hdrHlg10,
-                orientationHint = calculateOrientationHint(cameraProfile.sensorOrientation),
-                integratedAudio = integratedAudio,
-                audioSampleRate = recordingSettings.audioSampleRate,
-                audioBitrate = recordingSettings.audioBitrateKbps * 1_000,
-                audioChannels = when (recordingSettings.audioChannels) {
-                    CaptureSettings.CHANNELS_MONO -> 1
-                    CaptureSettings.CHANNELS_STEREO -> 2
-                    else -> 2
-                },
-                onError = { throwable ->
-                    if (!stopping.get() && serviceActive.get()) {
-                        failAndStop("MediaRecorder fallback: ${errorText(throwable)}")
-                    }
-                }
-            )
-
-            try {
-                val surface = fallback.prepare()
-                synchronized(resourceLock) {
-                    finalOutputFile = fallbackFile
-                    rawOutputFile = fallbackFile
-                    professionalRecorder = fallback
-                    recorderSurface = surface
-                    activeRecorderBackendName = fallback.backendName
-                    activeRecorderMime = encoderProfile.mime
-                }
-            } catch (fallbackFailure: Throwable) {
-                runCatching { fallback.release() }
-                runCatching { fallbackFile.delete() }
-                throw fallbackFailure
-            }
         }
     }
 
