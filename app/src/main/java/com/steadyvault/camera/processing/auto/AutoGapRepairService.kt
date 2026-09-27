@@ -671,9 +671,9 @@ class AutoGapRepairService : Service() {
 
         /**
          * Pós-processamento disparado ao finalizar uma gravação.
-         * Para captura headless/widget, a fila pode drenar imediatamente mesmo que a
-         * Activity preta ainda esteja terminando. Uma nova gravação continua tendo
-         * prioridade absoluta e cancela/recoloca o job atual em PENDING.
+         * O vídeo é somente enfileirado enquanto o app estiver em primeiro plano.
+         * A fila só pode drenar quando todas as Activities estiverem em segundo plano
+         * e não houver captura/gravação usando a câmera.
          */
         fun enqueueAfterRecording(
             context: Context,
@@ -685,7 +685,6 @@ class AutoGapRepairService : Service() {
             if (startImmediately) {
                 AutoGapRepairSettings.setEnabled(context, true)
                 userPauseRequested = false
-                interactivePriorityRequested = false
                 immediateWidgetDrainRequested = true
                 AutoGapRepairQueueStore.recoverInterrupted(context)
                 AutoGapRepairQueueStore.removeMissingSources(context)
@@ -699,24 +698,23 @@ class AutoGapRepairService : Service() {
 
         fun repairNow(context: Context, source: File): Boolean {
             if (!source.isFile || !VaultRepository.isInsideKnownVault(context, source)) return false
-            if (capturePriorityRequested || CaptureStateStore.isBusy(context)) {
-                // Persiste o job para não perder o pedido; ele será retomado após a captura.
-                AutoGapRepairQueueStore.enqueue(context, source, 0)
-                manualDrainRequested = true
-                return true
-            }
 
+            // Pedido manual também respeita a mesma regra do automático: com o app
+            // aberto ou durante gravação, apenas persiste na fila. O processamento
+            // começa somente quando o app entra em segundo plano e a câmera está livre.
+            AutoGapRepairSettings.setEnabled(context, true)
+            AutoGapRepairQueueStore.enqueue(context, source, 0)
             userPauseRequested = false
-            interactivePriorityRequested = false
             manualDrainRequested = true
-            val intent = Intent(context, AutoGapRepairService::class.java)
-                .setAction(ACTION_MANUAL_REPAIR)
-                .putExtra(EXTRA_SOURCE_PATH, source.absolutePath)
-                .putExtra(EXTRA_TARGET_FPS, 0)
-            return runCatching {
-                context.startForegroundService(intent)
-                true
-            }.getOrDefault(false)
+
+            if (
+                capturePriorityRequested ||
+                interactiveBlocksProcessing() ||
+                CaptureStateStore.isBusy(context)
+            ) return true
+
+            startSelf(context, ACTION_RESUME)
+            return true
         }
 
         fun pauseForCapture(context: Context) {
@@ -740,9 +738,7 @@ class AutoGapRepairService : Service() {
         }
 
         private fun interactiveBlocksProcessing(): Boolean =
-            interactivePriorityRequested &&
-                !immediateWidgetDrainRequested &&
-                !manualDrainRequested
+            interactivePriorityRequested
 
         fun pauseForInteractiveUse() {
             // Same-process flag: a running transcoder observes this in its cancellation
