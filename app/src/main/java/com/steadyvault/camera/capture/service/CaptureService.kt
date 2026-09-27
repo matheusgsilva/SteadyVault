@@ -657,13 +657,6 @@ class CaptureService : Service() {
         targetFps: Int,
         allowHdr: Boolean
     ): Pair<CameraProfile, EncoderProfile> {
-        if (
-            targetFps == CaptureModeStore.FPS_60 &&
-            recordingSettings.exactPreferredSize() == FHD_SIZE &&
-            !allowHdr
-        ) {
-            return selectRequiredHighSpeed1080p60Configuration()
-        }
 
         val signature = configurationSignature(targetFps, allowHdr)
         cachedConfiguration
@@ -1357,9 +1350,21 @@ class CaptureService : Service() {
             "${cameraProfile.videoSize.width}x${cameraProfile.videoSize.height}_${cameraProfile.targetFps}fps"
         val finalFile = VaultRepository.createRecordingFile(this, profileLabel)
 
+        val mediaRecorderSurfaceTest =
+            cameraProfile.targetFps == CaptureModeStore.FPS_60 &&
+                cameraProfile.videoSize == FHD_SIZE &&
+                !cameraProfile.hdrHlg10
         val preferDirectCodec =
             cameraProfile.targetFps == CaptureModeStore.FPS_60 &&
-                !cameraProfile.hdrHlg10
+                !cameraProfile.hdrHlg10 &&
+                !mediaRecorderSurfaceTest
+
+        if (mediaRecorderSurfaceTest) {
+            Log.i(
+                LOG_TAG,
+                "MEDIARECORDER SURFACE TEST ativo: 1920x1080 60 FPS • Camera2 request mantido"
+            )
+        }
 
         val backend: RecordingBackend =
             if (preferDirectCodec) {
@@ -4023,7 +4028,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "required-highspeed-1080p60-1.8.283"
+        private const val CAPTURE_PIPELINE_REVISION = "mediarecorder-surface-1080p60-1.8.284"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
