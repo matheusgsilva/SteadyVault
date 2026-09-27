@@ -274,15 +274,28 @@ class AutoGapRepairService : Service() {
                     FrameRepairMode.FILL_MISSING_FRAMES
                 )
             } else {
-                // SDR com frame realmente ausente: o automático ignora uma preferência
-                // antiga de "repetir quadro" e sempre tenta primeiro reconstrução visual.
-                // Isso evita uma saída temporalmente CFR porém ainda perceptivelmente
-                // engasgada por duplicação do vizinho.
-                listOf(
-                    FrameRepairMode.MOTION_COMPENSATED,
-                    FrameRepairMode.ADAPTIVE_BLEND,
-                    FrameRepairMode.FILL_MISSING_FRAMES
-                )
+                // Em SDR com frame realmente ausente, respeite o método escolhido
+                // e mantenha fallbacks seguros sem transformar um erro visual em falha da fila.
+                when (requestedMode) {
+                    FrameRepairMode.QUALITY_LOW_MOTION,
+                    FrameRepairMode.QUALITY_MEDIUM_MOTION,
+                    FrameRepairMode.QUALITY_HIGH_MOTION,
+                    FrameRepairMode.MOTION_COMPENSATED -> listOf(
+                        requestedMode,
+                        FrameRepairMode.ADAPTIVE_BLEND,
+                        FrameRepairMode.FILL_MISSING_FRAMES
+                    )
+                    FrameRepairMode.ADAPTIVE_BLEND -> listOf(
+                        FrameRepairMode.ADAPTIVE_BLEND,
+                        FrameRepairMode.FILL_MISSING_FRAMES
+                    )
+                    FrameRepairMode.FILL_MISSING_FRAMES -> listOf(FrameRepairMode.FILL_MISSING_FRAMES)
+                    FrameRepairMode.SMOOTH_TIMELINE,
+                    FrameRepairMode.NONE -> listOf(
+                        FrameRepairMode.SMOOTH_TIMELINE,
+                        FrameRepairMode.FILL_MISSING_FRAMES
+                    )
+                }.distinct()
             }
 
             var lastFailure: Throwable? = null
@@ -292,10 +305,13 @@ class AutoGapRepairService : Service() {
                 workFile = VaultRepository.createOptimizationWorkFile(this, source)
                 val modeLabel = when (mode) {
                     FrameRepairMode.MOTION_COMPENSATED -> "interpolação compensada por movimento"
+                    FrameRepairMode.QUALITY_LOW_MOTION -> "qualidade para movimento baixo"
+                    FrameRepairMode.QUALITY_MEDIUM_MOTION -> "qualidade para movimento médio"
+                    FrameRepairMode.QUALITY_HIGH_MOTION -> "qualidade conservadora para movimento alto"
                     FrameRepairMode.ADAPTIVE_BLEND -> "mistura temporal por GPU"
                     FrameRepairMode.FILL_MISSING_FRAMES -> "preenchimento por quadro vizinho"
                     FrameRepairMode.SMOOTH_TIMELINE -> "correção segura de timestamps"
-                    else -> "reparo de timeline"
+                    FrameRepairMode.NONE -> "reparo de timeline"
                 }
                 publish(
                     (4 + index * 3).coerceAtMost(12),
@@ -348,6 +364,9 @@ class AutoGapRepairService : Service() {
                     if (
                         needsFrameSynthesis &&
                         (mode == FrameRepairMode.MOTION_COMPENSATED ||
+                            mode == FrameRepairMode.QUALITY_LOW_MOTION ||
+                            mode == FrameRepairMode.QUALITY_MEDIUM_MOTION ||
+                            mode == FrameRepairMode.QUALITY_HIGH_MOTION ||
                             mode == FrameRepairMode.ADAPTIVE_BLEND)
                     ) {
                         require(result.blendedFrames > 0) {
