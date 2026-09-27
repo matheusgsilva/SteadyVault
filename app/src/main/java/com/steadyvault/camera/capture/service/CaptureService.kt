@@ -1155,9 +1155,21 @@ class CaptureService : Service() {
             "${cameraProfile.videoSize.width}x${cameraProfile.videoSize.height}_${cameraProfile.targetFps}fps"
         val finalFile = VaultRepository.createRecordingFile(this, profileLabel)
 
+        val mediaRecorderSurface1080p60 =
+            cameraProfile.targetFps == CaptureModeStore.FPS_60 &&
+                cameraProfile.videoSize == FHD_SIZE &&
+                !cameraProfile.hdrHlg10
         val preferDirectCodec =
             cameraProfile.targetFps == CaptureModeStore.FPS_60 &&
-                !cameraProfile.hdrHlg10
+                !cameraProfile.hdrHlg10 &&
+                !mediaRecorderSurface1080p60
+
+        if (mediaRecorderSurface1080p60) {
+            Log.i(
+                LOG_TAG,
+                "MEDIARECORDER 1080P60 ativo: Surface MediaRecorder para melhor cadência no S25 Ultra"
+            )
+        }
 
         val backend: RecordingBackend =
             if (preferDirectCodec) {
@@ -3545,7 +3557,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-highlight-guard-fixed-fps-1.8.274"
+        private const val CAPTURE_PIPELINE_REVISION = "mediarecorder-1080p60-fps-1.8.275"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
