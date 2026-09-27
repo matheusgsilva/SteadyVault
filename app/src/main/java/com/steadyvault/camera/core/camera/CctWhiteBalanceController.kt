@@ -24,6 +24,9 @@ object CctWhiteBalanceController {
             CaptureSettings.YELLOW_REDUCTION_STRONG -> 4_200
             CaptureSettings.YELLOW_REDUCTION_MEDIUM -> 4_600
             CaptureSettings.YELLOW_REDUCTION_LIGHT -> 5_000
+            CaptureSettings.YELLOW_REDUCTION_WARM_LIGHT -> 6_000
+            CaptureSettings.YELLOW_REDUCTION_WARM_MEDIUM -> 6_500
+            CaptureSettings.YELLOW_REDUCTION_WARM_STRONG -> 7_200
             else -> 4_800
         }.coerceIn(range.lower, range.upper)
         builder.set(CaptureRequest.CONTROL_AWB_LOCK, false)
