@@ -8,7 +8,9 @@ import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.os.Bundle
 import android.os.Process
+import android.util.Log
 import android.view.Surface
+import com.steadyvault.camera.capture.timing.FrameCadenceTracker
 import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
@@ -262,6 +264,7 @@ class DirectMediaCodecBackend(
 
         val nominalDeltaUs = 1_000_000L / targetFps.coerceAtLeast(1)
         val toleranceUs = maxOf(1_500L, nominalDeltaUs / 8L)
+        val encoderCadenceTracker = FrameCadenceTracker(targetFps)
 
         try {
             while (true) {
@@ -293,6 +296,49 @@ class DirectMediaCodecBackend(
 
                         if (!isConfig && info.size > 0) {
                             val ptsUs = info.presentationTimeUs
+
+                            if (committed.get()) {
+                                val observation = encoderCadenceTracker.observe(ptsUs * 1_000L)
+                                if (observation.nonMonotonic) {
+                                    Log.w(
+                                        LOG_TAG,
+                                        "ENC TIMESTAMP não monotônico: frame=${observation.frameNumber} deltaNs=${observation.deltaNs}"
+                                    )
+                                } else {
+                                    if (observation.gapDetected) {
+                                        Log.w(
+                                            LOG_TAG,
+                                            String.format(
+                                                java.util.Locale.US,
+                                                "ENC GAP frame=%d delta=%.3fms nominal=%.3fms estMissing=%d gaps=%d queue=%d/%dMiB",
+                                                observation.frameNumber,
+                                                (observation.deltaNs ?: 0L) / 1_000_000.0,
+                                                encoderCadenceTracker.nominalDeltaNs / 1_000_000.0,
+                                                observation.estimatedMissingFrames,
+                                                observation.gapCount,
+                                                encodedSampleQueue.pendingSamples(),
+                                                encodedSampleQueue.pendingBytes() / (1024 * 1024)
+                                            )
+                                        )
+                                    }
+                                    if (observation.summaryDue) {
+                                        Log.i(
+                                            LOG_TAG,
+                                            String.format(
+                                                java.util.Locale.US,
+                                                "ENC CADENCE frames=%d intervals=%d avg=%.2f FPS gaps=%d worst=%.3fms queue=%d/%dMiB",
+                                                observation.frameNumber,
+                                                observation.intervalCount,
+                                                observation.measuredFps ?: 0.0,
+                                                observation.gapCount,
+                                                observation.worstDeltaNs / 1_000_000.0,
+                                                encodedSampleQueue.pendingSamples(),
+                                                encodedSampleQueue.pendingBytes() / (1024 * 1024)
+                                            )
+                                        )
+                                    }
+                                }
+                            }
 
                             if (!committed.get()) {
                                 previousPtsUs = Long.MIN_VALUE
@@ -634,6 +680,7 @@ class DirectMediaCodecBackend(
     }
 
     companion object {
+        private const val LOG_TAG = "SteadyVaultCapture"
         private const val DEQUEUE_TIMEOUT_US = 10_000L
         private const val STOP_TIMEOUT_SECONDS = 4L
         private const val MUXER_STOP_TIMEOUT_SECONDS = 15L
