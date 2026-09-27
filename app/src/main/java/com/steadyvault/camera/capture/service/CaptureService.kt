@@ -1632,7 +1632,11 @@ class CaptureService : Service() {
             requestBuilder.build()
 
         val outputConfiguration = OutputConfiguration(surface).apply {
-            if (!profile.highSpeed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            if (
+                !profile.highSpeed &&
+                profile.targetFps < CaptureModeStore.FPS_60 &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+            ) {
                 profile.physicalCameraId?.let { physicalId ->
                     setPhysicalCameraId(physicalId)
                     Log.i(
@@ -1640,6 +1644,16 @@ class CaptureService : Service() {
                         "PHYSICAL output bound logical=${profile.cameraId} physical=$physicalId"
                     )
                 }
+            } else if (
+                !profile.highSpeed &&
+                profile.targetFps >= CaptureModeStore.FPS_60 &&
+                profile.physicalCameraId != null
+            ) {
+                Log.i(
+                    LOG_TAG,
+                    "MINIMAL60 sem physical binding: logical=${profile.cameraId} " +
+                        "selectedPhysical=${profile.physicalCameraId}"
+                )
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 setDynamicRangeProfile(profile.dynamicRangeProfile)
@@ -3930,7 +3944,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "immutable-minimal60-request-1.8.280"
+        private const val CAPTURE_PIPELINE_REVISION = "minimal60-logical-only-output-1.8.281"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
