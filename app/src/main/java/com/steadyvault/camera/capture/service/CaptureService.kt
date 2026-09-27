@@ -657,6 +657,14 @@ class CaptureService : Service() {
         targetFps: Int,
         allowHdr: Boolean
     ): Pair<CameraProfile, EncoderProfile> {
+        if (
+            targetFps == CaptureModeStore.FPS_60 &&
+            recordingSettings.exactPreferredSize() == FHD_SIZE &&
+            !allowHdr
+        ) {
+            return selectRequiredHighSpeed1080p60Configuration()
+        }
+
         val signature = configurationSignature(targetFps, allowHdr)
         cachedConfiguration
             ?.takeIf { it.signature == signature }
@@ -682,6 +690,56 @@ class CaptureService : Service() {
         val requestedLabel = "${CaptureSettings.resolutionLabel(recordingSettings.resolution)} $targetFps FPS"
         val cameraLabel = CameraLensCatalog.labelFor(this, preferredCameraId)
         throw IllegalStateException("$requestedLabel não pôde ser preparado para a câmera selecionada ($cameraLabel)")
+    }
+
+    private fun selectRequiredHighSpeed1080p60Configuration(): Pair<CameraProfile, EncoderProfile> {
+        val manager = getSystemService(CameraManager::class.java)
+        val cameraId = preferredCameraId
+            ?.takeIf { it in manager.cameraIdList }
+            ?: manager.cameraIdList.firstOrNull { id ->
+                runCatching {
+                    manager.getCameraCharacteristics(id)
+                        .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
+                }.getOrDefault(false)
+            }
+            ?: throw IllegalStateException("nenhuma câmera traseira disponível para o teste high-speed")
+
+        val characteristics = manager.getCameraCharacteristics(cameraId)
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?: throw IllegalStateException("HAL sem StreamConfigurationMap para o teste high-speed")
+        val highSpeedSizes = runCatching { map.highSpeedVideoSizes.toList() }
+            .getOrDefault(emptyList())
+        val ranges = if (FHD_SIZE in highSpeedSizes) {
+            runCatching { map.getHighSpeedVideoFpsRangesFor(FHD_SIZE).toList() }
+                .getOrDefault(emptyList())
+        } else emptyList()
+
+        Log.i(
+            LOG_TAG,
+            "HIGHSPEED TEST camera=$cameraId sizes=" +
+                highSpeedSizes.joinToString { "${it.width}x${it.height}" } +
+                " 1080pRanges=" + ranges.joinToString { "${it.lower}-${it.upper}" }
+        )
+
+        val exact60 = ranges.firstOrNull { it.lower == 60 && it.upper == 60 }
+            ?: throw IllegalStateException(
+                "TESTE HIGHSPEED: HAL não anuncia 1080p 60-60; faixas=" +
+                    if (ranges.isEmpty()) "nenhuma" else ranges.joinToString { "${it.lower}-${it.upper}" }
+            )
+
+        val profile = createCameraProfile(
+            cameraId = cameraId,
+            characteristics = characteristics,
+            videoSize = FHD_SIZE,
+            targetFps = CaptureModeStore.FPS_60,
+            fpsRange = exact60,
+            highSpeed = true,
+            dynamicRangeProfile = standardDynamicRangeProfile()
+        )
+        val encoder = selectDirectRecorderEncoder(profile)
+            ?: throw IllegalStateException("encoder não aceita 1080p60 no teste high-speed")
+        Log.i(LOG_TAG, "HIGHSPEED TEST ativo: camera=$cameraId size=1920x1080 range=60-60")
+        return profile to encoder
     }
 
     private fun cacheConfiguration(
@@ -3965,7 +4023,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "minimal60-template-preview-1.8.282"
+        private const val CAPTURE_PIPELINE_REVISION = "required-highspeed-1080p60-1.8.283"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
