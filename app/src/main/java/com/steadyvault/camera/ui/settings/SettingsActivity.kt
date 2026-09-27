@@ -1412,7 +1412,16 @@ class SettingsActivity : FragmentActivity() {
             CaptureSettings.save(this, previousForm)
         }
 
-        val targetResolution = preferredResolutionForFps(targetFps)
+        val requestedResolution = previousResolution
+        val targetResolution = CaptureModeCatalog.preferredResolution(
+            context = this,
+            fps = targetFps,
+            requestedResolution = requestedResolution,
+            matrix = selectedCapabilityMatrix()?.takeIf { it.modes.isNotEmpty() },
+            scanInProgress = capabilityMatrix == null && capabilityScanInProgress
+        )
+        resolutionSelections[targetFps] = targetResolution
+        CaptureSettings.saveResolutionForFps(this, targetFps, targetResolution)
         val fallback = previousForm.copy(fps = targetFps, resolution = targetResolution)
         val activated = if (cameraId != null) {
             CameraProfileStore.ensureProfiles(this, cameraId, fallback)
