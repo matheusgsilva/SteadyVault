@@ -2636,7 +2636,7 @@ class CaptureService : Service() {
         val strength = WhiteBalanceCorrection.strength(recordingSettings.yellowReduction, recordingSettings.whiteBalanceMode, measured?.gains)
         val capabilities = profile.characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
         val manualPost = capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING)
-        val canManualCorrect = strength > 0f && manualPost && measured != null && availableModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF)
+        val canManualCorrect = strength != 0f && manualPost && measured != null && availableModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF)
 
         if (canManualCorrect) {
             setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
@@ -2655,6 +2655,21 @@ class CaptureService : Service() {
             setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
             setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT)
             return
+        }
+        if (
+            WhiteBalanceCorrection.useWarmFallback(strength) &&
+            recordingSettings.whiteBalanceMode == CaptureSettings.WHITE_BALANCE_AUTO
+        ) {
+            val warmMode = when {
+                availableModes.contains(CameraMetadata.CONTROL_AWB_MODE_SHADE) -> CameraMetadata.CONTROL_AWB_MODE_SHADE
+                availableModes.contains(CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT) -> CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
+                else -> null
+            }
+            if (warmMode != null) {
+                setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
+                setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, warmMode)
+                return
+            }
         }
 
         val canLockAwb = profile.characteristics.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true
@@ -2889,7 +2904,7 @@ class CaptureService : Service() {
             context = this,
             source = finalFile,
             targetFps = fps,
-            startImmediately = false
+            startImmediately = true
         )
         val message = "Vídeo salvo no cofre • ${sizeName(size)} • $fps FPS • $qualityLabel • ${formatDuration(durationSeconds)}"
         sendStateOnMain(message)
