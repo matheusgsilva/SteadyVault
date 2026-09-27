@@ -16,7 +16,7 @@ object AutoGapRepairSettings {
     private const val KEY_MODE = "mode"
     private const val KEY_MAX_FRAMES = "max_frames"
     private const val KEY_SCHEMA = "schema"
-    private const val SCHEMA = 6
+    private const val SCHEMA = 7
 
     fun snapshot(context: Context): Snapshot {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -34,6 +34,9 @@ object AutoGapRepairSettings {
         }
         val safeMode = migrated.takeIf {
             it == FrameRepairMode.MOTION_COMPENSATED ||
+                it == FrameRepairMode.QUALITY_LOW_MOTION ||
+                it == FrameRepairMode.QUALITY_MEDIUM_MOTION ||
+                it == FrameRepairMode.QUALITY_HIGH_MOTION ||
                 it == FrameRepairMode.ADAPTIVE_BLEND ||
                 it == FrameRepairMode.FILL_MISSING_FRAMES ||
                 it == FrameRepairMode.SMOOTH_TIMELINE
@@ -73,6 +76,9 @@ object AutoGapRepairSettings {
     fun setMode(context: Context, mode: FrameRepairMode) {
         val safe = mode.takeIf {
             it == FrameRepairMode.MOTION_COMPENSATED ||
+                it == FrameRepairMode.QUALITY_LOW_MOTION ||
+                it == FrameRepairMode.QUALITY_MEDIUM_MOTION ||
+                it == FrameRepairMode.QUALITY_HIGH_MOTION ||
                 it == FrameRepairMode.ADAPTIVE_BLEND ||
                 it == FrameRepairMode.FILL_MISSING_FRAMES ||
                 it == FrameRepairMode.SMOOTH_TIMELINE
