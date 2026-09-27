@@ -14,7 +14,10 @@ enum class FrameRepairMode {
     SMOOTH_TIMELINE,
     FILL_MISSING_FRAMES,
     ADAPTIVE_BLEND,
-    MOTION_COMPENSATED;
+    MOTION_COMPENSATED,
+    QUALITY_LOW_MOTION,
+    QUALITY_MEDIUM_MOTION,
+    QUALITY_HIGH_MOTION;
 
     companion object {
         fun from(value: String?): FrameRepairMode = entries.firstOrNull { it.name == value } ?: SMOOTH_TIMELINE
