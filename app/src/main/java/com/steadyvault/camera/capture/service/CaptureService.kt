@@ -1467,9 +1467,21 @@ class CaptureService : Service() {
         if (profile.highSpeed || profile.targetFps < CaptureModeStore.FPS_60) return profile
 
         val manager = getSystemService(CameraManager::class.java)
+        val independentlyOpenable = runCatching {
+            manager.cameraIdList.contains(physicalId)
+        }.getOrDefault(false)
+
+        if (!independentlyOpenable) {
+            Log.i(
+                LOG_TAG,
+                "DIRECT PHYSICAL unavailable: physical=$physicalId não consta em cameraIdList; " +
+                    "mantendo logical=${profile.cameraId} + setPhysicalCameraId($physicalId)"
+            )
+            return profile
+        }
+
         val physical = runCatching { manager.getCameraCharacteristics(physicalId) }
             .getOrNull() ?: return profile
-
         val eisModes = physical.get(
             CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES
         ) ?: intArrayOf()
@@ -3907,7 +3919,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "direct-physical-camera-60fps-1.8.278"
+        private const val CAPTURE_PIPELINE_REVISION = "physical-openability-guard-1.8.279"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
