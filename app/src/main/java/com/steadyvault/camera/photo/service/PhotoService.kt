@@ -162,6 +162,8 @@ class PhotoService : Service() {
         preferredCameraId = intent.getStringExtra(EXTRA_PREFERRED_CAMERA_ID)
             ?.takeIf { it.isNotBlank() }
         val currentSettings = CaptureSettings.snapshot(this)
+        val requestedZoomRatio = intent.getFloatExtra(EXTRA_ZOOM_RATIO, Float.NaN)
+            .takeIf { it.isFinite() && it > 0f }
         val quickCaptureZoom = if (
             !previewCaptureRequested &&
             preferredCameraId == null
@@ -185,12 +187,14 @@ class PhotoService : Service() {
             CameraProfileStore.setActiveMode(this, CameraProfileStore.FunctionMode.PHOTO)
             currentSettings
         }
-        captureSettings = quickCaptureZoom?.let { selection ->
+        captureSettings = (quickCaptureZoom?.let { selection ->
             activatedSettings.copy(
                 selectedCameraId = selection.cameraId,
                 zoomRatio = selection.requestZoomRatio
             )
-        } ?: activatedSettings
+        } ?: activatedSettings).let { settings ->
+            requestedZoomRatio?.let { settings.copy(zoomRatio = it) } ?: settings
+        }
         latestAwbGains = null
         latestColorTransform = null
         previewSurfaceFallbackAttempted = false
@@ -1199,7 +1203,7 @@ class PhotoService : Service() {
         val strength = WhiteBalanceCorrection.strength(captureSettings.yellowReduction, captureSettings.whiteBalanceMode, gains)
         val capabilities = profile.characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
         val manualPost = capabilities.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING)
-        if (strength > 0f && manualPost && gains != null && transform != null && awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF)) {
+        if (strength != 0f && manualPost && gains != null && transform != null && awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF)) {
             setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
             setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
             setSafely(builder, CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
@@ -1207,6 +1211,13 @@ class PhotoService : Service() {
             setSafely(builder, CaptureRequest.COLOR_CORRECTION_GAINS, WhiteBalanceCorrection.adjustedGains(gains, strength))
         } else if (WhiteBalanceCorrection.useIncandescentFallback(strength) && awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT)) {
             setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT)
+        } else if (WhiteBalanceCorrection.useWarmFallback(strength)) {
+            when {
+                awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_SHADE) ->
+                    setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_SHADE)
+                awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT) ->
+                    setSafely(builder, CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT)
+            }
         }
     }
 
@@ -1845,6 +1856,8 @@ class PhotoService : Service() {
             "from_preview"
         const val EXTRA_PREFERRED_CAMERA_ID =
             "preferred_camera_id"
+        const val EXTRA_ZOOM_RATIO =
+            "zoom_ratio"
 
         private const val CHANNEL_ID =
             "steadyvault_background_activity_v2"
