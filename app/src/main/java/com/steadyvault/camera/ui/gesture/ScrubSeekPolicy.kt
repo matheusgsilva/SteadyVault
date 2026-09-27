@@ -51,6 +51,6 @@ object ScrubSeekPolicy {
     ): Mode {
         if (precisionRequired || startPositionMs < 0L) return Mode.EXACT
         val distanceMs = abs(targetPositionMs - startPositionMs)
-        return if (distanceMs >= MIN_FAST_JUMP_MS || resumePlayback) Mode.FAST_SYNC else Mode.EXACT
+        return if (distanceMs >= MIN_FAST_JUMP_MS && resumePlayback) Mode.FAST_SYNC else Mode.EXACT
     }
 }
