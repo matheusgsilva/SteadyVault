@@ -99,14 +99,28 @@ class DirectMediaCodecBackend(
             )
             setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
-            // Mantém o mesmo conjunto mínimo usado no Cadence Probe, que apresentou
-            // a melhor cadência no S25 Ultra. Não forçamos operating-rate, priority
-            // nem CBR: esses parâmetros extras podem ativar caminhos diferentes de
-            // rate-control no codec do fabricante.
             setInteger(
                 MediaFormat.KEY_I_FRAME_INTERVAL,
                 iFrameIntervalSeconds.coerceAtLeast(1)
             )
+
+            // Restaura o perfil do caminho MediaCodec que apresentou a melhor
+            // cadência em 60 FPS: sinaliza prioridade em tempo real e a taxa de
+            // operação esperada ao codec. O áudio AAC continua em paralelo.
+            setInteger(MediaFormat.KEY_PRIORITY, 0)
+            setFloat(MediaFormat.KEY_OPERATING_RATE, targetFps.toFloat())
+
+            val encoderCaps = capabilities.encoderCapabilities
+            if (
+                encoderCaps?.isBitrateModeSupported(
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                ) == true
+            ) {
+                setInteger(
+                    MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                )
+            }
         }
 
         try {
