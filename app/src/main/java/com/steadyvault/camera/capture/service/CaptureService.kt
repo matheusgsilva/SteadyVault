@@ -106,7 +106,8 @@ class CaptureService : Service() {
         val eisSupported: Boolean,
         val oisCapability: OpticalStabilizationCapability.Capability,
         val streamUseCaseSupported: Boolean,
-        val sensorOrientation: Int
+        val sensorOrientation: Int,
+        val physicalCameraId: String?
     ) {
         val oisSupported: Boolean
             get() = oisCapability.supported
@@ -997,8 +998,109 @@ class CaptureService : Service() {
                 characteristics.get(
                     CameraCharacteristics
                         .SENSOR_ORIENTATION
-                ) ?: 90
+                ) ?: 90,
+            physicalCameraId = selectPhysicalCameraForCapture(
+                logicalCameraId = cameraId,
+                logicalCharacteristics = characteristics,
+                videoSize = videoSize,
+                targetFps = targetFps,
+                highSpeed = highSpeed,
+                dynamicRangeProfile = dynamicRangeProfile
+            )
         )
+    }
+
+    private data class PhysicalCameraCandidate(
+        val id: String,
+        val privateMinFrameNs: Long,
+        val equivalentFocalMm: Float?
+    )
+
+    private fun selectPhysicalCameraForCapture(
+        logicalCameraId: String,
+        logicalCharacteristics: CameraCharacteristics,
+        videoSize: Size,
+        targetFps: Int,
+        highSpeed: Boolean,
+        dynamicRangeProfile: Long
+    ): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
+        if (highSpeed || targetFps < CaptureModeStore.FPS_60) return null
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            dynamicRangeProfile != DynamicRangeProfiles.STANDARD
+        ) return null
+
+        val physicalIds = runCatching { logicalCharacteristics.physicalCameraIds }
+            .getOrDefault(emptySet())
+        if (physicalIds.isEmpty()) return null
+
+        val manager = getSystemService(CameraManager::class.java)
+        val nominalNs = frameDurationNs(targetFps)
+        val candidates = physicalIds.mapNotNull { physicalId ->
+            val physical = runCatching { manager.getCameraCharacteristics(physicalId) }
+                .getOrNull() ?: return@mapNotNull null
+            val map = physical.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                ?: return@mapNotNull null
+            val privateSizes = runCatching {
+                map.getOutputSizes(ImageFormat.PRIVATE)?.toList().orEmpty()
+            }.getOrDefault(emptyList())
+            if (videoSize !in privateSizes) return@mapNotNull null
+
+            val exactFps = physical.get(
+                CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES
+            )?.any { it.lower == targetFps && it.upper == targetFps } == true
+            if (!exactFps) return@mapNotNull null
+
+            val minNs = runCatching {
+                map.getOutputMinFrameDuration(ImageFormat.PRIVATE, videoSize)
+            }.getOrDefault(0L)
+            val sensorSize = physical.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+            val focal = physical.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                ?.filter { it > 0f }
+                ?.minOrNull()
+            val equivalent = if (sensorSize != null && sensorSize.width > 0f && focal != null) {
+                focal * 36f / sensorSize.width
+            } else null
+
+            Log.i(
+                LOG_TAG,
+                "PHYSICAL candidate logical=$logicalCameraId physical=$physicalId " +
+                    "size=${videoSize.width}x${videoSize.height} fps=$targetFps " +
+                    "privateMin=${if (minNs > 0L) minNs / 1_000_000.0 else -1.0}ms " +
+                    "eqFocal=${equivalent ?: -1f}mm"
+            )
+
+            PhysicalCameraCandidate(physicalId, minNs, equivalent)
+        }
+
+        val selected = candidates.minWithOrNull(
+            compareBy<PhysicalCameraCandidate> {
+                when {
+                    it.privateMinFrameNs <= 0L -> 2
+                    it.privateMinFrameNs <= nominalNs + FRAME_DURATION_TOLERANCE_NS -> 0
+                    else -> 1
+                }
+            }.thenBy {
+                if (it.privateMinFrameNs > 0L) it.privateMinFrameNs else Long.MAX_VALUE
+            }.thenBy {
+                kotlin.math.abs((it.equivalentFocalMm ?: 24f) - 24f)
+            }
+        )
+
+        selected?.let {
+            Log.i(
+                LOG_TAG,
+                "PHYSICAL selected logical=$logicalCameraId physical=${it.id} " +
+                    "privateMin=${if (it.privateMinFrameNs > 0L) it.privateMinFrameNs / 1_000_000.0 else -1.0}ms " +
+                    "eqFocal=${it.equivalentFocalMm ?: -1f}mm"
+            )
+        } ?: Log.i(
+            LOG_TAG,
+            "PHYSICAL none logical=$logicalCameraId size=${videoSize.width}x${videoSize.height} fps=$targetFps"
+        )
+
+        return selected?.id
     }
 
     private fun oisCapability(
@@ -1475,6 +1577,15 @@ class CaptureService : Service() {
             requestBuilder.build()
 
         val outputConfiguration = OutputConfiguration(surface).apply {
+            if (!profile.highSpeed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                profile.physicalCameraId?.let { physicalId ->
+                    setPhysicalCameraId(physicalId)
+                    Log.i(
+                        LOG_TAG,
+                        "PHYSICAL output bound logical=${profile.cameraId} physical=$physicalId"
+                    )
+                }
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 setDynamicRangeProfile(profile.dynamicRangeProfile)
                 if (
@@ -3504,7 +3615,15 @@ class CaptureService : Service() {
             ) {
                 if (!isAttemptValid(token) || !recorderStarted || stopping.get()) return
 
-                val timestampNs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+                val physicalResult = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    profile.physicalCameraId?.let { physicalId ->
+                        result.physicalCameraResults[physicalId]
+                    }
+                } else null
+                val timestampNs =
+                    physicalResult?.get(CaptureResult.SENSOR_TIMESTAMP)
+                        ?: result.get(CaptureResult.SENSOR_TIMESTAMP)
+                        ?: return
                 val observation = tracker.observe(timestampNs)
 
                 if (observation.nonMonotonic) {
@@ -3552,7 +3671,16 @@ class CaptureService : Service() {
         val requestedAt = recordingRequestedAtElapsedNs
         if (requestedAt <= 0L) return
         val elapsedMs = ((SystemClock.elapsedRealtimeNanos() - requestedAt) / 1_000_000L).coerceAtLeast(0L)
-        val map = profile.characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val diagnosticCharacteristics = if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            profile.physicalCameraId != null
+        ) {
+            runCatching {
+                getSystemService(CameraManager::class.java)
+                    .getCameraCharacteristics(profile.physicalCameraId)
+            }.getOrNull() ?: profile.characteristics
+        } else profile.characteristics
+        val map = diagnosticCharacteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val privateMinNs = map?.let {
             encoderSurfaceMinFrameDurationNs(it, profile.videoSize, preferMediaRecorder = false)
         } ?: 0L
@@ -3563,7 +3691,7 @@ class CaptureService : Service() {
         val cadenceMessage = "Gravação ${sizeName(profile.videoSize)} ${profile.targetFps} FPS iniciada em ${elapsedMs} ms • " +
             "cadênciaHAL=$cadence • privateMin=${if (privateMinNs > 0L) privateMinNs / 1_000_000.0 else -1.0}ms • " +
             "recorderMin=${if (recorderMinNs > 0L) recorderMinNs / 1_000_000.0 else -1.0}ms • " +
-            "highSpeed=${profile.highSpeed} • câmera=${profile.cameraId}"
+            "highSpeed=${profile.highSpeed} • câmera=${profile.cameraId} • physical=${profile.physicalCameraId ?: "none"}"
         Log.i(LOG_TAG, cadenceMessage)
     }
 
@@ -3640,7 +3768,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "samsung-4k60-clean-ae-private-surface-1.8.275"
+        private const val CAPTURE_PIPELINE_REVISION = "samsung-4k60-physical-output-1.8.276"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
