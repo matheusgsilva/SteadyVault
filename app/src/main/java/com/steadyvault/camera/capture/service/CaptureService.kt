@@ -938,7 +938,6 @@ class CaptureService : Service() {
         val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size).toList() }
             .getOrDefault(emptyList())
         return ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
-            ?: ranges.firstOrNull { it.upper == targetFps && it.lower <= targetFps }
     }
 
     private fun cadenceConfidence(profile: CameraProfile): CaptureCadencePolicy.Confidence {
