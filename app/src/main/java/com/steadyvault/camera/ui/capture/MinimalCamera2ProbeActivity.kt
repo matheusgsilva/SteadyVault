@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.hardware.camera2.*
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
@@ -99,17 +100,115 @@ class MinimalCamera2ProbeActivity : Activity() {
 
     private fun createSession(device: CameraDevice) {
         val surface = recorderSurface ?: return finishProbe()
+        val characteristics = getSystemService(CameraManager::class.java)
+            .getCameraCharacteristics(CAMERA_ID)
         val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(surface)
             set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            set(
+                CaptureRequest.CONTROL_CAPTURE_INTENT,
+                CameraMetadata.CONTROL_CAPTURE_INTENT_VIDEO_RECORD
+            )
             set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(FPS, FPS))
             set(CaptureRequest.CONTROL_AE_LOCK, false)
-            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
             set(CaptureRequest.CONTROL_AWB_LOCK, false)
-            set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-            set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+
+            val afModes = characteristics.get(
+                CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES
+            ) ?: intArrayOf()
+            when {
+                afModes.contains(CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO) ->
+                    set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                afModes.contains(CameraMetadata.CONTROL_AF_MODE_OFF) ->
+                    set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+            }
+
+            val awbModes = characteristics.get(
+                CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES
+            ) ?: intArrayOf()
+            if (awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_AUTO)) {
+                set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+            }
+
+            set(
+                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+            )
+            val oisModes = characteristics.get(
+                CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION
+            ) ?: intArrayOf()
+            if (oisModes.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF)) {
+                set(
+                    CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                    CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF
+                )
+            }
+
+            set(CaptureRequest.CONTROL_ENABLE_ZSL, false)
+            set(CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
+            set(
+                CaptureRequest.STATISTICS_FACE_DETECT_MODE,
+                CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF
+            )
+
+            val noiseModes = characteristics.get(
+                CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES
+            ) ?: intArrayOf()
+            if (noiseModes.contains(CameraMetadata.NOISE_REDUCTION_MODE_OFF)) {
+                set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF)
+            }
+
+            val edgeModes = characteristics.get(
+                CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES
+            ) ?: intArrayOf()
+            if (edgeModes.contains(CameraMetadata.EDGE_MODE_OFF)) {
+                set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_OFF)
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val distortionModes = characteristics.get(
+                    CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES
+                ) ?: intArrayOf()
+                if (distortionModes.contains(CameraMetadata.DISTORTION_CORRECTION_MODE_OFF)) {
+                    set(
+                        CaptureRequest.DISTORTION_CORRECTION_MODE,
+                        CameraMetadata.DISTORTION_CORRECTION_MODE_OFF
+                    )
+                }
+            }
+
+            val aberrationModes = characteristics.get(
+                CameraCharacteristics.COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES
+            ) ?: intArrayOf()
+            if (aberrationModes.contains(CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF)) {
+                set(
+                    CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE,
+                    CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF
+                )
+            }
+
+            val hotPixelModes = characteristics.get(
+                CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES
+            ) ?: intArrayOf()
+            if (hotPixelModes.contains(CameraMetadata.HOT_PIXEL_MODE_OFF)) {
+                set(CaptureRequest.HOT_PIXEL_MODE, CameraMetadata.HOT_PIXEL_MODE_OFF)
+            }
+
+            val shadingModes = characteristics.get(
+                CameraCharacteristics.SHADING_AVAILABLE_MODES
+            ) ?: intArrayOf()
+            if (shadingModes.contains(CameraMetadata.SHADING_MODE_OFF)) {
+                set(CaptureRequest.SHADING_MODE, CameraMetadata.SHADING_MODE_OFF)
+            }
         }.build()
+
+        Log.i(
+            TAG,
+            "PROBE MINIMAL60 FULL request: AE=60-60 AF=continuous/off AWB=auto " +
+                "EIS=off OIS=off NR=off EDGE=off DISTORTION=off ABERRATION=off " +
+                "HOTPIXEL=off SHADING=off FACE=off ZSL=off intent=VIDEO_RECORD"
+        )
 
         device.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(s: CameraCaptureSession) {
