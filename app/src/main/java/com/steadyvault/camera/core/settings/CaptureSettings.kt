@@ -57,6 +57,9 @@ object CaptureSettings {
     const val YELLOW_REDUCTION_LIGHT = "LIGHT"
     const val YELLOW_REDUCTION_MEDIUM = "MEDIUM"
     const val YELLOW_REDUCTION_STRONG = "STRONG"
+    const val YELLOW_REDUCTION_WARM_LIGHT = "WARM_LIGHT"
+    const val YELLOW_REDUCTION_WARM_MEDIUM = "WARM_MEDIUM"
+    const val YELLOW_REDUCTION_WARM_STRONG = "WARM_STRONG"
 
     const val PREVIEW_OFF = "OFF"
     const val PREVIEW_FULL = "FULL"
@@ -120,8 +123,8 @@ object CaptureSettings {
         val resolution = resolutionForFps(context, fps)
         val storedCodec = prefs.getString("codec", CODEC_HEVC)
         val codec = storedCodec?.takeIf { it in SUPPORTED_CODECS } ?: CODEC_HEVC
-        val storedStabilization = prefs.getString("stabilization", STABILIZATION_OFF)
-        val stabilization = storedStabilization?.takeIf { it in SUPPORTED_STABILIZATIONS } ?: STABILIZATION_OFF
+        val storedStabilization = prefs.getString("stabilization", STABILIZATION_PREVIEW)
+        val stabilization = storedStabilization?.takeIf { it in SUPPORTED_STABILIZATIONS } ?: STABILIZATION_PREVIEW
         val storedFocus = prefs.getString("focus_mode", FOCUS_CONTINUOUS_VIDEO)
         val focusMode = storedFocus?.takeIf { it in SUPPORTED_FOCUS_MODES } ?: FOCUS_CONTINUOUS_VIDEO
 
@@ -162,7 +165,7 @@ object CaptureSettings {
             lockWhiteBalance = prefs.getBoolean("lock_white_balance", false),
             lockAeAwbForCadence = prefs.getBoolean("lock_ae_awb_for_cadence", false),
             previewMode = prefs.getString("preview_mode", PREVIEW_OFF)?.takeIf { it in supportedPreviewValues } ?: PREVIEW_OFF,
-            exposureCompensation = prefs.getInt("exposure_compensation", 0).coerceIn(-12, 12),
+            exposureCompensation = prefs.getInt("exposure_compensation", 2).coerceIn(-12, 12),
             selectedCameraId = prefs.getString("selected_camera_id", null)?.takeIf { it.isNotBlank() },
             zoomRatio = prefs.getFloat("zoom_ratio", 1f).takeIf { it.isFinite() }?.coerceIn(0.5f, 30f) ?: 1f,
             thermalProtection = prefs.getBoolean("thermal_protection", true),
@@ -293,7 +296,8 @@ object CaptureSettings {
     )
     val supportedYellowReductionValues = linkedSetOf(
         YELLOW_REDUCTION_OFF, YELLOW_REDUCTION_AUTO, YELLOW_REDUCTION_LIGHT,
-        YELLOW_REDUCTION_MEDIUM, YELLOW_REDUCTION_STRONG
+        YELLOW_REDUCTION_MEDIUM, YELLOW_REDUCTION_STRONG,
+        YELLOW_REDUCTION_WARM_LIGHT, YELLOW_REDUCTION_WARM_MEDIUM, YELLOW_REDUCTION_WARM_STRONG
     )
     val supportedPreviewValues = linkedSetOf(PREVIEW_OFF)
 
