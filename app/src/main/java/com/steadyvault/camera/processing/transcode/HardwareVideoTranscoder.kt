@@ -376,7 +376,10 @@ class HardwareVideoTranscoder {
                                 when (request.frameRepair) {
                                     FrameRepairMode.FILL_MISSING_FRAMES,
                                     FrameRepairMode.ADAPTIVE_BLEND,
-                                    FrameRepairMode.MOTION_COMPENSATED -> {
+                                    FrameRepairMode.MOTION_COMPENSATED,
+                                    FrameRepairMode.QUALITY_LOW_MOTION,
+                                    FrameRepairMode.QUALITY_MEDIUM_MOTION,
+                                    FrameRepairMode.QUALITY_HIGH_MOTION -> {
                                         if (!loadedFrame) {
                                             writeCurrentFrame(0L, neutralCorrection)
                                             nextFillPtsUs = frameIntervalUs
@@ -387,20 +390,64 @@ class HardwareVideoTranscoder {
                                                 intervalUs.toDouble() / frameIntervalUs.toDouble()
                                             ).toInt().coerceAtLeast(1)
                                             val missingFrames = (nominalSteps - 1).coerceAtLeast(0)
-                                            val motionAllowed = request.frameRepair == FrameRepairMode.MOTION_COMPENSATED &&
+                                            val motionMode =
+                                                request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ||
+                                                    request.frameRepair == FrameRepairMode.QUALITY_LOW_MOTION ||
+                                                    request.frameRepair == FrameRepairMode.QUALITY_MEDIUM_MOTION ||
+                                                    request.frameRepair == FrameRepairMode.QUALITY_HIGH_MOTION
+                                            val motionGapAllowed = motionMode &&
                                                 missingFrames in 1..minOf(
                                                     request.maxInterpolatedFramesPerGap,
                                                     MAX_DENSE_MOTION_GAP_FRAMES
                                                 )
-                                            val blendAllowed = request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND &&
-                                                missingFrames in 1..request.maxInterpolatedFramesPerGap
+
+                                            // Nos modos de qualidade, a decisão é feita com as métricas
+                                            // reais do fluxo bidirecional entre os dois frames vizinhos.
+                                            val motionField = if (motionGapAllowed) {
+                                                outputSurface!!.currentMotionField()
+                                            } else {
+                                                null
+                                            }
+                                            val motionAllowed = when (request.frameRepair) {
+                                                FrameRepairMode.MOTION_COMPENSATED -> motionGapAllowed
+                                                FrameRepairMode.QUALITY_LOW_MOTION -> motionGapAllowed &&
+                                                    motionField != null &&
+                                                    !motionField.sceneChangeLikely &&
+                                                    !motionField.globalMotionIsUnstable &&
+                                                    motionField.meanConfidence >= 0.34f &&
+                                                    (motionField.motionIsNearlyStatic || motionField.meanMotionPixels <= 2.4f)
+                                                FrameRepairMode.QUALITY_MEDIUM_MOTION -> motionGapAllowed &&
+                                                    motionField != null &&
+                                                    !motionField.sceneChangeLikely &&
+                                                    !motionField.globalMotionIsUnstable &&
+                                                    motionField.meanConfidence >= 0.32f &&
+                                                    motionField.globalReliability >= 0.30f
+                                                FrameRepairMode.QUALITY_HIGH_MOTION -> motionGapAllowed &&
+                                                    motionField != null &&
+                                                    !motionField.sceneChangeLikely &&
+                                                    motionField.meanConfidence >= 0.46f &&
+                                                    motionField.globalReliability >= 0.42f &&
+                                                    (motionField.localWarpSafe || !motionField.globalMotionIsUnstable)
+                                                else -> false
+                                            }
+                                            val blendAllowed =
+                                                request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND &&
+                                                    missingFrames in 1..request.maxInterpolatedFramesPerGap
+                                            val qualityBlendFallback =
+                                                (request.frameRepair == FrameRepairMode.QUALITY_LOW_MOTION ||
+                                                    request.frameRepair == FrameRepairMode.QUALITY_MEDIUM_MOTION) &&
+                                                    missingFrames in 1..request.maxInterpolatedFramesPerGap
+                                            val highMotionBlendFallback =
+                                                request.frameRepair == FrameRepairMode.QUALITY_HIGH_MOTION &&
+                                                    missingFrames in 1..request.maxInterpolatedFramesPerGap &&
+                                                    motionField != null &&
+                                                    !motionField.sceneChangeLikely &&
+                                                    !motionField.globalMotionIsUnstable &&
+                                                    motionField.meanConfidence >= 0.28f
 
                                             // Optical flow continua sendo calculado somente quando
-                                            // existe um frame ausente. Não derive mais zoom/translação/
-                                            // rotação global dele: isso causava "zoom pumping".
-                                            if (motionAllowed) {
-                                                outputSurface!!.currentMotionField()
-                                            }
+                                            // existe um gap real. O modo escolhido decide se a confiança
+                                            // é suficiente para warp, blend ou quadro vizinho.
 
                                             // A posição visual é derivada somente da fração entre os dois
                                             // quadros reais. A timeline de saída usa apenas a grade CFR.
@@ -410,7 +457,8 @@ class HardwareVideoTranscoder {
                                                 val correction = neutralCorrection
                                                 when {
                                                     motionAllowed -> writeMotionFrame(nextFillPtsUs, alpha, correction)
-                                                    blendAllowed -> writeBlendedFrame(nextFillPtsUs, alpha, correction)
+                                                    blendAllowed || qualityBlendFallback || highMotionBlendFallback ->
+                                                        writeBlendedFrame(nextFillPtsUs, alpha, correction)
                                                     request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ->
                                                         writeBlendedFrame(nextFillPtsUs, alpha, correction)
                                                     alpha < 0.5f -> writePreviousFrame(nextFillPtsUs, correction)
@@ -435,6 +483,9 @@ class HardwareVideoTranscoder {
                                 val percent = ((sourceRelative * 88L / sourceSpanUs).toInt() + 5).coerceIn(5, 93)
                                 val message = when (request.frameRepair) {
                                     FrameRepairMode.MOTION_COMPENSATED -> "Reconstrução seletiva: GPU/optical flow apenas nos gaps"
+                                    FrameRepairMode.QUALITY_LOW_MOTION -> "Qualidade: optical flow para movimento baixo"
+                                    FrameRepairMode.QUALITY_MEDIUM_MOTION -> "Qualidade: optical flow com confiança para movimento médio"
+                                    FrameRepairMode.QUALITY_HIGH_MOTION -> "Qualidade: reconstrução conservadora para movimento alto"
                                     FrameRepairMode.ADAPTIVE_BLEND -> "Reconstruindo cadência com mistura temporal por GPU"
                                     FrameRepairMode.FILL_MISSING_FRAMES -> "Preenchendo lacunas com o quadro mais próximo"
                                     FrameRepairMode.SMOOTH_TIMELINE -> "Regularizando a timeline"
@@ -449,7 +500,10 @@ class HardwareVideoTranscoder {
                 if (decoderDone) {
                     if ((request.frameRepair == FrameRepairMode.FILL_MISSING_FRAMES ||
                                 request.frameRepair == FrameRepairMode.ADAPTIVE_BLEND ||
-                                request.frameRepair == FrameRepairMode.MOTION_COMPENSATED) && loadedFrame
+                                request.frameRepair == FrameRepairMode.MOTION_COMPENSATED ||
+                                request.frameRepair == FrameRepairMode.QUALITY_LOW_MOTION ||
+                                request.frameRepair == FrameRepairMode.QUALITY_MEDIUM_MOTION ||
+                                request.frameRepair == FrameRepairMode.QUALITY_HIGH_MOTION) && loadedFrame
                     ) {
                         val targetEndExclusiveUs = sourceSpanUs.coerceAtLeast(lastSourceRelativePts + frameIntervalUs)
                         while (nextFillPtsUs < targetEndExclusiveUs) {
