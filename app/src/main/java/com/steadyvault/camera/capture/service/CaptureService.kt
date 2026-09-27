@@ -1714,6 +1714,17 @@ class CaptureService : Service() {
                                     profile = profile,
                                     token = token
                                 )
+                            } else if (profile.targetFps >= CaptureModeStore.FPS_60) {
+                                Log.i(
+                                    LOG_TAG,
+                                    "MINIMAL60 repeating request único: sem 3A lock, sem focus lock, sem probe"
+                                )
+                                startStabilizedRecording(
+                                    session = session,
+                                    request = request,
+                                    profile = profile,
+                                    token = token
+                                )
                             } else if (recordingSettings.lockAeAwbForCadence) {
                                 startLocked3ARecording(
                                     session = session,
@@ -3919,7 +3930,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "physical-openability-guard-1.8.279"
+        private const val CAPTURE_PIPELINE_REVISION = "immutable-minimal60-request-1.8.280"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
