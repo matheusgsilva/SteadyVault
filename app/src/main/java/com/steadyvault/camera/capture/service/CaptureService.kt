@@ -940,7 +940,20 @@ class CaptureService : Service() {
 
     private fun selectDirectRecorderEncoder(profile: CameraProfile): EncoderProfile? {
         val mime = recordingSettings.codecMimes(profile.hdrHlg10).singleOrNull() ?: return null
-        val requestedBitrate = configuredVideoBitrate()
+        val configuredBitrate = configuredVideoBitrate()
+        val requestedBitrate = if (profile.targetFps >= CaptureModeStore.FPS_60) {
+            val throughputCap = if (
+                profile.videoSize.width <= 1920 &&
+                profile.videoSize.height <= 1080
+            ) {
+                80_000_000
+            } else {
+                160_000_000
+            }
+            minOf(configuredBitrate, throughputCap)
+        } else {
+            configuredBitrate
+        }
         val exact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             DirectMediaRecorderBackend.findExactSelection(
                 cameraId = profile.cameraId,
@@ -2007,6 +2020,12 @@ class CaptureService : Service() {
     }
 
     private fun requestedStabilizationMode(profile: CameraProfile): RecordingStabilizationPolicy.Mode {
+        // Nesta branch de cadência, 60 FPS prioriza exclusivamente frames reais.
+        // Nenhuma estabilização é permitida no pipeline de 60 fps.
+        if (profile.targetFps >= CaptureModeStore.FPS_60) {
+            return RecordingStabilizationPolicy.Mode.OFF
+        }
+
         if (recordingSettings.stabilization == CaptureSettings.STABILIZATION_AUTO) {
             if (profile.highSpeed || profile.targetFps > CaptureModeStore.FPS_60) {
                 return RecordingStabilizationPolicy.Mode.OFF
