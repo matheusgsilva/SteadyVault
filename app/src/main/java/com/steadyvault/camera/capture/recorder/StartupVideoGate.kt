@@ -34,10 +34,10 @@ internal class StartupVideoGate(
         hasBufferedKeyFrame: Boolean
     ): Decision {
         if (opened) return Decision(Action.WRITE_CURRENT)
+        observedAfterCommit++
         if (clearlyBeforeCommit) return Decision(Action.HOLD)
 
         if (firstCommittedPtsUs == Long.MIN_VALUE) firstCommittedPtsUs = sourcePtsUs
-        observedAfterCommit++
 
         if (isKeyFrame) {
             opened = true
