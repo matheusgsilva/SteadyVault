@@ -572,7 +572,10 @@ class SettingsActivity : FragmentActivity() {
         autoGapRepairMode = addSpinner(
             "Método de reconstrução",
             listOf(
-                option(FrameRepairMode.MOTION_COMPENSATED.name, "Movimento robusto (recomendado)", "Usa fluxo bidirecional, movimento global rígido e correção de trajetória. É o modo principal para reconstruir frames realmente ausentes."),
+                option(FrameRepairMode.MOTION_COMPENSATED.name, "Movimento robusto (atual)", "Mantém o modo que já funciona: fluxo bidirecional com fallback visual quando o gap é grande."),
+                option(FrameRepairMode.QUALITY_LOW_MOTION.name, "Qualidade • movimento baixo", "Optical flow em alta qualidade para cenas estáveis ou com pouco movimento; evita warp agressivo quando a cena deixa de ser previsível."),
+                option(FrameRepairMode.QUALITY_MEDIUM_MOTION.name, "Qualidade • movimento médio", "Optical flow bidirecional em alta qualidade com análise de confiança para movimento normal, caminhada e panorâmicas moderadas."),
+                option(FrameRepairMode.QUALITY_HIGH_MOTION.name, "Qualidade • movimento alto / baixa confiança", "Modo conservador para ação rápida, blur e pouca luz: usa movimento quando confiável e recua para blend ou quadro vizinho para reduzir ghosting e deformações."),
                 option(FrameRepairMode.ADAPTIVE_BLEND.name, "Mistura temporal", "Fallback mais simples quando o fluxo de movimento não é confiável."),
                 option(FrameRepairMode.FILL_MISSING_FRAMES.name, "Quadro vizinho", "Fallback conservador; mantém CFR sem deformar a imagem."),
                 option(FrameRepairMode.SMOOTH_TIMELINE.name, "Somente timeline", "Corrige timestamps sem sintetizar pixels; usado automaticamente quando a recodificação não é segura.")
