@@ -237,9 +237,13 @@ object CaptureSettings {
         val stored = prefs.getString(resolutionKey(safeFps), null)
         val legacyFps = prefs.getInt("fps", 60).takeIf { it in SUPPORTED_FPS } ?: 60
         val legacyResolution = prefs.getString("resolution", null)
+        val otherFps = SUPPORTED_FPS.firstOrNull { it != safeFps }
+        val otherStored = otherFps?.let { prefs.getString(resolutionKey(it), null) }
         val resolved = when {
             stored in SUPPORTED_RESOLUTIONS -> stored!!
             safeFps == legacyFps && legacyResolution in SUPPORTED_RESOLUTIONS -> legacyResolution!!
+            legacyResolution in SUPPORTED_RESOLUTIONS -> legacyResolution!!
+            otherStored in SUPPORTED_RESOLUTIONS -> otherStored!!
             else -> RESOLUTION_4K
         }
         if (stored != resolved) prefs.edit().putString(resolutionKey(safeFps), resolved).apply()
