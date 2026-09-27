@@ -1620,7 +1620,7 @@ class CaptureService : Service() {
         // sua interface, mas nunca recebe uma segunda saída Camera2 durante o vídeo.
         // Isso reserva ISP, memória e largura de banda exclusivamente para o arquivo.
         val requestBuilder =
-            createRecordRequestBuilder(camera).apply {
+            createCaptureRequestBuilder(camera, profile).apply {
                 addTarget(surface)
                 configureCaptureRequest(this, profile)
                 if (!profile.highSpeed && profile.targetFps < CaptureModeStore.FPS_60) {
@@ -2580,6 +2580,27 @@ class CaptureService : Service() {
         updateNotificationOnMain(message)
     }
 
+
+    private fun createCaptureRequestBuilder(
+        camera: CameraDevice,
+        profile: CameraProfile
+    ): CaptureRequest.Builder {
+        val template = if (
+            !profile.highSpeed &&
+            profile.targetFps >= CaptureModeStore.FPS_60
+        ) {
+            CameraDevice.TEMPLATE_PREVIEW
+        } else {
+            CameraDevice.TEMPLATE_RECORD
+        }
+        Log.i(
+            LOG_TAG,
+            "CaptureRequest template=" +
+                (if (template == CameraDevice.TEMPLATE_PREVIEW) "PREVIEW" else "RECORD") +
+                " fps=${profile.targetFps}"
+        )
+        return camera.createCaptureRequest(template)
+    }
 
     private fun createRecordRequestBuilder(
         camera: CameraDevice
@@ -3944,7 +3965,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "minimal60-logical-only-output-1.8.281"
+        private const val CAPTURE_PIPELINE_REVISION = "minimal60-template-preview-1.8.282"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
