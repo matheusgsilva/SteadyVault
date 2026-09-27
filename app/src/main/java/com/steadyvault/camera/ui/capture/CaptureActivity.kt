@@ -3727,14 +3727,13 @@ class CaptureActivity : ComponentActivity() {
         val action = if (isBurst) PhotoService.ACTION_BURST else PhotoService.ACTION_CAPTURE
         val currentSettings = CaptureSettings.snapshot(this)
         val preferredCameraId = idlePreview.currentCameraId().takeIf { fromPreview }
-            ?: currentSettings.selectedCameraId
-        val captureZoomRatio = currentSettings.zoomRatio
+        val captureZoomRatio = currentSettings.zoomRatio.takeIf { fromPreview }
         val started = runCatching {
             val intent = Intent(this, PhotoService::class.java)
                 .setAction(action)
                 .putExtra(PhotoService.EXTRA_FROM_WIDGET, false)
                 .putExtra(PhotoService.EXTRA_FROM_PREVIEW, fromPreview)
-                .putExtra(PhotoService.EXTRA_ZOOM_RATIO, captureZoomRatio)
+            captureZoomRatio?.let { intent.putExtra(PhotoService.EXTRA_ZOOM_RATIO, it) }
             preferredCameraId?.takeIf { it.isNotBlank() }?.let {
                 intent.putExtra(PhotoService.EXTRA_PREFERRED_CAMERA_ID, it)
             }
@@ -4020,8 +4019,9 @@ class CaptureActivity : ComponentActivity() {
             selectedIndex = values.indexOf(current).coerceAtLeast(0),
             confirmLabel = "Aplicar"
         ) { index ->
+            val effectiveZoom = BackgroundRecordingZoom.set(this, values[index])
             val settings = CaptureSettings.snapshot(this)
-            CaptureSettings.save(this, settings.copy(zoomRatio = values[index]))
+            CaptureSettings.save(this, settings.copy(zoomRatio = effectiveZoom))
             renderBackgroundRecordingZoom()
             ExpandedControlWidget.updateAll(this)
         }
