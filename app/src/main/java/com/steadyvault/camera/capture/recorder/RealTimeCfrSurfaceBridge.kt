@@ -17,7 +17,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.LockSupport
-import kotlin.math.roundToInt
 
 /**
  * Ponte GPU CFR sem repetição de frames.
@@ -271,16 +270,14 @@ class RealTimeCfrSurfaceBridge(
                 val deltaNs = (currentSourceTimestampNs - previousSourceTimestampNs)
                     .coerceAtLeast(frameIntervalNs)
 
-                val sourceSteps = (deltaNs.toDouble() / frameIntervalNs.toDouble())
-                    .roundToInt()
-                    .coerceAtLeast(1)
-
-                val missingFrames = (sourceSteps - 1).coerceAtLeast(0)
+                val sourceSteps = CfrInterpolationPlanner.sourceSteps(
+                    deltaNs = deltaNs,
+                    frameIntervalNs = frameIntervalNs
+                )
 
                 // Cada slot ausente recebe uma mistura diferente entre os dois
                 // frames reais. alpha nunca é 0 ou 1, portanto não é cópia exata.
-                for (index in 1..missingFrames) {
-                    val alpha = index.toFloat() / sourceSteps.toFloat()
+                for (alpha in CfrInterpolationPlanner.interpolationAlphas(sourceSteps)) {
                     renderBlendToEncoder(
                         st = st,
                         textureMatrix = textureMatrix,
