@@ -1066,6 +1066,7 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun openCameraPreview() {
+        resetPreviewFpsMeter()
         if (!previewUserRequested && !pendingPreviewOpen) return
         if (CaptureStateStore.isBusy(this) || photoBusy || PhotoCaptureStateStore.isBusy(this)) {
             previewUserRequested = false
@@ -1190,10 +1191,8 @@ class CaptureActivity : ComponentActivity() {
                 "${codecLabel(settings.codec)} • ${stabilizationLabel(settings.stabilization)} • " +
                 exposureLabel(settings.exposureCompensation)
         }
-        previewPerformanceText.text = if (previewPhotoMode) {
-            "Foto • foco e exposição em tempo real"
-        } else {
-            "${CaptureSettings.resolutionLabel(settings.resolution)} ${settings.fps} • configuração real"
+        if (previewMeasuredFps <= 0.0) {
+            previewPerformanceText.text = if (previewPhotoMode) "Preview • medindo FPS…" else "FPS real -- / ${settings.fps}"
         }
     }
 
@@ -2916,7 +2915,9 @@ class CaptureActivity : ComponentActivity() {
             captureBusy -> "Foto externa • câmera exclusiva para máxima qualidade"
             busy && keepVideoLive -> "Vídeo de teste • preview e encoder compartilhando a sessão"
             busy -> "Vídeo externo • câmera exclusiva para máxima qualidade"
-            else -> "Modo de configuração • alterações salvas em tempo real"
+            else -> if (previewMeasuredFps > 0.0) {
+                "FPS real ${String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)} / ${CaptureSettings.snapshot(this).fps}"
+            } else "FPS real -- / ${CaptureSettings.snapshot(this).fps}"
         }
         if (message.isNotBlank() && (busy || captureBusy)) previewSettingsText.text = message
         else updatePreviewSettingsText()
