@@ -2087,12 +2087,16 @@ class CaptureActivity : ComponentActivity() {
                 renderCameraProfileCards(profileMode)
             }
             PreviewSettingsTab.GENERAL -> {
-                previewSettingsContentTitle.text = "Geral • $cameraLabel"
-                previewSettingsContentSubtitle.text = "Atalhos do perfil ativo e preferências gerais do SteadyVault."
+                previewSettingsContentTitle.text = "Configurar • $cameraLabel"
+                previewSettingsContentSubtitle.text = if (previewPhotoMode) {
+                    "Ajustes úteis de foto e câmera em uma única tela."
+                } else {
+                    "Vídeo, câmera e controles Pro em uma única tela. Alterações são aplicadas ao preview."
+                }
                 previewCameraProfilesScroll.visibility = View.GONE
                 previewSettingsActionsScroll.visibility = View.VISIBLE
                 previewManageProfilesButton.text = "Abrir todos os ajustes"
-                renderGeneralSettingsActions(settings)
+                renderUnifiedPreviewSettings(settings)
             }
             PreviewSettingsTab.PHOTO -> {
                 previewSettingsContentTitle.text = "Foto • $cameraLabel"
@@ -2262,6 +2266,30 @@ class CaptureActivity : ComponentActivity() {
         previewCameraProfilesScroll.post { previewCameraProfilesScroll.scrollTo(0, 0) }
     }
 
+    private fun renderUnifiedPreviewSettings(settings: CaptureSettings.Snapshot) {
+        previewSettingsActionsContainer.removeAllViews()
+        addPreviewSettingsAction("Câmera", CameraLensCatalog.labelFor(this, settings.selectedCameraId)) {
+            selectPreviewSettingsTab(PreviewSettingsTab.CAMERAS)
+        }
+        if (!previewPhotoMode) {
+            addPreviewSettingsAction("Resolução", CaptureSettings.resolutionLabel(settings.resolution)) { showLiveResolutionChoices() }
+            addPreviewSettingsAction("FPS", "${settings.fps} FPS • medido ${String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)}") { showLiveFpsChoices() }
+            addPreviewSettingsAction("Leitura do sensor", when (SensorPixelModeSettings.selected(this)) {
+                SensorPixelModeSettings.NORMAL -> "Normal pixel mode"
+                SensorPixelModeSettings.MAXIMUM_RESOLUTION -> "Maximum-resolution"
+                else -> "Auto • Samsung HAL"
+            }) { showSensorPixelModeChoices() }
+            addPreviewSettingsAction("Codec e bitrate", "${codecLabel(settings.codec)} • ${settings.bitrateMbps} Mbps") { showLiveCodecAndBitrateMenu() }
+        }
+        addPreviewSettingsAction("Estabilização", stabilizationLabel(settings.stabilization)) { showLiveStabilizationChoices() }
+        addPreviewSettingsAction("Exposição", exposureLabel(settings.exposureCompensation)) { showLiveExposureChoices() }
+        addPreviewSettingsAction("Foco", focusLabel(settings.focusMode)) { showLiveFocusChoices() }
+        addPreviewSettingsAction("Balanço de branco", whiteBalanceLabel(settings.whiteBalanceMode)) { showLiveWhiteBalanceChoices() }
+        addPreviewSettingsAction("Temperatura / cor", yellowReductionLabel(settings.yellowReduction)) { showLiveYellowReductionChoices() }
+        addPreviewSettingsAction("Anti-flicker", antibandingLabel(settings.antibanding)) { showLiveAntibandingChoices() }
+        addPreviewSettingsAction(if (previewAeAfLocked) "Liberar AF/AE" else "Travar AF/AE", if (previewAeAfLocked) "Travado" else "Contínuo") { togglePreviewAeAfLock() }
+        addPreviewSettingsAction("Grade 3×3", if (isPreviewGridEnabled()) "Ativada" else "Desativada") { togglePreviewGrid() }
+    }
     private fun renderGeneralSettingsActions(settings: CaptureSettings.Snapshot) {
         previewSettingsActionsContainer.removeAllViews()
         addPreviewSettingsAction(
