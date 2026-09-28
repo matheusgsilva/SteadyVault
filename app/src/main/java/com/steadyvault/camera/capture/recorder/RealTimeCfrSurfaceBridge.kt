@@ -17,7 +17,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.LockSupport
-import kotlin.math.max
 
 /**
  * Ponte GPU de baixa sobrecarga entre Camera2 e a Surface do MediaCodec.
@@ -262,11 +261,6 @@ class RealTimeCfrSurfaceBridge(
                     nextWallNs += frameIntervalNs
                 }
 
-                // Evita espiral de carga se o processo ficou suspenso por muito tempo:
-                // preserva a grade de PTS, mas volta o relógio de despacho para agora.
-                if (System.nanoTime() - nextWallNs > frameIntervalNs * MAX_CATCH_UP_FRAMES) {
-                    nextWallNs = System.nanoTime() + frameIntervalNs
-                }
             }
         } catch (t: Throwable) {
             initError = t
