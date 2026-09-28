@@ -18,11 +18,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 
 /**
- * Backend de vídeo direto para priorizar cadência.
+ * Backend de vídeo com cadência CFR em tempo real.
  *
- * Camera2 escreve em uma única Surface de entrada do MediaCodec. O app nunca toca
- * nos pixels. Antes de abrir a época útil do MP4, alguns samples comprimidos são
- * descartados até a cadência entrar em regime e o encoder entregar um keyframe.
+ * Camera2 escreve em uma SurfaceTexture OES. Uma ponte GPU reapresenta a última
+ * imagem válida em uma grade fixa de 30/60 FPS e envia essa Surface ao MediaCodec.
+ * Quando a HAL atrasa um frame, a GPU repete somente a última textura, sem cópia
+ * de pixels para CPU e sem pós-processamento após salvar.
  */
 class DirectMediaCodecBackend(
     private val outputFile: File,
@@ -51,7 +52,7 @@ class DirectMediaCodecBackend(
 
     val profileDescription: String
         get() = "${width}x${height} ${targetFps} FPS " +
-            "${videoMime.substringAfter('/').uppercase()} ${videoBitrate / 1_000_000} Mbps • hardware"
+            "${videoMime.substringAfter('/').uppercase()} ${videoBitrate / 1_000_000} Mbps • CFR GPU"
 
     private val drainExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(
