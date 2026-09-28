@@ -261,13 +261,19 @@ class RealTimeCfrSurfaceBridge(
 
                 st.updateTexImage()
                 val currentSourceTimestampNs = st.timestamp
+
+                // Alguns drivers podem coalescer callbacks da SurfaceTexture.
+                // O mesmo timestamp nunca pode virar um segundo frame no arquivo.
+                if (currentSourceTimestampNs <= previousSourceTimestampNs) {
+                    continue
+                }
+
                 val deltaNs = (currentSourceTimestampNs - previousSourceTimestampNs)
                     .coerceAtLeast(frameIntervalNs)
 
                 val sourceSteps = (deltaNs.toDouble() / frameIntervalNs.toDouble())
                     .roundToInt()
                     .coerceAtLeast(1)
-                    .coerceAtMost(MAX_INTERPOLATED_STEPS_PER_SOURCE_GAP)
 
                 val missingFrames = (sourceSteps - 1).coerceAtLeast(0)
 
@@ -575,10 +581,6 @@ class RealTimeCfrSurfaceBridge(
         private const val RELEASE_TIMEOUT_MS = 1_000L
         private const val IDLE_POLL_NS = 1_000_000L
         private const val MAX_PENDING_SIGNAL_COUNT = 8
-
-        // Sem duplicação: gaps maiores também recebem alphas distintos.
-        // O teto evita uma explosão patológica de trabalho após suspensão longa.
-        private const val MAX_INTERPOLATED_STEPS_PER_SOURCE_GAP = 120
 
         private val VERTICES = floatArrayOf(
             -1f, -1f,
