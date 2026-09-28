@@ -45,7 +45,7 @@ class DirectMediaCodecBackend(
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
 
-    override val backendName: String = "MediaCodec direto"
+    override val backendName: String = "MediaCodec + CFR GPU"
     override val videoBitrateBps: Long get() = videoBitrate.toLong()
     override val audioBitrateBps: Long get() = if (integratedAudio) audioBitrate.toLong() else 0L
 
@@ -64,7 +64,9 @@ class DirectMediaCodecBackend(
     }
 
     private var codec: MediaCodec? = null
-    private var inputSurface: Surface? = null
+    private var encoderInputSurface: Surface? = null
+    private var cameraInputSurface: Surface? = null
+    private var cfrBridge: RealTimeCfrSurfaceBridge? = null
     private var muxer: MediaMuxer? = null
     private var drainFuture: Future<*>? = null
     private var audioRecorder: DirectAacAudioRecorder? = null
@@ -91,7 +93,6 @@ class DirectMediaCodecBackend(
             ?: throw IllegalStateException(
                 "nenhum encoder de hardware suporta ${width}x${height} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
             )
-        val capabilities = codecInfo.getCapabilitiesForType(videoMime)
         val format = MediaFormat.createVideoFormat(videoMime, width, height).apply {
             setInteger(
                 MediaFormat.KEY_COLOR_FORMAT,
@@ -114,8 +115,8 @@ class DirectMediaCodecBackend(
             codec = mediaCodec
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
 
-            val surface = mediaCodec.createInputSurface()
-            inputSurface = surface
+            val encoderSurface = mediaCodec.createInputSurface()
+            encoderInputSurface = encoderSurface
 
             val mediaMuxer = MediaMuxer(
                 outputFile.absolutePath,
@@ -149,8 +150,19 @@ class DirectMediaCodecBackend(
                 drain(mediaCodec, mediaMuxer)
             }
 
+            val bridge = RealTimeCfrSurfaceBridge(
+                encoderSurface = encoderSurface,
+                width = width,
+                height = height,
+                fps = targetFps,
+                onError = onError
+            )
+            cfrBridge = bridge
+            val cameraSurface = bridge.prepare()
+            cameraInputSurface = cameraSurface
+
             prepared = true
-            return surface
+            return cameraSurface
         } catch (throwable: Throwable) {
             release()
             throw throwable
@@ -167,12 +179,14 @@ class DirectMediaCodecBackend(
         if (started) return
         started = true
         committed.set(true)
+        cfrBridge?.startOutput()
     }
 
     override fun stop(): Boolean {
         if (!started || released.get()) return false
 
         stopRequested.set(true)
+        cfrBridge?.stopOutput()
         val audioOk = if (integratedAudio && audioStarted.get()) {
             runCatching { audioRecorder?.stop() == true }.getOrDefault(false)
         } else {
@@ -201,6 +215,10 @@ class DirectMediaCodecBackend(
         if (!released.compareAndSet(false, true)) return
 
         stopRequested.set(true)
+        runCatching { cfrBridge?.stopOutput() }
+        runCatching { cfrBridge?.release() }
+        cfrBridge = null
+        cameraInputSurface = null
         runCatching { codec?.signalEndOfInputStream() }
         runCatching { drainFuture?.get(RELEASE_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
         closeCodecAndMuxer()
@@ -486,8 +504,12 @@ class DirectMediaCodecBackend(
         runCatching { localCodec?.stop() }
         runCatching { localCodec?.release() }
 
-        val localSurface = inputSurface
-        inputSurface = null
+        runCatching { cfrBridge?.release() }
+        cfrBridge = null
+        cameraInputSurface = null
+
+        val localSurface = encoderInputSurface
+        encoderInputSurface = null
         runCatching { localSurface?.release() }
 
         val localMuxer = muxer
