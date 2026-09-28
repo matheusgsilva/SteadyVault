@@ -1939,6 +1939,7 @@ class CaptureActivity : ComponentActivity() {
 
     private fun restartPreviewForUpdatedSettings() {
         if (!previewOpen || !previewUserRequested) return
+        resetPreviewFpsMeter()
         applyPreviewSurfaceBuffer()
         applyPreviewSurfaceLayout()
         updatePreviewSettingsText()
