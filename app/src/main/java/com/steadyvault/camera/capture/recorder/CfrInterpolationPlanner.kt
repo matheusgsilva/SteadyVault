@@ -20,4 +20,11 @@ object CfrInterpolationPlanner {
             (index + 1).toFloat() / sourceSteps.toFloat()
         }
     }
+
+    fun useRealtimeMotionInterpolation(sourceSteps: Int): Boolean {
+        val missingFrames = (sourceSteps - 1).coerceAtLeast(0)
+        return missingFrames in 1..MAX_REALTIME_MOTION_GAP_FRAMES
+    }
+
+    private const val MAX_REALTIME_MOTION_GAP_FRAMES = 3
 }
