@@ -14,6 +14,7 @@ import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
 import com.steadyvault.camera.core.settings.CaptureSettings
+import com.steadyvault.camera.core.settings.SensorPixelModeSettings
 import com.steadyvault.camera.core.settings.CameraProfileStore
 import com.steadyvault.camera.core.settings.BackgroundRecordingZoom
 import com.steadyvault.camera.core.state.CapturePhase
@@ -190,8 +191,12 @@ class CaptureActivity : ComponentActivity() {
     private var previewUserRequested = false
     private var previewTopControlsVisible = true
     private var previewPhotoMode = true
-    private var previewSettingsTab = PreviewSettingsTab.CAMERAS
+    private var previewSettingsTab = PreviewSettingsTab.GENERAL
     private var previewAeAfLocked = false
+    private var previewFpsWindowStartedNs = 0L
+    private var previewFpsLastTimestampNs = 0L
+    private var previewFpsFrameCount = 0
+    private var previewMeasuredFps = 0.0
     private var closePreviewAfterCapture = false
     private var pendingPreviewOpen = false
     private var recordingRequestedFromPreview = false
@@ -226,6 +231,9 @@ class CaptureActivity : ComponentActivity() {
             },
             onPreviewFrame = { photoMode ->
                 mainHandler.post { releasePreviewModeTransition(photoMode) }
+            },
+            onFrameTimestampNs = { timestampNs ->
+                mainHandler.post { updatePreviewFpsMeter(timestampNs) }
             }
         )
     }
@@ -442,6 +450,10 @@ class CaptureActivity : ComponentActivity() {
         previewSettingsPhotoTabIcon = findViewById(R.id.previewSettingsPhotoTabIcon)
         previewSettingsVideoTabIcon = findViewById(R.id.previewSettingsVideoTabIcon)
         previewSettingsProTabIcon = findViewById(R.id.previewSettingsProTabIcon)
+        previewSettingsGeneralTabText.text = "Configurar"
+        previewSettingsPhotoTab.visibility = View.GONE
+        previewSettingsVideoTab.visibility = View.GONE
+        previewSettingsProTab.visibility = View.GONE
         previewSettingsContentTitle = findViewById(R.id.previewSettingsContentTitle)
         previewSettingsContentSubtitle = findViewById(R.id.previewSettingsContentSubtitle)
         previewCameraProfilesScroll = findViewById(R.id.previewCameraProfilesScroll)
@@ -564,7 +576,7 @@ class CaptureActivity : ComponentActivity() {
         }
         previewSettingsButton.setOnClickListener {
             Haptics.tap(this)
-            showPreviewSettingsSheet(PreviewSettingsTab.CAMERAS)
+            showPreviewSettingsSheet(PreviewSettingsTab.GENERAL)
         }
         previewRecordButton.setOnClickListener {
             Haptics.tap(this)
