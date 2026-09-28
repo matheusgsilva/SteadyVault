@@ -332,8 +332,7 @@ class RealTimeCfrSurfaceBridge(
                     CfrInterpolationPlanner.interpolationAlphas(sourceSteps)
 
                 val useMotionInterpolation =
-                    interpolationAlphas.isNotEmpty() &&
-                        interpolationAlphas.size <= MAX_REALTIME_MOTION_GAP_FRAMES
+                    CfrInterpolationPlanner.useRealtimeMotionInterpolation(sourceSteps)
 
                 val motionField = if (useMotionInterpolation) {
                     readPreviousAnalysisFrame(
@@ -899,11 +898,6 @@ class RealTimeCfrSurfaceBridge(
         private const val RELEASE_TIMEOUT_MS = 1_000L
         private const val IDLE_POLL_NS = 1_000_000L
         private const val MAX_PENDING_SIGNAL_COUNT = 8
-
-        // Dense optical flow is effective for short capture misses. Beyond this,
-        // motion displacement becomes too ambiguous for a lightweight realtime
-        // field and a unique temporal blend is visually safer than warped geometry.
-        private const val MAX_REALTIME_MOTION_GAP_FRAMES = 3
 
         private val VERTICES = floatArrayOf(
             -1f, -1f,
