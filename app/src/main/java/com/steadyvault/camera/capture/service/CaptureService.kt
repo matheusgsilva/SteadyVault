@@ -21,6 +21,7 @@ import com.steadyvault.camera.core.capability.CaptureCapabilityMatrix
 import com.steadyvault.camera.core.capability.CaptureModeCatalog
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
+import com.steadyvault.camera.core.settings.SensorPixelModeSettings
 import com.steadyvault.camera.core.settings.CameraProfileStore
 import com.steadyvault.camera.core.state.CapturePhase
 import com.steadyvault.camera.core.state.CaptureStateStore
@@ -2372,6 +2373,7 @@ class CaptureService : Service() {
             setSafely(builder, CaptureRequest.SENSOR_EXPOSURE_TIME, manualCadence.exposureTimeNs)
             setSafely(builder, CaptureRequest.SENSOR_SENSITIVITY, manualCadence.sensitivityIso)
         }
+        applyExperimentalSensorPixelMode(builder, profile)
         setSafely(builder, CaptureRequest.CONTROL_AWB_LOCK, false)
         setSafely(builder, CaptureRequest.CONTROL_CAPTURE_INTENT, CameraMetadata.CONTROL_CAPTURE_INTENT_VIDEO_RECORD)
 
@@ -2601,6 +2603,42 @@ class CaptureService : Service() {
         setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
         OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
         CameraZoom.apply(builder, profile.characteristics, recordingSettings.zoomRatio)
+    }
+
+    private fun applyExperimentalSensorPixelMode(
+        builder: CaptureRequest.Builder,
+        profile: CameraProfile
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+
+        when (SensorPixelModeSettings.selected(this)) {
+            SensorPixelModeSettings.NORMAL -> {
+                setSafely(
+                    builder,
+                    CaptureRequest.SENSOR_PIXEL_MODE,
+                    CameraMetadata.SENSOR_PIXEL_MODE_DEFAULT
+                )
+            }
+
+            SensorPixelModeSettings.MAXIMUM_RESOLUTION -> {
+                val capabilities = profile.characteristics.get(
+                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES
+                ) ?: intArrayOf()
+                val supported = capabilities.contains(
+                    CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_ULTRA_HIGH_RESOLUTION_SENSOR
+                )
+                if (supported) {
+                    setSafely(
+                        builder,
+                        CaptureRequest.SENSOR_PIXEL_MODE,
+                        CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION
+                    )
+                }
+                // If unsupported, intentionally leave the key unset: AUTO HAL fallback.
+            }
+
+            else -> Unit
+        }
     }
 
     private fun requestedAwbMode(value: String): Int = when (value) {
