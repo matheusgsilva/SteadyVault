@@ -800,15 +800,6 @@ class CaptureService : Service() {
     }
 
     /**
-     * Quando "qualidade em pouca luz" está ativa, mantém o FPS escolhido como teto
-     * e entrega à HAL a faixa variável mais ampla anunciada pelo próprio aparelho.
-     * Isso permite aumentar exposição em cenas escuras. O pós-processamento é quem
-     * volta a saída para cadência regular depois.
-     *
-     * Limitamos o piso a 15 FPS para não aceitar exposições tão longas que criem
-     * motion blur impossível de reconstruir de forma convincente.
-     */
-    /**
      * Quando o usuário deixa compensação em 0, aplicamos uma pequena proteção
      * automática de altas luzes. Em 60 FPS ela também empurra o AE para uma
      * exposição um pouco mais curta, ajudando a reduzir motion blur sem desligar
@@ -2785,8 +2776,8 @@ class CaptureService : Service() {
 
             // Em 60 FPS a prioridade do modo AUTO é preservar a cadência real.
             // Preview stabilization/EIS adicionam trabalho ao ISP e, em 4K60,
-            // podem transformar picos de processamento em gaps que depois exigem
-            // reconstrução. OIS é óptico e tem custo muito menor no pipeline.
+            // podem aumentar a pressão sobre o pipeline. OIS é óptico e tem custo
+            // muito menor; gaps residuais são preenchidos pela ponte CFR da GPU.
             if (profile.targetFps >= CaptureModeStore.FPS_60) {
                 return if (profile.oisSupported) {
                     RecordingStabilizationPolicy.Mode.OIS
