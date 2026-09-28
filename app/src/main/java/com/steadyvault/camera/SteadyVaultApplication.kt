@@ -131,7 +131,6 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
     }
 
     override fun onActivityResumed(activity: Activity) {
-        AutoGapRepairService.pauseForInteractiveUse()
         protect("APP_APPEARANCE", "reaplicar aparencia em ${activity.javaClass.simpleName}") {
             AppearanceRuntime.apply(activity)
         }
