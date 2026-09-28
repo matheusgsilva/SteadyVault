@@ -216,7 +216,7 @@ class RealTimeCfrSurfaceBridge(
                     nextWallNs = outputPtsNs
                     drawFrame(
                         st, textureMatrix, program, positionHandle, texCoordHandle,
-                        matrixHandle, samplerHandle, vertices, texCoords,
+                        matrixHandle, samplerHandle, vertices, texCoords, textureId,
                         display, window, outputPtsNs
                     )
                     outputPtsNs += frameIntervalNs
@@ -241,7 +241,7 @@ class RealTimeCfrSurfaceBridge(
                 repeat(repeatsBeforeUpdate) {
                     drawFrame(
                         st, textureMatrix, program, positionHandle, texCoordHandle,
-                        matrixHandle, samplerHandle, vertices, texCoords,
+                        matrixHandle, samplerHandle, vertices, texCoords, textureId,
                         display, window, outputPtsNs
                     )
                     repeatedFrames++
@@ -255,7 +255,7 @@ class RealTimeCfrSurfaceBridge(
                     realFrames++
                     drawFrame(
                         st, textureMatrix, program, positionHandle, texCoordHandle,
-                        matrixHandle, samplerHandle, vertices, texCoords,
+                        matrixHandle, samplerHandle, vertices, texCoords, textureId,
                         display, window, outputPtsNs
                     )
                     outputPtsNs += frameIntervalNs
@@ -309,6 +309,7 @@ class RealTimeCfrSurfaceBridge(
         samplerHandle: Int,
         vertices: FloatBuffer,
         texCoords: FloatBuffer,
+        textureId: Int,
         display: android.opengl.EGLDisplay,
         window: android.opengl.EGLSurface,
         presentationTimeNs: Long
@@ -327,8 +328,7 @@ class RealTimeCfrSurfaceBridge(
 
         GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 1)
-        // Bind correto é reafirmado abaixo usando o texture ativo do SurfaceTexture.
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
         GLES20.glUniform1i(samplerHandle, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
