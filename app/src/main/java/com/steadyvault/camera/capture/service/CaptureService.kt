@@ -26,7 +26,6 @@ import com.steadyvault.camera.core.state.CapturePhase
 import com.steadyvault.camera.core.state.CaptureStateStore
 import com.steadyvault.camera.core.storage.RecordingStorageGuard
 import com.steadyvault.camera.storage.vault.VaultRepository
-import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.processing.service.VideoProcessingService
 import com.steadyvault.camera.storage.vault.RecordingRecoveryRepository
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
@@ -258,7 +257,6 @@ class CaptureService : Service() {
         // Camera/encoder always win over any background transcode. Both calls set
         // an in-process cancellation flag before the service IPC, so preparation of
         // the next recording naturally gives GPU/codec work time to unwind.
-        AutoGapRepairService.pauseForCapture(this)
         VideoProcessingService.pauseForCapture(this)
         VaultStartupCoordinator.suspendForCapture(cameraLeaseToken)
         MediaThumbnailRepository.prepareForCapture()
@@ -350,7 +348,6 @@ class CaptureService : Service() {
         if (!hasRequiredPermissions()) {
             sendState("Falha: permissões de câmera e microfone são obrigatórias para gravar com áudio")
             serviceActive.set(false)
-            AutoGapRepairService.resumeAfterCapture(this)
             VideoProcessingService.resumeAfterCapture()
             stopSelf()
             return
@@ -2896,16 +2893,8 @@ class CaptureService : Service() {
             ((SystemClock.elapsedRealtime() - recordingStartedAtElapsedMs) / 1000L).coerceAtLeast(0L)
         } else 0L
         val qualityLabel = if (profile?.hdrHlg10 == true) "HDR HLG10" else "SDR BT.709"
-        // O original é finalizado e indexado antes de entrar no pós-processamento.
-        // Gravações headless (widget/atalhos) já armam a fila para iniciar assim que
-        // esta sessão liberar câmera/encoder. Se outra gravação começar, o worker
-        // é cancelado e o job volta para PENDING.
-        AutoGapRepairService.enqueueAfterRecording(
-            context = this,
-            source = finalFile,
-            targetFps = fps,
-            startImmediately = true
-        )
+        // main3: o arquivo já sai com timeline CFR preenchida em tempo real.
+        // Nenhum reparo/pós-processamento automático é enfileirado após a gravação.
         val message = "Vídeo salvo no cofre • ${sizeName(size)} • $fps FPS • $qualityLabel • ${formatDuration(durationSeconds)}"
         sendStateOnMain(message)
         updateNotificationOnMain(message)
@@ -3101,7 +3090,6 @@ class CaptureService : Service() {
         WidgetRenderer.forceRecordingControls(this)
         CameraResourceCoordinator.releaseCapture(CameraResourceCoordinator.Owner.VIDEO, cameraLeaseToken)
         releaseWakeLock()
-        AutoGapRepairService.resumeAfterCapture(this)
         VideoProcessingService.resumeAfterCapture()
         if (deferredRawCleanup) {
             deferredRawCleanup = false
@@ -3169,7 +3157,6 @@ class CaptureService : Service() {
     private fun abortBeforeCaptureStart() {
         CameraResourceCoordinator.releaseCapture(CameraResourceCoordinator.Owner.VIDEO, cameraLeaseToken)
         VaultStartupCoordinator.resumeAfterCapture(cameraLeaseToken)
-        AutoGapRepairService.resumeAfterCapture(this)
         VideoProcessingService.resumeAfterCapture()
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         foregroundNotificationStarted = false
