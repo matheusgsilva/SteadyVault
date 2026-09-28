@@ -279,6 +279,8 @@ class RealTimeCfrSurfaceBridge(
             surfaceTexture = null
 
             if (display != EGL14.EGL_NO_DISPLAY) {
+                if (program != 0) runCatching { GLES20.glDeleteProgram(program) }
+                if (textureId != 0) runCatching { GLES20.glDeleteTextures(1, intArrayOf(textureId), 0) }
                 runCatching {
                     EGL14.eglMakeCurrent(
                         display,
@@ -287,8 +289,6 @@ class RealTimeCfrSurfaceBridge(
                         EGL14.EGL_NO_CONTEXT
                     )
                 }
-                if (program != 0) runCatching { GLES20.glDeleteProgram(program) }
-                if (textureId != 0) runCatching { GLES20.glDeleteTextures(1, intArrayOf(textureId), 0) }
                 if (window != EGL14.EGL_NO_SURFACE) runCatching { EGL14.eglDestroySurface(display, window) }
                 if (context != EGL14.EGL_NO_CONTEXT) runCatching { EGL14.eglDestroyContext(display, context) }
                 runCatching { EGL14.eglReleaseThread() }
@@ -405,8 +405,8 @@ class RealTimeCfrSurfaceBridge(
         private const val EGL_RECORDABLE_ANDROID = 0x3142
         private const val PREPARE_TIMEOUT_SECONDS = 5L
         private const val RELEASE_TIMEOUT_MS = 1_000L
-        private const val IDLE_POLL_NS = 500_000L
-        private const val MAX_SLEEP_NS = 2_000_000L
+        private const val IDLE_POLL_NS = 2_000_000L
+        private const val MAX_SLEEP_NS = 4_000_000L
         private const val MAX_CATCH_UP_FRAMES = 6
         private const val MAX_PENDING_SIGNAL_COUNT = 8
 
