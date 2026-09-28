@@ -1152,9 +1152,9 @@ class CaptureService : Service() {
             "${cameraProfile.videoSize.width}x${cameraProfile.videoSize.height}_${cameraProfile.targetFps}fps"
         val finalFile = VaultRepository.createRecordingFile(this, profileLabel)
 
-        val preferDirectCodec =
-            cameraProfile.targetFps == CaptureModeStore.FPS_60 &&
-                !cameraProfile.hdrHlg10
+        // main3: todo vídeo SDR de 30/60 FPS passa pela ponte GPU CFR.
+        // HDR continua na rota OEM porque a SurfaceTexture/shader atual é SDR 8-bit.
+        val preferDirectCodec = !cameraProfile.hdrHlg10
 
         val backend: RecordingBackend =
             if (preferDirectCodec) {
