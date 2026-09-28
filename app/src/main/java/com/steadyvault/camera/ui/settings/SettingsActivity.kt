@@ -42,10 +42,6 @@ import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
 import com.steadyvault.camera.core.settings.VisualIdentityStore
 import com.steadyvault.camera.core.camera.CameraLensCatalog
 import com.steadyvault.camera.core.state.CaptureStateStore
-import com.steadyvault.camera.processing.auto.AutoGapRepairQueueStore
-import com.steadyvault.camera.processing.auto.AutoGapRepairService
-import com.steadyvault.camera.processing.auto.AutoGapRepairSettings
-import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.storage.security.PrimaryVaultLock
 import com.steadyvault.camera.storage.security.VaultSecuritySettings
 import com.steadyvault.camera.storage.vault.VaultCleanupRepository
@@ -117,9 +113,6 @@ class SettingsActivity : FragmentActivity() {
     private lateinit var openPhotosExternally: Switch
     private lateinit var mediaDetailsLoadingMode: Spinner
     private lateinit var cacheUsageText: TextView
-    private lateinit var autoGapRepairMode: Spinner
-    private lateinit var autoGapRepairMaxFrames: Spinner
-    private lateinit var autoGapRepairQueueInfo: TextView
 
     private val executor = Executors.newSingleThreadExecutor()
     private val cacheExecutor = Executors.newSingleThreadExecutor { task ->
@@ -466,14 +459,12 @@ class SettingsActivity : FragmentActivity() {
                 CaptureSettings.RESOLUTION_4K
             )
             CaptureSettings.save(this, maxProfile)
-            AutoGapRepairSettings.setMode(this, FrameRepairMode.MOTION_COMPENSATED)
-            AutoGapRepairSettings.setMaxInterpolatedFramesPerGap(this, 30)
             CaptureStateStore.clearEffectiveMode(this)
             editingFps = CaptureModeStore.FPS_60
             buildFormPreservingScroll(maxProfile)
             Toast.makeText(
                 this,
-                "Perfil máximo aplicado: 4K60 HEVC 120 Mbps, EIS, AE automático com proteção de highlights e reconstrução máxima",
+                "Perfil máximo aplicado: 4K60 HEVC 120 Mbps, EIS e CFR em tempo real pela GPU",
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -1206,21 +1197,6 @@ class SettingsActivity : FragmentActivity() {
 
     private fun onSpinnerChanged(spinner: Spinner) {
         if (building) return
-        if (::autoGapRepairMode.isInitialized && spinner === autoGapRepairMode) {
-            AutoGapRepairSettings.setMode(this, FrameRepairMode.from(selected(spinner)))
-            AutoGapRepairService.resumeByUser(this)
-            refreshAutoGapRepairQueueCard()
-            return
-        }
-        if (::autoGapRepairMaxFrames.isInitialized && spinner === autoGapRepairMaxFrames) {
-            AutoGapRepairSettings.setMaxInterpolatedFramesPerGap(
-                this,
-                selected(spinner).toIntOrNull() ?: 4
-            )
-            AutoGapRepairService.resumeByUser(this)
-            refreshAutoGapRepairQueueCard()
-            return
-        }
         when (spinner) {
             autoLockTimeout -> VaultSecuritySettings.setTimeoutMs(this, selected(spinner).toLongOrNull() ?: VaultSecuritySettings.TIMEOUT_IMMEDIATE)
             trashRetention -> VaultTrashRepository.setRetentionDays(this, selected(spinner).toIntOrNull() ?: VaultTrashRepository.RETENTION_30_DAYS)
@@ -1303,12 +1279,6 @@ class SettingsActivity : FragmentActivity() {
         hdr.alpha = 0.45f
         colorProfile.isEnabled = true
         colorProfile.alpha = if (colorProfile.isEnabled) 1f else 0.45f
-    }
-
-    private fun refreshAutoGapRepairQueueCard() {
-        if (::autoGapRepairQueueInfo.isInitialized) {
-            autoGapRepairQueueInfo.text = AutoGapRepairQueueStore.summary(this).text()
-        }
     }
 
     private fun scheduleSave(immediate: Boolean = false) {
