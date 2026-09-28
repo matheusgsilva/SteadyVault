@@ -566,46 +566,8 @@ class SettingsActivity : FragmentActivity() {
             audioNoise.visibility = View.GONE
         }
 
-        addSection("Reconstrução automática")
-        val autoRepair = AutoGapRepairSettings.snapshot(this)
-        addInfo("Sempre ativa. Cada vídeo gravado entra na fila automaticamente. Se uma nova gravação começar, o processamento atual é interrompido com segurança, volta para a fila e continua depois.")
-        autoGapRepairMode = addSpinner(
-            "Método de reconstrução",
-            listOf(
-                option(FrameRepairMode.MOTION_COMPENSATED.name, "Movimento robusto (atual)", "Mantém o modo que já funciona: fluxo bidirecional com fallback visual quando o gap é grande."),
-                option(FrameRepairMode.QUALITY_LOW_MOTION.name, "Qualidade • movimento baixo", "Optical flow em alta qualidade para cenas estáveis ou com pouco movimento; evita warp agressivo quando a cena deixa de ser previsível."),
-                option(FrameRepairMode.QUALITY_MEDIUM_MOTION.name, "Qualidade • movimento médio", "Optical flow bidirecional em alta qualidade com análise de confiança para movimento normal, caminhada e panorâmicas moderadas."),
-                option(FrameRepairMode.QUALITY_HIGH_MOTION.name, "Qualidade • movimento alto / baixa confiança", "Modo conservador para ação rápida, blur e pouca luz: usa movimento quando confiável e recua para blend ou quadro vizinho para reduzir ghosting e deformações."),
-                option(FrameRepairMode.ADAPTIVE_BLEND.name, "Mistura temporal", "Fallback mais simples quando o fluxo de movimento não é confiável."),
-                option(FrameRepairMode.FILL_MISSING_FRAMES.name, "Quadro vizinho", "Fallback conservador; mantém CFR sem deformar a imagem."),
-                option(FrameRepairMode.SMOOTH_TIMELINE.name, "Somente timeline", "Corrige timestamps sem sintetizar pixels; usado automaticamente quando a recodificação não é segura.")
-            ),
-            autoRepair.mode.name
-        )
-        autoGapRepairMaxFrames = addSpinner(
-            "Máximo de quadros reconstruídos por gap",
-            listOf(
-                option("2", "2 quadros", "Muito conservador."),
-                option("4", "4 quadros", "Conservador para falhas curtas."),
-                option("8", "8 quadros", "Equilíbrio entre continuidade e segurança."),
-                option("16", "16 quadros", "Agressivo para lacunas maiores."),
-                option("24", "24 quadros", "Muito agressivo; tenta manter continuidade em falhas longas."),
-                option("30", "30 quadros (máximo)", "Reconstrução máxima antes de usar fallback seguro.")
-            ),
-            autoRepair.maxInterpolatedFramesPerGap.toString()
-        )
-        autoGapRepairQueueInfo = addInfo(AutoGapRepairQueueStore.summary(this).text())
-        addSmallButton("Tentar novamente reparos com erro") {
-            AutoGapRepairService.retryFailed(this)
-            refreshAutoGapRepairQueueCard()
-            Toast.makeText(this, "Falhas reenfileiradas quando houver", Toast.LENGTH_SHORT).show()
-        }
-        addSmallButton("Retomar fila agora") {
-            AutoGapRepairService.resumeByUser(this)
-            refreshAutoGapRepairQueueCard()
-            Toast.makeText(this, "Fila liberada para continuar quando a câmera estiver livre", Toast.LENGTH_SHORT).show()
-        }
-        addInfo("A captura sempre tem prioridade sobre GPU/decoder. O original nunca é apagado durante o reparo e temporários incompletos são descartados.")
+        addSection("Cadência CFR em tempo real")
+        addInfo("Na main3, os gaps são preenchidos durante a própria gravação pela GPU. O encoder recebe uma grade CFR rígida em 30/60 FPS; quando a câmera atrasa um quadro, a última imagem válida é repetida temporariamente sem copiar pixels para a CPU. Não há fila automática nem reconstrução depois de salvar.")
 
         val playback = PlaybackSettings.snapshot(this)
         addSection("Reprodução")
@@ -616,7 +578,7 @@ class SettingsActivity : FragmentActivity() {
         openVideosExternally = addSwitch("Usar o player do celular para vídeos do cofre", "Ao abrir um vídeo, envia acesso temporário somente de leitura ao player padrão do Android/Samsung em vez de usar o player interno.", playback.openVideosExternally)
         openPhotosExternally = addSwitch("Usar a galeria do celular para fotos do cofre", "Ao abrir uma foto, envia acesso temporário somente de leitura ao visualizador padrão do Android/Samsung em vez de usar o visualizador interno.", playback.openPhotosExternally)
         playbackCache = addSpinner("Buffer do player em modo de compatibilidade (ms)", playbackCacheOptions(playback.fileCacheMs), playback.fileCacheMs.toString())
-        addInfo("O Media3 nativo é usado primeiro por fluidez. Se ele falhar, o player tenta perfis de compatibilidade e o VLC automaticamente. Falhas gravadas nos timestamps entram automaticamente na fila de reconstrução. Ao abrir fora do app, o arquivo é compartilhado somente com permissão temporária de leitura.")
+        addInfo("O Media3 nativo é usado primeiro por fluidez. Se ele falhar, o player tenta perfis de compatibilidade e o VLC automaticamente. Na main3, a cadência do vídeo é preenchida durante a gravação e não existe fila automática de reconstrução. Ao abrir fora do app, o arquivo é compartilhado somente com permissão temporária de leitura.")
 
         addSection("Privacidade e cofres")
         vibration = addSwitch("Vibrar quando a gravação realmente iniciar e terminar", "Emite uma confirmação tátil após o início efetivo da captura e outra quando o arquivo termina de ser salvo.", snapshot.vibrateStartStop)
@@ -1451,7 +1413,6 @@ class SettingsActivity : FragmentActivity() {
         }
         if (old != value) {
             CaptureSettings.save(this, value)
-            AutoGapRepairService.resumeByUser(this)
         }
         val oldPlayback = PlaybackSettings.snapshot(this)
         val newPlayback = oldPlayback.copy(
@@ -1470,16 +1431,12 @@ class SettingsActivity : FragmentActivity() {
         OneUiDialog.confirm(
             activity = this,
             title = "Restaurar padrões estáveis?",
-            message = "Volta para os padrões de captura e mantém reconstrução automática ativa.",
+            message = "Volta para os padrões estáveis de captura da main3.",
             positiveLabel = "Restaurar",
             destructive = true
         ) {
             CaptureSettings.restoreDefaults(this)
             PlaybackSettings.restoreDefaults(this)
-            AutoGapRepairSettings.setEnabled(this, true)
-            AutoGapRepairSettings.setMode(this, FrameRepairMode.MOTION_COMPENSATED)
-            AutoGapRepairSettings.setMaxInterpolatedFramesPerGap(this, 16)
-            AutoGapRepairService.resumeByUser(this)
             VaultMediaCacheSettings.restoreDefaults(this)
             CaptureStateStore.clearEffectiveMode(this)
             buildFormPreservingScroll(CaptureSettings.snapshot(this))
