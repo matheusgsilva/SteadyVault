@@ -288,17 +288,17 @@ class SettingsActivity : FragmentActivity() {
             listOf(
                 option(
                     SensorPixelModeSettings.AUTO,
-                    "Auto • Samsung HAL",
+                    "1 • Auto • Samsung HAL",
                     "Não força SENSOR_PIXEL_MODE. É o comportamento atual e deixa a Samsung escolher binning/leitura para 4K60."
                 ),
                 option(
                     SensorPixelModeSettings.NORMAL,
-                    "Normal pixel mode",
+                    "2 • Normal pixel mode",
                     "Solicita explicitamente o modo normal do sensor pela Camera2 para comparar estabilidade de FPS."
                 ),
                 option(
                     SensorPixelModeSettings.MAXIMUM_RESOLUTION,
-                    "Maximum-resolution sensor mode",
+                    "3 • Maximum-resolution sensor mode",
                     "Solicita o modo de máxima resolução quando a câmera anunciar suporte. É um teste; pode ser mais pesado e a HAL pode recusar 4K60."
                 )
             ),
