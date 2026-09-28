@@ -15,7 +15,6 @@ import com.steadyvault.camera.storage.security.TertiaryVaultLock
 import com.steadyvault.camera.storage.security.VaultSecuritySettings
 import com.steadyvault.camera.storage.vault.VaultStartupCoordinator
 import com.steadyvault.camera.core.state.CaptureStateStore
-import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.ui.capture.QuickCaptureLauncher
 import com.steadyvault.camera.ui.theme.AppearanceRuntime
 import com.steadyvault.camera.widgets.WidgetPreviewPublisher
@@ -46,11 +45,6 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
                     SecondaryVaultLock.lock()
                     TertiaryVaultLock.lock()
                 }
-            }
-            // Screen-off is the ideal time for automatic repair: no player/UI is
-            // competing for decoder/GPU and the foreground service owns a wake lock.
-            protect("APP_LIFECYCLE", "retomar reparo com tela apagada") {
-                AutoGapRepairService.resumeForBackground(this@SteadyVaultApplication)
             }
         }
     }
@@ -91,7 +85,6 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
         if (startedActivities == 0 && !changingConfiguration) {
             // Automatic transcode yields while the user is navigating, opening the
             // vault/settings or playing the original. The job stays persisted.
-            AutoGapRepairService.pauseForInteractiveUse()
             handler.removeCallbacks(delayedLock)
             protect("APP_LIFECYCLE", "retorno ao primeiro plano") {
                 if (VaultSecuritySettings.shouldLockOnForeground(this)) {
@@ -121,9 +114,6 @@ class SteadyVaultApplication : Application(), Application.ActivityLifecycleCallb
                     timeout == VaultSecuritySettings.TIMEOUT_IMMEDIATE -> delayedLock.run()
                     timeout > 0L -> handler.postDelayed(delayedLock, timeout)
                 }
-            }
-            protect("APP_LIFECYCLE", "retomar reparo em segundo plano") {
-                AutoGapRepairService.resumeForBackground(this)
             }
         }
     }
