@@ -17,16 +17,18 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.LockSupport
+import kotlin.math.roundToInt
 
 /**
- * Ponte GPU de baixa sobrecarga entre Camera2 e a Surface do MediaCodec.
+ * Ponte GPU CFR sem repetição de frames.
  *
- * A câmera escreve em uma SurfaceTexture OES. Esta classe reapresenta a última
- * textura disponível em uma grade CFR rígida e envia os frames ao encoder com
- * PTS igualmente espaçados. Quando a HAL atrasa um frame, a última imagem é
- * repetida somente pelo tempo necessário; nenhum pixel passa pela CPU.
+ * Camera2 escreve em uma SurfaceTexture OES. O frame real anterior é preservado
+ * em uma textura 2D da GPU antes de avançar para o próximo frame real. Se o delta
+ * entre os timestamps da câmera indicar slots ausentes, esses slots são gerados
+ * por interpolação temporal entre o frame anterior e o próximo frame real.
  *
- * Prioridade: nunca bloquear a Camera2 para fazer reparo visual sofisticado.
+ * Não há fallback de duplicação: nenhum slot CFR é preenchido reapresentando
+ * exatamente o mesmo frame anterior. O custo fica na GPU; pixels não voltam à CPU.
  */
 class RealTimeCfrSurfaceBridge(
     private val encoderSurface: Surface,
@@ -51,7 +53,7 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var cameraSurface: Surface? = null
     @Volatile private var surfaceTexture: SurfaceTexture? = null
     @Volatile private var realFrames = 0L
-    @Volatile private var repeatedFrames = 0L
+    @Volatile private var interpolatedFrames = 0L
 
     private val renderThread = Thread(
         { renderLoop() },
@@ -71,6 +73,8 @@ class RealTimeCfrSurfaceBridge(
 
     fun startOutput() {
         check(!released.get()) { "ponte CFR já liberada" }
+        // Descarta apenas sinais antigos; o próximo frame real abre a timeline útil.
+        pendingFrames.set(0)
         outputEnabled.set(true)
     }
 
@@ -78,7 +82,7 @@ class RealTimeCfrSurfaceBridge(
         outputEnabled.set(false)
     }
 
-    fun stats(): Stats = Stats(realFrames, repeatedFrames)
+    fun stats(): Stats = Stats(realFrames, interpolatedFrames)
 
     fun release() {
         if (!released.compareAndSet(false, true)) return
@@ -91,7 +95,7 @@ class RealTimeCfrSurfaceBridge(
 
     data class Stats(
         val realFrames: Long,
-        val repeatedFrames: Long
+        val interpolatedFrames: Long
     )
 
     private fun renderLoop() {
@@ -100,8 +104,11 @@ class RealTimeCfrSurfaceBridge(
         var display = EGL14.EGL_NO_DISPLAY
         var context = EGL14.EGL_NO_CONTEXT
         var window = EGL14.EGL_NO_SURFACE
-        var textureId = 0
-        var program = 0
+        var externalTexture = 0
+        var previousTexture = 0
+        var previousFramebuffer = 0
+        var externalProgram = 0
+        var blendProgram = 0
         var st: SurfaceTexture? = null
         var camera: Surface? = null
 
@@ -159,8 +166,8 @@ class RealTimeCfrSurfaceBridge(
                 "falha ativando contexto EGL"
             }
 
-            textureId = createExternalTexture()
-            st = SurfaceTexture(textureId).apply {
+            externalTexture = createExternalTexture()
+            st = SurfaceTexture(externalTexture).apply {
                 setDefaultBufferSize(width, height)
                 setOnFrameAvailableListener(
                     {
@@ -175,11 +182,11 @@ class RealTimeCfrSurfaceBridge(
             camera = Surface(st)
             cameraSurface = camera
 
-            program = createProgram(VERTEX_SHADER, FRAGMENT_SHADER)
-            val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-            val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-            val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
-            val samplerHandle = GLES20.glGetUniformLocation(program, "sTexture")
+            previousTexture = createStorageTexture(width, height)
+            previousFramebuffer = createFramebuffer(previousTexture)
+            externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_EXTERNAL)
+            blendProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_BLEND)
+
             val vertices = floatBuffer(VERTICES)
             val texCoords = floatBuffer(TEX_COORDS)
             val textureMatrix = FloatArray(16)
@@ -187,80 +194,118 @@ class RealTimeCfrSurfaceBridge(
             ready.countDown()
 
             val frameIntervalNs = 1_000_000_000L / fps.coerceAtLeast(1)
-            var hasFrame = false
+            var haveLatchedFrame = false
+            var timelineStarted = false
+            var previousSourceTimestampNs = 0L
             var outputPtsNs = 0L
-            var nextWallNs = 0L
 
             while (!released.get()) {
                 if (!outputEnabled.get()) {
                     if (pendingFrames.getAndSet(0) > 0) {
                         runCatching {
                             st.updateTexImage()
-                            hasFrame = true
+                            haveLatchedFrame = true
                         }
                     }
+                    timelineStarted = false
                     LockSupport.parkNanos(IDLE_POLL_NS)
                     continue
                 }
 
-                if (!hasFrame) {
-                    if (pendingFrames.getAndSet(0) <= 0) {
-                        LockSupport.parkNanos(IDLE_POLL_NS)
-                        continue
-                    }
+                if (pendingFrames.get() <= 0) {
+                    LockSupport.parkNanos(IDLE_POLL_NS)
+                    continue
+                }
+
+                pendingFrames.decrementAndGet()
+
+                if (!timelineStarted) {
                     st.updateTexImage()
-                    hasFrame = true
-                    realFrames++
+                    haveLatchedFrame = true
+                    previousSourceTimestampNs = st.timestamp
                     outputPtsNs = System.nanoTime()
-                    nextWallNs = outputPtsNs
-                    drawFrame(
-                        st, textureMatrix, program, positionHandle, texCoordHandle,
-                        matrixHandle, samplerHandle, vertices, texCoords, textureId,
-                        display, window, outputPtsNs
+                    renderExternalToEncoder(
+                        st = st,
+                        textureMatrix = textureMatrix,
+                        program = externalProgram,
+                        externalTexture = externalTexture,
+                        vertices = vertices,
+                        texCoords = texCoords,
+                        display = display,
+                        window = window,
+                        presentationTimeNs = outputPtsNs
                     )
                     outputPtsNs += frameIntervalNs
-                    nextWallNs += frameIntervalNs
-                    continue
-                }
-
-                val now = System.nanoTime()
-                if (now < nextWallNs) {
-                    LockSupport.parkNanos((nextWallNs - now).coerceAtMost(MAX_SLEEP_NS))
-                    continue
-                }
-
-                val due = (1L + (now - nextWallNs) / frameIntervalNs)
-                    .coerceIn(1L, MAX_CATCH_UP_FRAMES.toLong())
-                    .toInt()
-                val newFrameAvailable = pendingFrames.get() > 0
-
-                // Se acumulou atraso, preenche posições anteriores com o último
-                // frame conhecido e reserva a última posição para o frame mais novo.
-                val repeatsBeforeUpdate = if (newFrameAvailable) due - 1 else due
-                repeat(repeatsBeforeUpdate) {
-                    drawFrame(
-                        st, textureMatrix, program, positionHandle, texCoordHandle,
-                        matrixHandle, samplerHandle, vertices, texCoords, textureId,
-                        display, window, outputPtsNs
-                    )
-                    repeatedFrames++
-                    outputPtsNs += frameIntervalNs
-                    nextWallNs += frameIntervalNs
-                }
-
-                if (newFrameAvailable && outputEnabled.get()) {
-                    pendingFrames.set(0)
-                    st.updateTexImage()
                     realFrames++
-                    drawFrame(
-                        st, textureMatrix, program, positionHandle, texCoordHandle,
-                        matrixHandle, samplerHandle, vertices, texCoords, textureId,
-                        display, window, outputPtsNs
-                    )
-                    outputPtsNs += frameIntervalNs
-                    nextWallNs += frameIntervalNs
+                    timelineStarted = true
+                    continue
                 }
 
+                if (!haveLatchedFrame) {
+                    st.updateTexImage()
+                    haveLatchedFrame = true
+                    previousSourceTimestampNs = st.timestamp
+                    continue
+                }
+
+                // Preserva o frame real anterior antes de SurfaceTexture avançar.
+                copyExternalToPreviousTexture(
+                    st = st,
+                    textureMatrix = textureMatrix,
+                    program = externalProgram,
+                    externalTexture = externalTexture,
+                    framebuffer = previousFramebuffer,
+                    vertices = vertices,
+                    texCoords = texCoords
+                )
+
+                st.updateTexImage()
+                val currentSourceTimestampNs = st.timestamp
+                val deltaNs = (currentSourceTimestampNs - previousSourceTimestampNs)
+                    .coerceAtLeast(frameIntervalNs)
+
+                val sourceSteps = (deltaNs.toDouble() / frameIntervalNs.toDouble())
+                    .roundToInt()
+                    .coerceAtLeast(1)
+                    .coerceAtMost(MAX_INTERPOLATED_STEPS_PER_SOURCE_GAP)
+
+                val missingFrames = (sourceSteps - 1).coerceAtLeast(0)
+
+                // Cada slot ausente recebe uma mistura diferente entre os dois
+                // frames reais. alpha nunca é 0 ou 1, portanto não é cópia exata.
+                for (index in 1..missingFrames) {
+                    val alpha = index.toFloat() / sourceSteps.toFloat()
+                    renderBlendToEncoder(
+                        st = st,
+                        textureMatrix = textureMatrix,
+                        program = blendProgram,
+                        previousTexture = previousTexture,
+                        externalTexture = externalTexture,
+                        alpha = alpha,
+                        vertices = vertices,
+                        texCoords = texCoords,
+                        display = display,
+                        window = window,
+                        presentationTimeNs = outputPtsNs
+                    )
+                    outputPtsNs += frameIntervalNs
+                    interpolatedFrames++
+                }
+
+                renderExternalToEncoder(
+                    st = st,
+                    textureMatrix = textureMatrix,
+                    program = externalProgram,
+                    externalTexture = externalTexture,
+                    vertices = vertices,
+                    texCoords = texCoords,
+                    display = display,
+                    window = window,
+                    presentationTimeNs = outputPtsNs
+                )
+                outputPtsNs += frameIntervalNs
+                realFrames++
+                previousSourceTimestampNs = currentSourceTimestampNs
             }
         } catch (t: Throwable) {
             initError = t
@@ -273,8 +318,17 @@ class RealTimeCfrSurfaceBridge(
             surfaceTexture = null
 
             if (display != EGL14.EGL_NO_DISPLAY) {
-                if (program != 0) runCatching { GLES20.glDeleteProgram(program) }
-                if (textureId != 0) runCatching { GLES20.glDeleteTextures(1, intArrayOf(textureId), 0) }
+                if (externalProgram != 0) runCatching { GLES20.glDeleteProgram(externalProgram) }
+                if (blendProgram != 0) runCatching { GLES20.glDeleteProgram(blendProgram) }
+                if (previousFramebuffer != 0) {
+                    runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(previousFramebuffer), 0) }
+                }
+                if (previousTexture != 0) {
+                    runCatching { GLES20.glDeleteTextures(1, intArrayOf(previousTexture), 0) }
+                }
+                if (externalTexture != 0) {
+                    runCatching { GLES20.glDeleteTextures(1, intArrayOf(externalTexture), 0) }
+                }
                 runCatching {
                     EGL14.eglMakeCurrent(
                         display,
@@ -288,29 +342,73 @@ class RealTimeCfrSurfaceBridge(
                 runCatching { EGL14.eglReleaseThread() }
                 runCatching { EGL14.eglTerminate(display) }
             }
+
             if (ready.count > 0L) ready.countDown()
             stopped.countDown()
         }
     }
 
-    private fun drawFrame(
+    private fun copyExternalToPreviousTexture(
         st: SurfaceTexture,
         textureMatrix: FloatArray,
         program: Int,
-        positionHandle: Int,
-        texCoordHandle: Int,
-        matrixHandle: Int,
-        samplerHandle: Int,
+        externalTexture: Int,
+        framebuffer: Int,
+        vertices: FloatBuffer,
+        texCoords: FloatBuffer
+    ) {
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer)
+        renderExternal(
+            st = st,
+            textureMatrix = textureMatrix,
+            program = program,
+            externalTexture = externalTexture,
+            vertices = vertices,
+            texCoords = texCoords
+        )
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+    }
+
+    private fun renderExternalToEncoder(
+        st: SurfaceTexture,
+        textureMatrix: FloatArray,
+        program: Int,
+        externalTexture: Int,
         vertices: FloatBuffer,
         texCoords: FloatBuffer,
-        textureId: Int,
         display: android.opengl.EGLDisplay,
         window: android.opengl.EGLSurface,
         presentationTimeNs: Long
     ) {
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        renderExternal(
+            st = st,
+            textureMatrix = textureMatrix,
+            program = program,
+            externalTexture = externalTexture,
+            vertices = vertices,
+            texCoords = texCoords
+        )
+        EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
+        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers falhou" }
+    }
+
+    private fun renderExternal(
+        st: SurfaceTexture,
+        textureMatrix: FloatArray,
+        program: Int,
+        externalTexture: Int,
+        vertices: FloatBuffer,
+        texCoords: FloatBuffer
+    ) {
         st.getTransformMatrix(textureMatrix)
         GLES20.glViewport(0, 0, width, height)
         GLES20.glUseProgram(program)
+
+        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
+        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
+        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
+        val samplerHandle = GLES20.glGetUniformLocation(program, "sTexture")
 
         vertices.position(0)
         GLES20.glEnableVertexAttribArray(positionHandle)
@@ -322,11 +420,59 @@ class RealTimeCfrSurfaceBridge(
 
         GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
         GLES20.glUniform1i(samplerHandle, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
+    private fun renderBlendToEncoder(
+        st: SurfaceTexture,
+        textureMatrix: FloatArray,
+        program: Int,
+        previousTexture: Int,
+        externalTexture: Int,
+        alpha: Float,
+        vertices: FloatBuffer,
+        texCoords: FloatBuffer,
+        display: android.opengl.EGLDisplay,
+        window: android.opengl.EGLSurface,
+        presentationTimeNs: Long
+    ) {
+        st.getTransformMatrix(textureMatrix)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES20.glViewport(0, 0, width, height)
+        GLES20.glUseProgram(program)
+
+        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
+        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
+        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
+        val previousHandle = GLES20.glGetUniformLocation(program, "sPrevious")
+        val currentHandle = GLES20.glGetUniformLocation(program, "sCurrent")
+        val alphaHandle = GLES20.glGetUniformLocation(program, "uAlpha")
+
+        vertices.position(0)
+        GLES20.glEnableVertexAttribArray(positionHandle)
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
+
+        texCoords.position(0)
+        GLES20.glEnableVertexAttribArray(texCoordHandle)
+        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
+
+        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, previousTexture)
+        GLES20.glUniform1i(previousHandle, 0)
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
+        GLES20.glUniform1i(currentHandle, 1)
+
+        GLES20.glUniform1f(alphaHandle, alpha.coerceIn(0.001f, 0.999f))
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
-        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers falhou" }
+        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers interpolado falhou" }
     }
 
     private fun createExternalTexture(): Int {
@@ -335,26 +481,54 @@ class RealTimeCfrSurfaceBridge(
         val id = textures[0]
         check(id != 0) { "falha criando textura OES" }
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, id)
-        GLES20.glTexParameteri(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            GLES20.GL_TEXTURE_MIN_FILTER,
-            GLES20.GL_LINEAR
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        return id
+    }
+
+    private fun createStorageTexture(width: Int, height: Int): Int {
+        val textures = IntArray(1)
+        GLES20.glGenTextures(1, textures, 0)
+        val id = textures[0]
+        check(id != 0) { "falha criando textura de histórico CFR" }
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexImage2D(
+            GLES20.GL_TEXTURE_2D,
+            0,
+            GLES20.GL_RGBA,
+            width,
+            height,
+            0,
+            GLES20.GL_RGBA,
+            GLES20.GL_UNSIGNED_BYTE,
+            null
         )
-        GLES20.glTexParameteri(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            GLES20.GL_TEXTURE_MAG_FILTER,
-            GLES20.GL_LINEAR
+        return id
+    }
+
+    private fun createFramebuffer(texture: Int): Int {
+        val framebuffers = IntArray(1)
+        GLES20.glGenFramebuffers(1, framebuffers, 0)
+        val id = framebuffers[0]
+        check(id != 0) { "falha criando framebuffer CFR" }
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, id)
+        GLES20.glFramebufferTexture2D(
+            GLES20.GL_FRAMEBUFFER,
+            GLES20.GL_COLOR_ATTACHMENT0,
+            GLES20.GL_TEXTURE_2D,
+            texture,
+            0
         )
-        GLES20.glTexParameteri(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            GLES20.GL_TEXTURE_WRAP_S,
-            GLES20.GL_CLAMP_TO_EDGE
-        )
-        GLES20.glTexParameteri(
-            GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-            GLES20.GL_TEXTURE_WRAP_T,
-            GLES20.GL_CLAMP_TO_EDGE
-        )
+        check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE) {
+            "framebuffer CFR incompleto"
+        }
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         return id
     }
 
@@ -399,10 +573,12 @@ class RealTimeCfrSurfaceBridge(
         private const val EGL_RECORDABLE_ANDROID = 0x3142
         private const val PREPARE_TIMEOUT_SECONDS = 5L
         private const val RELEASE_TIMEOUT_MS = 1_000L
-        private const val IDLE_POLL_NS = 2_000_000L
-        private const val MAX_SLEEP_NS = 4_000_000L
-        private const val MAX_CATCH_UP_FRAMES = 6
+        private const val IDLE_POLL_NS = 1_000_000L
         private const val MAX_PENDING_SIGNAL_COUNT = 8
+
+        // Sem duplicação: gaps maiores também recebem alphas distintos.
+        // O teto evita uma explosão patológica de trabalho após suspensão longa.
+        private const val MAX_INTERPOLATED_STEPS_PER_SOURCE_GAP = 120
 
         private val VERTICES = floatArrayOf(
             -1f, -1f,
@@ -418,7 +594,7 @@ class RealTimeCfrSurfaceBridge(
             1f, 1f
         )
 
-        private const val VERTEX_SHADER = """
+        private const val VERTEX_SHADER_EXTERNAL = """
             attribute vec4 aPosition;
             attribute vec4 aTexCoord;
             uniform mat4 uTextureMatrix;
@@ -429,13 +605,41 @@ class RealTimeCfrSurfaceBridge(
             }
         """
 
-        private const val FRAGMENT_SHADER = """
+        private const val FRAGMENT_SHADER_EXTERNAL = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
             varying vec2 vTexCoord;
             uniform samplerExternalOES sTexture;
             void main() {
                 gl_FragColor = texture2D(sTexture, vTexCoord);
+            }
+        """
+
+        private const val VERTEX_SHADER_BLEND = """
+            attribute vec4 aPosition;
+            attribute vec4 aTexCoord;
+            uniform mat4 uTextureMatrix;
+            varying vec2 vPreviousCoord;
+            varying vec2 vCurrentCoord;
+            void main() {
+                gl_Position = aPosition;
+                vPreviousCoord = aTexCoord.xy;
+                vCurrentCoord = (uTextureMatrix * aTexCoord).xy;
+            }
+        """
+
+        private const val FRAGMENT_SHADER_BLEND = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            varying vec2 vPreviousCoord;
+            varying vec2 vCurrentCoord;
+            uniform sampler2D sPrevious;
+            uniform samplerExternalOES sCurrent;
+            uniform float uAlpha;
+            void main() {
+                vec4 previousColor = texture2D(sPrevious, vPreviousCoord);
+                vec4 currentColor = texture2D(sCurrent, vCurrentCoord);
+                gl_FragColor = mix(previousColor, currentColor, uAlpha);
             }
         """
     }
