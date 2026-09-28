@@ -37,6 +37,7 @@ import com.steadyvault.camera.core.camera.OpticalStabilizationCapability
 import com.steadyvault.camera.core.camera.WhiteBalanceCorrection
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
+import com.steadyvault.camera.core.settings.SensorPixelModeSettings
 import com.steadyvault.camera.storage.vault.VaultRepository
 import java.io.File
 import java.util.concurrent.Executor
@@ -51,7 +52,8 @@ import java.util.concurrent.atomic.AtomicInteger
 class IdleCameraPreviewController(
     private val context: Context,
     private val onFailure: (String) -> Unit = {},
-    private val onPreviewFrame: (photoMode: Boolean) -> Unit = {}
+    private val onPreviewFrame: (photoMode: Boolean) -> Unit = {},
+    private val onFrameTimestampNs: (Long) -> Unit = {}
 ) {
     private val cameraManager = context.getSystemService(CameraManager::class.java)
     private val thread = HandlerThread(
@@ -1033,6 +1035,7 @@ class IdleCameraPreviewController(
                 if (firstFrameDelivered.compareAndSet(false, true)) {
                     mainHandler.post { onPreviewFrame(photoMode) }
                 }
+                result.get(CaptureResult.SENSOR_TIMESTAMP)?.let(onFrameTimestampNs)
                 result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { latestAwbGains = it }
                 result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { latestColorTransform = it }
                 val measuredGains = latestAwbGains
@@ -1103,6 +1106,18 @@ class IdleCameraPreviewController(
             }
         )
         fpsRange?.let { set(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            when (SensorPixelModeSettings.selected(context)) {
+                SensorPixelModeSettings.NORMAL ->
+                    set(builder, CaptureRequest.SENSOR_PIXEL_MODE, CameraMetadata.SENSOR_PIXEL_MODE_DEFAULT)
+                SensorPixelModeSettings.MAXIMUM_RESOLUTION -> {
+                    val capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
+                    if (capabilities.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_ULTRA_HIGH_RESOLUTION_SENSOR)) {
+                        set(builder, CaptureRequest.SENSOR_PIXEL_MODE, CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION)
+                    }
+                }
+            }
+        }
 
         val exposureRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
         exposureRange?.let {
