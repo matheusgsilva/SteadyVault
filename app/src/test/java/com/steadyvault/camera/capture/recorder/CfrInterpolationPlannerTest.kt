@@ -44,4 +44,12 @@ class CfrInterpolationPlannerTest {
         assertEquals(0, CfrInterpolationPlanner.sourceSteps(0L, interval))
         assertEquals(0, CfrInterpolationPlanner.sourceSteps(-1L, interval))
     }
+
+    @Test
+    fun realtimeMotionIsUsedOnlyForShortReliableGaps() {
+        assertTrue(CfrInterpolationPlanner.useRealtimeMotionInterpolation(2))
+        assertTrue(CfrInterpolationPlanner.useRealtimeMotionInterpolation(4))
+        assertTrue(!CfrInterpolationPlanner.useRealtimeMotionInterpolation(5))
+        assertTrue(!CfrInterpolationPlanner.useRealtimeMotionInterpolation(1))
+    }
 }
