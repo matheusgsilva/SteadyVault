@@ -39,6 +39,7 @@ import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.settings.CameraProfileStore
 import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
+import com.steadyvault.camera.core.settings.SensorPixelModeSettings
 import com.steadyvault.camera.core.settings.VisualIdentityStore
 import com.steadyvault.camera.core.camera.CameraLensCatalog
 import com.steadyvault.camera.core.state.CaptureStateStore
@@ -73,6 +74,7 @@ class SettingsActivity : FragmentActivity() {
     private lateinit var modeCapabilitiesText: TextView
     private lateinit var resolution: Spinner
     private lateinit var fps: Spinner
+    private lateinit var sensorPixelMode: Spinner
     private lateinit var codec: Spinner
     private lateinit var bitrate: Spinner
     private lateinit var iframe: Spinner
@@ -281,6 +283,28 @@ class SettingsActivity : FragmentActivity() {
             fpsOptions(),
             snapshot.fps.toString()
         )
+        sensorPixelMode = addSpinner(
+            "Modo de leitura do sensor (experimental)",
+            listOf(
+                option(
+                    SensorPixelModeSettings.AUTO,
+                    "Auto • Samsung HAL",
+                    "Não força SENSOR_PIXEL_MODE. É o comportamento atual e deixa a Samsung escolher binning/leitura para 4K60."
+                ),
+                option(
+                    SensorPixelModeSettings.NORMAL,
+                    "Normal pixel mode",
+                    "Solicita explicitamente o modo normal do sensor pela Camera2 para comparar estabilidade de FPS."
+                ),
+                option(
+                    SensorPixelModeSettings.MAXIMUM_RESOLUTION,
+                    "Maximum-resolution sensor mode",
+                    "Solicita o modo de máxima resolução quando a câmera anunciar suporte. É um teste; pode ser mais pesado e a HAL pode recusar 4K60."
+                )
+            ),
+            SensorPixelModeSettings.selected(this)
+        )
+        addInfo("Esses modos não equivalem diretamente a 12,5/50/200 MP. O objetivo é medir qual caminho público da Camera2 faz a HAL do S25 Ultra entregar a melhor cadência em 1x/4K60.")
         modeCapabilitiesText = addCapabilitiesCard()
         codec = addSpinner(
             "Formato de compressão do vídeo (codec)",
@@ -1383,6 +1407,9 @@ class SettingsActivity : FragmentActivity() {
         }
         if (old != value) {
             CaptureSettings.save(this, value)
+        }
+        if (::sensorPixelMode.isInitialized) {
+            SensorPixelModeSettings.save(this, selected(sensorPixelMode))
         }
         val oldPlayback = PlaybackSettings.snapshot(this)
         val newPlayback = oldPlayback.copy(
