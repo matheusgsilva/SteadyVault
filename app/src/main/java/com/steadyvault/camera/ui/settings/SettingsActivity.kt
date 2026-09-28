@@ -376,7 +376,7 @@ class SettingsActivity : FragmentActivity() {
         )
         autoFpsLowLight = addSwitch(
             "Priorizar qualidade em pouca luz",
-            "Mantém o FPS exatamente no valor escolhido no app. O pós-processamento pode reconstruir gaps depois, mas a captura não altera a cadência configurada.",
+            "Mantém o FPS exatamente no valor escolhido no app. Na main3, gaps curtos são preenchidos durante a própria gravação pela ponte CFR da GPU.",
             snapshot.autoFpsLowLight
         )
         lockAeAwbForCadence = addSwitch(
@@ -428,7 +428,7 @@ class SettingsActivity : FragmentActivity() {
                 Toast.LENGTH_LONG
             ).show()
         }
-        addSmallButton("Aplicar perfil máximo 4K60 + reconstrução") {
+        addSmallButton("Aplicar perfil máximo 4K60 + CFR GPU") {
             val current = CaptureSettings.snapshot(this)
             val maxProfile = current.copy(
                 resolution = CaptureSettings.RESOLUTION_4K,
