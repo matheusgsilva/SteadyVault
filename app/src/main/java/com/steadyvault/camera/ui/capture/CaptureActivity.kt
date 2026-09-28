@@ -1378,6 +1378,57 @@ class CaptureActivity : ComponentActivity() {
         }
     }
 
+    private fun showSensorPixelModeChoices() {
+        val values = listOf(SensorPixelModeSettings.AUTO, SensorPixelModeSettings.NORMAL, SensorPixelModeSettings.MAXIMUM_RESOLUTION)
+        val current = SensorPixelModeSettings.selected(this)
+        OneUiDialog.choices(
+            activity = this,
+            title = "Leitura do sensor",
+            message = "O Android não expõe 12,5/50 MP diretamente. Compare os modos Camera2 no mesmo 1x/4K60.",
+            choices = listOf(
+                OneUiDialog.Choice("Auto • Samsung HAL", "A Samsung escolhe o caminho interno de leitura/binning."),
+                OneUiDialog.Choice("Normal pixel mode", "Solicita explicitamente o caminho normal do sensor."),
+                OneUiDialog.Choice("Maximum-resolution", "Solicita máxima resolução quando suportado; pode ser mais pesado.")
+            ),
+            selectedIndex = values.indexOf(current).coerceAtLeast(0)
+        ) { position ->
+            SensorPixelModeSettings.save(this, values[position])
+            resetPreviewFpsMeter()
+            if (previewOpen) restartPreviewForUpdatedSettings()
+            renderPreviewSettingsSheetContent()
+        }
+    }
+
+    private fun updatePreviewFpsMeter(timestampNs: Long) {
+        if (!previewOpen || timestampNs <= 0L) return
+        if (previewFpsLastTimestampNs > 0L && timestampNs <= previewFpsLastTimestampNs) return
+        previewFpsLastTimestampNs = timestampNs
+        if (previewFpsWindowStartedNs == 0L) {
+            previewFpsWindowStartedNs = timestampNs
+            previewFpsFrameCount = 1
+            return
+        }
+        previewFpsFrameCount++
+        val elapsedNs = timestampNs - previewFpsWindowStartedNs
+        if (elapsedNs < 1_000_000_000L) return
+        previewMeasuredFps = (previewFpsFrameCount - 1).toDouble() * 1_000_000_000.0 / elapsedNs.toDouble()
+        val target = CaptureSettings.snapshot(this).fps
+        previewPerformanceText.text = if (previewPhotoMode) {
+            "Preview • ${String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)} FPS"
+        } else {
+            "FPS real ${String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)} / $target"
+        }
+        previewFpsWindowStartedNs = timestampNs
+        previewFpsFrameCount = 1
+    }
+
+    private fun resetPreviewFpsMeter() {
+        previewFpsWindowStartedNs = 0L
+        previewFpsLastTimestampNs = 0L
+        previewFpsFrameCount = 0
+        previewMeasuredFps = 0.0
+        if (::previewPerformanceText.isInitialized && previewOpen) previewPerformanceText.text = "FPS real --"
+    }
     private fun showLiveResolutionChoices() {
         val settings = CaptureSettings.snapshot(this)
         val candidates = listOf(
