@@ -1005,19 +1005,29 @@ class RealTimeCfrSurfaceBridge(
                 vec4 f = smoothFlow(sForwardMotion, basePrev);
                 vec4 b = smoothFlow(sBackwardMotion, baseCurr);
 
-                vec2 localF = (f.rg*2.0-1.0)*uFlowScale;
-                vec2 localB = (b.rg*2.0-1.0)*uFlowScale;
+                vec2 prevUv = basePrev;
+                vec2 currUv = baseCurr;
+
+                // Duas iterações aproximam o inverse warp e reduzem o erro
+                // espacial em objetos rápidos sem recalcular optical flow.
+                for (int i = 0; i < 2; i++) {
+                    vec2 localF = (f.rg*2.0-1.0)*uFlowScale;
+                    vec2 localB = (b.rg*2.0-1.0)*uFlowScale;
+                    float fConfStep = smoothstep(0.12,0.72,f.b);
+                    float bConfStep = smoothstep(0.12,0.72,b.b);
+                    vec2 globalFStep = (uGlobalMotionUnstable>0.5) ? vec2(0.0) : uGlobalForward;
+                    vec2 globalBStep = (uGlobalMotionUnstable>0.5) ? vec2(0.0) : uGlobalBackward;
+                    float localOkStep = step(0.5,uLocalWarpSafe);
+                    vec2 flowFStep = mix(globalFStep, mix(globalFStep,localF,fConfStep), localOkStep);
+                    vec2 flowBStep = mix(globalBStep, mix(globalBStep,localB,bConfStep), localOkStep);
+                    prevUv = clamp(basePrev-flowFStep*a,0.0,1.0);
+                    currUv = clamp(baseCurr-flowBStep*(1.0-a),0.0,1.0);
+                    f = smoothFlow(sForwardMotion,prevUv);
+                    b = smoothFlow(sBackwardMotion,currUv);
+                }
+
                 float fConf = smoothstep(0.12,0.72,f.b);
                 float bConf = smoothstep(0.12,0.72,b.b);
-
-                vec2 globalF = (uGlobalMotionUnstable>0.5) ? vec2(0.0) : uGlobalForward;
-                vec2 globalB = (uGlobalMotionUnstable>0.5) ? vec2(0.0) : uGlobalBackward;
-                float localOk = step(0.5,uLocalWarpSafe);
-                vec2 flowF = mix(globalF, mix(globalF,localF,fConf), localOk);
-                vec2 flowB = mix(globalB, mix(globalB,localB,bConf), localOk);
-
-                vec2 prevUv = clamp(basePrev-flowF*a,0.0,1.0);
-                vec2 currUv = clamp(baseCurr-flowB*(1.0-a),0.0,1.0);
                 vec4 prevWarped = texture2D(sPrevious,prevUv);
                 vec4 currWarped = texture2D(sCurrent,currUv);
 
