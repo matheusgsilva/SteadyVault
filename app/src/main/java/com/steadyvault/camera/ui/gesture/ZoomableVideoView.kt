@@ -1351,7 +1351,12 @@ class ZoomableVideoView @JvmOverloads constructor(
             ?: frameRate.takeIf { it in MIN_FRAME_RATE..MAX_FRAME_RATE }
             ?: extractorFrameRate.takeIf { it in MIN_FRAME_RATE..MAX_FRAME_RATE }
             ?: 0f
-        val rotation = if (metadataRotation != 0) metadataRotation else externalRotationDegrees
+        val physicallyPortrait = encodedHeight > encodedWidth
+        val rotation = when {
+            physicallyPortrait && metadataRotation == 0 -> 0
+            metadataRotation != 0 -> metadataRotation
+            else -> externalRotationDegrees
+        }
         val rotated = ((rotation % 360) + 360) % 360 in setOf(90, 270)
         val displayWidth = if (rotated) encodedHeight else encodedWidth
         val displayHeight = if (rotated) encodedWidth else encodedHeight
