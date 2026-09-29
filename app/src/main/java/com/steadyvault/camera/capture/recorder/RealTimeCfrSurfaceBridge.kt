@@ -27,8 +27,9 @@ import java.util.concurrent.locks.LockSupport
  * entre os timestamps da câmera indicar slots ausentes, esses slots são gerados
  * por interpolação temporal entre o frame anterior e o próximo frame real.
  *
- * Não há fallback de duplicação: nenhum slot CFR é preenchido reapresentando
- * exatamente o mesmo frame anterior. O custo fica na GPU; pixels não voltam à CPU.
+ * Frames reais são enviados sem warp geométrico. Quando a câmera perde um slot,
+ * a main3 sintetiza somente o slot ausente por blend temporal GPU entre os frames
+ * reais vizinhos. Não há repetição exata do último frame nem optical-flow warp.
  */
 class RealTimeCfrSurfaceBridge(
     private val encoderSurface: Surface,
@@ -328,99 +329,27 @@ class RealTimeCfrSurfaceBridge(
                     frameIntervalNs = frameIntervalNs
                 )
 
+                // main3 fix: preserve geometric integrity.
+                // Missing CFR slots are synthesized only by temporal blending between
+                // the two surrounding real frames. No optical-flow warp is applied,
+                // so a repair frame cannot bend straight lines or create local flashes.
                 val interpolationAlphas =
                     CfrInterpolationPlanner.interpolationAlphas(sourceSteps)
 
-                val useMotionInterpolation =
-                    CfrInterpolationPlanner.useRealtimeMotionInterpolation(sourceSteps)
-
-                val motionField = if (useMotionInterpolation) {
-                    readPreviousAnalysisFrame(
-                        texture = previousTexture,
-                        framebuffer = analysisFramebuffer[0],
-                        width = motionWidth,
-                        height = motionHeight,
-                        target = previousMotionPixels,
-                        readback = motionReadback,
-                        program = blendProgram,
-                        vertices = vertices,
-                        texCoords = texCoords
-                    )
-                    readCurrentAnalysisFrame(
+                for (alpha in interpolationAlphas) {
+                    renderBlendToEncoder(
                         st = st,
+                        textureMatrix = textureMatrix,
+                        program = blendProgram,
+                        previousTexture = previousTexture,
                         externalTexture = externalTexture,
-                        framebuffer = analysisFramebuffer[0],
-                        width = motionWidth,
-                        height = motionHeight,
-                        target = currentMotionPixels,
-                        readback = motionReadback,
-                        program = externalProgram,
+                        alpha = alpha,
                         vertices = vertices,
                         texCoords = texCoords,
-                        textureMatrix = textureMatrix
+                        display = display,
+                        window = window,
+                        presentationTimeNs = outputPtsNs
                     )
-                    runCatching {
-                        OpenCvMotionEstimator.estimate(
-                            previousRgba = previousMotionPixels,
-                            currentRgba = currentMotionPixels,
-                            width = motionWidth,
-                            height = motionHeight,
-                            highQuality = false
-                        )
-                    }.getOrNull()
-                } else {
-                    null
-                }
-
-                if (motionField != null) {
-                    uploadMotionTexture(
-                        motionTextures[0], forwardUpload, motionField.forwardRgba,
-                        motionWidth, motionHeight
-                    )
-                    uploadMotionTexture(
-                        motionTextures[1], backwardUpload, motionField.backwardRgba,
-                        motionWidth, motionHeight
-                    )
-                }
-
-                // Nenhum slot é duplicado. Com campo válido, fazemos warp
-                // bidirecional. Se o fluxo falhar, mantemos blend temporal único
-                // apenas como último fallback — ainda sem repetir endpoint.
-                for (alpha in interpolationAlphas) {
-                    if (motionField != null && !motionField.sceneChangeLikely) {
-                        renderMotionToEncoder(
-                            st = st,
-                            textureMatrix = textureMatrix,
-                            program = motionProgram,
-                            previousTexture = previousTexture,
-                            externalTexture = externalTexture,
-                            forwardMotionTexture = motionTextures[0],
-                            backwardMotionTexture = motionTextures[1],
-                            field = motionField,
-                            motionWidth = motionWidth,
-                            motionHeight = motionHeight,
-                            alpha = alpha,
-                            vertices = vertices,
-                            texCoords = texCoords,
-                            display = display,
-                            window = window,
-                            presentationTimeNs = outputPtsNs
-                        )
-                    } else {
-                        renderBlendToEncoder(
-                            st = st,
-                            textureMatrix = textureMatrix,
-                            program = blendProgram,
-                            previousTexture = previousTexture,
-                            externalTexture = externalTexture,
-                            alpha = alpha,
-                            vertices = vertices,
-                            texCoords = texCoords,
-                            display = display,
-                            window = window,
-                            presentationTimeNs = outputPtsNs
-                        )
-                    }
                     outputPtsNs += frameIntervalNs
                     interpolatedFrames++
                 }
