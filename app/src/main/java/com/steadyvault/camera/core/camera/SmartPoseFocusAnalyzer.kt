@@ -122,6 +122,20 @@ class SmartPoseFocusAnalyzer : Closeable {
             return target(face.point, width, height, Kind.FACE, face.confidence)
         }
 
+        val body = averageVisible(
+            pose,
+            PoseLandmark.LEFT_SHOULDER,
+            PoseLandmark.RIGHT_SHOULDER,
+            PoseLandmark.LEFT_HIP,
+            PoseLandmark.RIGHT_HIP,
+            PoseLandmark.LEFT_KNEE,
+            PoseLandmark.RIGHT_KNEE,
+            minLikelihood = MIN_LIKELIHOOD
+        )
+        if (body != null) {
+            return target(body.point, width, height, Kind.BODY, body.confidence)
+        }
+
         val hands = averageCandidates(leftHand, rightHand)
         if (hands != null) {
             return target(hands.point, width, height, Kind.HANDS, hands.confidence)
@@ -139,20 +153,6 @@ class SmartPoseFocusAnalyzer : Closeable {
         )
         if (feet != null) {
             return target(feet.point, width, height, Kind.FEET, feet.confidence)
-        }
-
-        val body = averageVisible(
-            pose,
-            PoseLandmark.LEFT_SHOULDER,
-            PoseLandmark.RIGHT_SHOULDER,
-            PoseLandmark.LEFT_HIP,
-            PoseLandmark.RIGHT_HIP,
-            PoseLandmark.LEFT_KNEE,
-            PoseLandmark.RIGHT_KNEE,
-            minLikelihood = MIN_LIKELIHOOD
-        )
-        if (body != null) {
-            return target(body.point, width, height, Kind.BODY, body.confidence)
         }
 
         return null
