@@ -2675,6 +2675,79 @@ class CaptureService : Service() {
         CameraZoom.apply(builder, profile.characteristics, recordingSettings.zoomRatio)
     }
 
+    private fun analyzeBackgroundSmartFocusFrame(rgba: ByteArray, frameWidth: Int, frameHeight: Int) {
+        if (
+            !SmartFocusSettings.enabled(this) ||
+            !serviceActive.get() ||
+            stopping.get() ||
+            frameWidth <= 0 || frameHeight <= 0 ||
+            rgba.size < frameWidth * frameHeight * 4 ||
+            !::smartFocusExecutor.isInitialized || smartFocusExecutor.isShutdown
+        ) return
+
+        val sensorRotation = selectedCamera?.sensorOrientation ?: 90
+        smartFocusExecutor.execute {
+            val bitmap = runCatching {
+                Bitmap.createBitmap(frameWidth, frameHeight, Bitmap.Config.ARGB_8888).apply {
+                    copyPixelsFromBuffer(ByteBuffer.wrap(rgba))
+                }
+            }.getOrNull() ?: return@execute
+
+            backgroundSmartFocusAnalyzer.analyze(bitmap, sensorRotation) { target ->
+                runCatching { bitmap.recycle() }
+                if (target == null || !serviceActive.get() || stopping.get()) return@analyze
+                SmartFocusTargetStore.update(target)
+                val now = SystemClock.elapsedRealtime()
+                val moved = kotlin.math.hypot(
+                    (target.x - backgroundSmartFocusLastX).toDouble(),
+                    (target.y - backgroundSmartFocusLastY).toDouble()
+                ) >= BACKGROUND_SMART_FOCUS_MIN_MOVE
+                val kindChanged = backgroundSmartFocusLastKind != target.kind
+                val stale = now - backgroundSmartFocusLastAppliedMs >= BACKGROUND_SMART_FOCUS_FORCE_MS
+                if (!moved && !kindChanged && !stale) return@analyze
+
+                backgroundSmartFocusLastX = target.x
+                backgroundSmartFocusLastY = target.y
+                backgroundSmartFocusLastKind = target.kind
+                backgroundSmartFocusLastAppliedMs = now
+                cameraExecutor.execute { refreshBackgroundSmartFocusRequest() }
+            }
+        }
+    }
+
+    private fun refreshBackgroundSmartFocusRequest() {
+        if (!serviceActive.get() || stopping.get() || !SmartFocusSettings.enabled(this)) return
+        val profile = selectedCamera ?: return
+        if (profile.highSpeed) return
+        val camera = synchronized(resourceLock) { cameraDevice } ?: return
+        val session = synchronized(resourceLock) { captureSession } ?: return
+        val surface = synchronized(resourceLock) { recorderSurface } ?: return
+        if (!surface.isValid) return
+
+        val request = runCatching {
+            createRecordRequestBuilder(camera).apply {
+                addTarget(surface)
+                val manualPlan = if (
+                    !recordingSettings.autoFpsLowLight &&
+                    profile.targetFps == CaptureModeStore.FPS_60 &&
+                    !profile.hdrHlg10 &&
+                    supportsManualSensor(profile)
+                ) {
+                    Camera3AStateStore.recentExposure(profile.cameraId)?.let {
+                        fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso)
+                    }
+                } else null
+                configureCaptureRequest(this, profile, manualPlan)
+                applyFinalWhiteBalance(this, profile)
+            }.build()
+        }.getOrNull() ?: return
+
+        runCatching {
+            session.setRepeatingRequest(request, null, mainHandler)
+        }.onFailure {
+            Log.w(LOG_TAG, "Foco inteligente em segundo plano recusado pela sessão", it)
+        }
+    }
     private fun applySmartFocusTarget(
         builder: CaptureRequest.Builder,
         profile: CameraProfile
@@ -3657,6 +3730,8 @@ class CaptureService : Service() {
         "${CaptureSettings.resolutionLabel(recordingSettings.resolution)} ${requestedTargetFps} FPS"
 
     companion object {
+        private const val BACKGROUND_SMART_FOCUS_MIN_MOVE = 0.055
+        private const val BACKGROUND_SMART_FOCUS_FORCE_MS = 3_000L
         private const val FOCUS_LOCK_MAX_WARMUP_FRAMES = 8
         private const val FOCUS_LOCK_MAX_WARMUP_MS = 250L
         private const val THREE_A_LOCK_MIN_WARMUP_FRAMES = 4
