@@ -1397,6 +1397,121 @@ class CaptureActivity : ComponentActivity() {
         }
     }
 
+    private fun startSmartPoseAnalysis() {
+        mainHandler.removeCallbacks(smartPoseAnalysisRunnable)
+        smartPoseTargetKind = null
+        smartPoseLastTargetAtMs = 0L
+        if (SmartFocusSettings.enabled(this)) {
+            mainHandler.postDelayed(smartPoseAnalysisRunnable, SMART_POSE_INITIAL_DELAY_MS)
+        }
+    }
+
+    private fun stopSmartPoseAnalysis() {
+        mainHandler.removeCallbacks(smartPoseAnalysisRunnable)
+        smartPoseAnalysisInFlight = false
+        smartPoseTargetKind = null
+    }
+
+    private fun analyzeSmartPoseFrame() {
+        if (
+            !previewOpen ||
+            !SmartFocusSettings.enabled(this) ||
+            smartPoseAnalysisInFlight ||
+            CaptureStateStore.isBusy(this) ||
+            photoBusy ||
+            PhotoCaptureStateStore.isBusy(this) ||
+            !::previewTexture.isInitialized ||
+            previewTexture.width <= 0 ||
+            previewTexture.height <= 0 ||
+            !previewTexture.holder.surface.isValid
+        ) return
+
+        val sourceWidth = previewTexture.width
+        val sourceHeight = previewTexture.height
+        val scale = minOf(
+            1f,
+            SMART_POSE_MAX_DIMENSION_PX.toFloat() / maxOf(sourceWidth, sourceHeight).toFloat()
+        )
+        val width = (sourceWidth * scale).toInt().coerceAtLeast(SMART_POSE_MIN_DIMENSION_PX)
+        val height = (sourceHeight * scale).toInt().coerceAtLeast(SMART_POSE_MIN_DIMENSION_PX)
+        val bitmap = runCatching {
+            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        }.getOrNull() ?: return
+
+        smartPoseAnalysisInFlight = true
+        runCatching {
+            PixelCopy.request(previewTexture, bitmap, { result ->
+                if (result != PixelCopy.SUCCESS || isFinishing || isDestroyed) {
+                    smartPoseAnalysisInFlight = false
+                    bitmap.recycle()
+                    return@request
+                }
+                smartPoseAnalyzer.analyze(bitmap) { target ->
+                    mainHandler.post {
+                        smartPoseAnalysisInFlight = false
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                        applySmartPoseTarget(target)
+                    }
+                }
+            }, mainHandler)
+        }.onFailure {
+            smartPoseAnalysisInFlight = false
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+    }
+
+    private fun applySmartPoseTarget(target: SmartPoseFocusAnalyzer.Target?) {
+        if (!previewOpen || !SmartFocusSettings.enabled(this)) return
+        val now = SystemClock.elapsedRealtime()
+
+        if (target == null) {
+            if (smartPoseLastTargetAtMs > 0L && now - smartPoseLastTargetAtMs >= SMART_POSE_TARGET_RELEASE_MS) {
+                smartPoseTargetKind = null
+                smartPoseLastTargetAtMs = 0L
+                idlePreview.clearSmartFocusPoint()
+                renderPreviewPerformanceOverlay()
+            }
+            return
+        }
+
+        smartPoseLastTargetAtMs = now
+        val moved = kotlin.math.hypot(
+            (target.x - smartPoseLastX).toDouble(),
+            (target.y - smartPoseLastY).toDouble()
+        ) >= SMART_POSE_MIN_MOVE
+        val kindChanged = smartPoseTargetKind != target.kind
+        val stale = now - smartPoseLastAppliedAtMs >= SMART_POSE_FORCE_REFRESH_MS
+
+        smartPoseTargetKind = target.kind
+        if (moved || kindChanged || stale) {
+            smartPoseLastX = target.x
+            smartPoseLastY = target.y
+            smartPoseLastAppliedAtMs = now
+            idlePreview.setSmartFocusPoint(target.x, target.y)
+        }
+        renderPreviewPerformanceOverlay()
+    }
+
+    private fun smartPoseTargetLabel(): String? = when (smartPoseTargetKind) {
+        SmartPoseFocusAnalyzer.Kind.HAND_TO_MOUTH -> "mão/boca"
+        SmartPoseFocusAnalyzer.Kind.FACE -> "rosto"
+        SmartPoseFocusAnalyzer.Kind.HANDS -> "mãos"
+        SmartPoseFocusAnalyzer.Kind.FEET -> "pés"
+        SmartPoseFocusAnalyzer.Kind.BODY -> "corpo"
+        null -> null
+    }
+
+    private fun renderPreviewPerformanceOverlay() {
+        if (!::previewPerformanceText.isInitialized || !previewOpen) return
+        val targetFps = CaptureSettings.snapshot(this).fps
+        val fpsText = if (previewMeasuredFps > 0.0) {
+            "FPS real ${String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)} / $targetFps"
+        } else {
+            "FPS real -- / $targetFps"
+        }
+        val focusText = smartPoseTargetLabel()?.let { " • foco: $it" }.orEmpty()
+        previewPerformanceText.text = fpsText + focusText
+    }
     private fun showSmartFocusChoices() {
         val enabled = SmartFocusSettings.enabled(this)
         OneUiDialog.choices(
