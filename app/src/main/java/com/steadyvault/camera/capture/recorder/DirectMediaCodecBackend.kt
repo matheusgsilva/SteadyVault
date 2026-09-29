@@ -20,10 +20,9 @@ import kotlin.math.abs
 /**
  * Backend de vídeo com cadência CFR em tempo real.
  *
- * Camera2 escreve em uma SurfaceTexture OES. Uma ponte GPU reapresenta a última
- * imagem válida em uma grade fixa de 30/60 FPS e envia essa Surface ao MediaCodec.
- * Quando a HAL atrasa um frame, a GPU repete somente a última textura, sem cópia
- * de pixels para CPU e sem pós-processamento após salvar.
+ * Camera2 escreve em uma SurfaceTexture OES. Na main5, gaps curtos são estimados
+ * e interpolados em GPU com motion field reduzido, sem OpenCV/readback no caminho
+ * crítico. A Surface resultante segue direto para o MediaCodec em timeline CFR.
  */
 class DirectMediaCodecBackend(
     private val outputFile: File,
@@ -54,7 +53,7 @@ class DirectMediaCodecBackend(
 
     val profileDescription: String
         get() = "${width}x${height} ${targetFps} FPS " +
-            "${videoMime.substringAfter('/').uppercase()} ${videoBitrate / 1_000_000} Mbps • CFR GPU"
+            "${videoMime.substringAfter('/').uppercase()} ${videoBitrate / 1_000_000} Mbps • CFR GPU-only"
 
     private val drainExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(
