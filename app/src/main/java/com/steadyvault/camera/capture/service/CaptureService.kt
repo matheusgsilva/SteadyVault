@@ -1305,14 +1305,18 @@ class CaptureService : Service() {
     }
 
     /**
-     * O SteadyVault assume gravação com o aparelho em pé (rotação natural 0°).
-     * Sensores traseiro/frontal normalmente anunciam 90°/270°; esses hints fazem
-     * um stream 3840x2160 ser exibido como 2160x3840 nos players.
-     * Se algum HAL anunciar 0°/180° de forma inesperada, priorizamos retrato.
+     * A Surface da Camera2 chega na orientação física do sensor. Para gravação
+     * vertical precisamos aplicar a rotação inversa no container, não copiar
+     * SENSOR_ORIENTATION diretamente. Em sensores traseiros de 90°, isso resulta
+     * em 270°; sensores de 270° resultam em 90°.
      */
     private fun calculateOrientationHint(sensorOrientation: Int): Int {
         val normalized = ((sensorOrientation % 360) + 360) % 360
-        return if (normalized == 90 || normalized == 270) normalized else 90
+        return when (normalized) {
+            90, 270 -> (360 - normalized) % 360
+            180 -> 180
+            else -> 90
+        }
     }
 
     private fun openSelectedCamera(profile: CameraProfile, token: Int) {
