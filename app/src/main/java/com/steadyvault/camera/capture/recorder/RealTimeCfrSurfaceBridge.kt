@@ -9,7 +9,6 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Process
 import android.view.Surface
-import com.steadyvault.camera.processing.motion.OpenCvMotionEstimator
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -110,10 +109,6 @@ class RealTimeCfrSurfaceBridge(
         var previousFramebuffer = 0
         var externalProgram = 0
         var blendProgram = 0
-        var motionProgram = 0
-        val motionTextures = IntArray(2)
-        val analysisTexture = IntArray(1)
-        val analysisFramebuffer = IntArray(1)
         var st: SurfaceTexture? = null
         var camera: Surface? = null
 
@@ -191,54 +186,6 @@ class RealTimeCfrSurfaceBridge(
             previousFramebuffer = createFramebuffer(previousTexture)
             externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_EXTERNAL)
             blendProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_BLEND)
-            motionProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_MOTION)
-
-            val motionWidth = (width / 16).coerceIn(160, 320)
-            val motionHeight = ((motionWidth.toLong() * height.toLong()) / width.coerceAtLeast(1).toLong())
-                .toInt().coerceIn(90, 240)
-            val motionReadback = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4)
-                .order(ByteOrder.nativeOrder())
-            val previousMotionPixels = ByteArray(motionWidth * motionHeight * 4)
-            val currentMotionPixels = ByteArray(motionWidth * motionHeight * 4)
-            val forwardUpload = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4)
-                .order(ByteOrder.nativeOrder())
-            val backwardUpload = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4)
-                .order(ByteOrder.nativeOrder())
-
-            GLES20.glGenTextures(2, motionTextures, 0)
-            for (id in motionTextures) {
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-                GLES20.glTexImage2D(
-                    GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
-                    motionWidth, motionHeight, 0,
-                    GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
-                )
-            }
-            GLES20.glGenTextures(1, analysisTexture, 0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, analysisTexture[0])
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-            GLES20.glTexImage2D(
-                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
-                motionWidth, motionHeight, 0,
-                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
-            )
-            GLES20.glGenFramebuffers(1, analysisFramebuffer, 0)
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysisFramebuffer[0])
-            GLES20.glFramebufferTexture2D(
-                GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
-                GLES20.GL_TEXTURE_2D, analysisTexture[0], 0
-            )
-            check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE) {
-                "framebuffer de análise CFR incompleto"
-            }
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
 
             val vertices = floatBuffer(VERTICES)
             val texCoords = floatBuffer(TEX_COORDS)
@@ -382,10 +329,6 @@ class RealTimeCfrSurfaceBridge(
             if (display != EGL14.EGL_NO_DISPLAY) {
                 if (externalProgram != 0) runCatching { GLES20.glDeleteProgram(externalProgram) }
                 if (blendProgram != 0) runCatching { GLES20.glDeleteProgram(blendProgram) }
-                if (motionProgram != 0) runCatching { GLES20.glDeleteProgram(motionProgram) }
-                runCatching { GLES20.glDeleteTextures(2, motionTextures, 0) }
-                runCatching { GLES20.glDeleteTextures(1, analysisTexture, 0) }
-                runCatching { GLES20.glDeleteFramebuffers(1, analysisFramebuffer, 0) }
                 if (previousFramebuffer != 0) {
                     runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(previousFramebuffer), 0) }
                 }
@@ -539,192 +482,6 @@ class RealTimeCfrSurfaceBridge(
 
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers interpolado falhou" }
-    }
-
-    private fun readPreviousAnalysisFrame(
-        texture: Int,
-        framebuffer: Int,
-        width: Int,
-        height: Int,
-        target: ByteArray,
-        readback: ByteBuffer,
-        program: Int,
-        vertices: FloatBuffer,
-        texCoords: FloatBuffer
-    ) {
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer)
-        GLES20.glViewport(0, 0, width, height)
-        GLES20.glUseProgram(program)
-        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
-        val previousHandle = GLES20.glGetUniformLocation(program, "sPrevious")
-        val currentHandle = GLES20.glGetUniformLocation(program, "sCurrent")
-        val alphaHandle = GLES20.glGetUniformLocation(program, "uAlpha")
-        vertices.position(0)
-        GLES20.glEnableVertexAttribArray(positionHandle)
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
-        texCoords.position(0)
-        GLES20.glEnableVertexAttribArray(texCoordHandle)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
-        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, IDENTITY_MATRIX, 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
-        GLES20.glUniform1i(previousHandle, 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
-        GLES20.glUniform1i(currentHandle, 1)
-        GLES20.glUniform1f(alphaHandle, 1f)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        readback.clear()
-        GLES20.glReadPixels(
-            0, 0, width, height,
-            GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readback
-        )
-        readback.position(0)
-        readback.get(target, 0, target.size)
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-    }
-
-    private fun readCurrentAnalysisFrame(
-        st: SurfaceTexture,
-        externalTexture: Int,
-        framebuffer: Int,
-        width: Int,
-        height: Int,
-        target: ByteArray,
-        readback: ByteBuffer,
-        program: Int,
-        vertices: FloatBuffer,
-        texCoords: FloatBuffer,
-        textureMatrix: FloatArray
-    ) {
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer)
-        GLES20.glViewport(0, 0, width, height)
-        GLES20.glUseProgram(program)
-        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
-        val samplerHandle = GLES20.glGetUniformLocation(program, "sTexture")
-        st.getTransformMatrix(textureMatrix)
-        vertices.position(0)
-        GLES20.glEnableVertexAttribArray(positionHandle)
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
-        texCoords.position(0)
-        GLES20.glEnableVertexAttribArray(texCoordHandle)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
-        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
-        GLES20.glUniform1i(samplerHandle, 0)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        readback.clear()
-        GLES20.glReadPixels(
-            0, 0, width, height,
-            GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readback
-        )
-        readback.position(0)
-        readback.get(target, 0, target.size)
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-    }
-
-    private fun uploadMotionTexture(
-        texture: Int,
-        upload: ByteBuffer,
-        rgba: ByteArray,
-        width: Int,
-        height: Int
-    ) {
-        upload.clear()
-        upload.put(rgba)
-        upload.flip()
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
-        GLES20.glTexSubImage2D(
-            GLES20.GL_TEXTURE_2D, 0, 0, 0, width, height,
-            GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, upload
-        )
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
-    }
-
-    private fun renderMotionToEncoder(
-        st: SurfaceTexture,
-        textureMatrix: FloatArray,
-        program: Int,
-        previousTexture: Int,
-        externalTexture: Int,
-        forwardMotionTexture: Int,
-        backwardMotionTexture: Int,
-        field: OpenCvMotionEstimator.Field,
-        motionWidth: Int,
-        motionHeight: Int,
-        alpha: Float,
-        vertices: FloatBuffer,
-        texCoords: FloatBuffer,
-        display: android.opengl.EGLDisplay,
-        window: android.opengl.EGLSurface,
-        presentationTimeNs: Long
-    ) {
-        st.getTransformMatrix(textureMatrix)
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-        GLES20.glViewport(0, 0, width, height)
-        GLES20.glUseProgram(program)
-
-        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
-        vertices.position(0)
-        GLES20.glEnableVertexAttribArray(positionHandle)
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
-        texCoords.position(0)
-        GLES20.glEnableVertexAttribArray(texCoordHandle)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
-        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
-
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, previousTexture)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sPrevious"), 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sCurrent"), 1)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, forwardMotionTexture)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sForwardMotion"), 2)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE3)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, backwardMotionTexture)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sBackwardMotion"), 3)
-
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uAlpha"), alpha)
-        GLES20.glUniform2f(
-            GLES20.glGetUniformLocation(program, "uFlowScale"),
-            field.flowScaleX, field.flowScaleY
-        )
-        GLES20.glUniform2f(
-            GLES20.glGetUniformLocation(program, "uGlobalForward"),
-            field.globalForwardUvX, field.globalForwardUvY
-        )
-        GLES20.glUniform2f(
-            GLES20.glGetUniformLocation(program, "uGlobalBackward"),
-            field.globalBackwardUvX, field.globalBackwardUvY
-        )
-        GLES20.glUniform1f(
-            GLES20.glGetUniformLocation(program, "uLocalWarpSafe"),
-            if (field.localWarpSafe) 1f else 0f
-        )
-        GLES20.glUniform1f(
-            GLES20.glGetUniformLocation(program, "uGlobalMotionUnstable"),
-            if (field.globalMotionIsUnstable) 1f else 0f
-        )
-        GLES20.glUniform2f(
-            GLES20.glGetUniformLocation(program, "uMotionTexel"),
-            1f / motionWidth.coerceAtLeast(1).toFloat(),
-            1f / motionHeight.coerceAtLeast(1).toFloat()
-        )
-
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
-        check(EGL14.eglSwapBuffers(display, window)) {
-            "eglSwapBuffers de interpolação por movimento falhou"
-        }
     }
 
     private fun createExternalTexture(): Int {
@@ -898,75 +655,6 @@ class RealTimeCfrSurfaceBridge(
             }
         """
 
-        private const val FRAGMENT_SHADER_MOTION = """
-            #extension GL_OES_EGL_image_external : require
-            precision highp float;
-            varying vec2 vPreviousCoord;
-            varying vec2 vCurrentCoord;
-            uniform sampler2D sPrevious;
-            uniform samplerExternalOES sCurrent;
-            uniform sampler2D sForwardMotion;
-            uniform sampler2D sBackwardMotion;
-            uniform float uAlpha;
-            uniform vec2 uFlowScale;
-            uniform vec2 uGlobalForward;
-            uniform vec2 uGlobalBackward;
-            uniform float uLocalWarpSafe;
-            uniform float uGlobalMotionUnstable;
-            uniform vec2 uMotionTexel;
 
-            vec4 smoothFlow(sampler2D tex, vec2 uv) {
-                vec4 c = texture2D(tex, uv);
-                vec4 l = texture2D(tex, clamp(uv-vec2(uMotionTexel.x,0.0),0.0,1.0));
-                vec4 r = texture2D(tex, clamp(uv+vec2(uMotionTexel.x,0.0),0.0,1.0));
-                vec4 u = texture2D(tex, clamp(uv+vec2(0.0,uMotionTexel.y),0.0,1.0));
-                vec4 d = texture2D(tex, clamp(uv-vec2(0.0,uMotionTexel.y),0.0,1.0));
-                float cw = 0.56 + 0.44*c.b;
-                float lw = 0.11*l.b;
-                float rw = 0.11*r.b;
-                float uw = 0.11*u.b;
-                float dw = 0.11*d.b;
-                float sum = max(cw+lw+rw+uw+dw, 0.0001);
-                return (c*cw+l*lw+r*rw+u*uw+d*dw)/sum;
-            }
-
-            void main() {
-                float a = clamp(uAlpha, 0.001, 0.999);
-                vec2 basePrev = vPreviousCoord;
-                vec2 baseCurr = vCurrentCoord;
-                vec4 f = smoothFlow(sForwardMotion, basePrev);
-                vec4 b = smoothFlow(sBackwardMotion, baseCurr);
-
-                vec2 prevUv = basePrev;
-                vec2 currUv = baseCurr;
-
-                // Duas iterações aproximam o inverse warp e reduzem o erro
-                // espacial em objetos rápidos sem recalcular optical flow.
-                for (int i = 0; i < 2; i++) {
-                    vec2 localF = (f.rg*2.0-1.0)*uFlowScale;
-                    vec2 localB = (b.rg*2.0-1.0)*uFlowScale;
-                    float fConfStep = smoothstep(0.12,0.72,f.b);
-                    float bConfStep = smoothstep(0.12,0.72,b.b);
-                    vec2 globalFStep = (uGlobalMotionUnstable>0.5) ? vec2(0.0) : uGlobalForward;
-                    vec2 globalBStep = (uGlobalMotionUnstable>0.5) ? vec2(0.0) : uGlobalBackward;
-                    float localOkStep = step(0.5,uLocalWarpSafe);
-                    vec2 flowFStep = mix(globalFStep, mix(globalFStep,localF,fConfStep), localOkStep);
-                    vec2 flowBStep = mix(globalBStep, mix(globalBStep,localB,bConfStep), localOkStep);
-                    prevUv = clamp(basePrev-flowFStep*a,0.0,1.0);
-                    currUv = clamp(baseCurr-flowBStep*(1.0-a),0.0,1.0);
-                    f = smoothFlow(sForwardMotion,prevUv);
-                    b = smoothFlow(sBackwardMotion,currUv);
-                }
-
-                float fConf = smoothstep(0.12,0.72,f.b);
-                float bConf = smoothstep(0.12,0.72,b.b);
-                vec4 prevWarped = texture2D(sPrevious,prevUv);
-                vec4 currWarped = texture2D(sCurrent,currUv);
-
-                float wp = max((1.0-a)*(0.25+0.75*fConf),0.001);
-                float wc = max(a*(0.25+0.75*bConf),0.001);
-                gl_FragColor = (prevWarped*wp + currWarped*wc) / (wp+wc);
-            }
-        """
     }
 }
