@@ -8,6 +8,7 @@ import android.opengl.GLES20
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Process
+import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -17,6 +18,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.locks.LockSupport
+import kotlin.math.abs
 
 /**
  * Ponte GPU CFR sem repetição de frames.
@@ -57,6 +59,13 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var surfaceTexture: SurfaceTexture? = null
     @Volatile private var realFrames = 0L
     @Volatile private var interpolatedFrames = 0L
+    @Volatile private var droppedFrames = 0L
+    @Volatile private var largestFillSlots = 0
+    @Volatile private var worstFrameNs = 0L
+    @Volatile private var maxBacklogSignals = 0
+    @Volatile private var renderThreadRef: Thread? = null
+    private val flushRequested = AtomicBoolean(false)
+    private val summaryLogged = AtomicBoolean(false)
 
     private val renderThread = Thread(
         { renderLoop() },
@@ -76,8 +85,10 @@ class RealTimeCfrSurfaceBridge(
 
     fun startOutput() {
         check(!released.get()) { "ponte CFR já liberada" }
-        // Descarta apenas sinais antigos; o próximo frame real abre a timeline útil.
-        pendingFrames.set(0)
+        // Zerar o contador aqui deixava frames antigos presos na fila do SurfaceTexture
+        // (um buffer a menos para a câmera e um frame de atraso permanentes). A thread GL
+        // esvazia a fila de verdade; o próximo frame real abre a timeline útil.
+        flushRequested.set(true)
         outputEnabled.set(true)
     }
 
@@ -85,11 +96,31 @@ class RealTimeCfrSurfaceBridge(
         outputEnabled.set(false)
     }
 
-    fun stats(): Stats = Stats(realFrames, interpolatedFrames)
+    fun stats(): Stats = Stats(
+        realFrames = realFrames,
+        interpolatedFrames = interpolatedFrames,
+        droppedFrames = droppedFrames,
+        largestFillSlots = largestFillSlots,
+        worstFrameMs = worstFrameNs / 1_000_000L,
+        maxBacklogSignals = maxBacklogSignals
+    )
+
+    private fun logSummary() {
+        if (!summaryLogged.compareAndSet(false, true)) return
+        val stats = stats()
+        Log.i(
+            TAG,
+            "resumo CFR: reais=${stats.realFrames} preenchidos=${stats.interpolatedFrames} " +
+                    "descartados=${stats.droppedFrames} maiorGap=${stats.largestFillSlots}slots " +
+                    "piorFrame=${stats.worstFrameMs}ms filaMax=${stats.maxBacklogSignals} " +
+                    "fps=$fps saida=${outputWidth}x$outputHeight"
+        )
+    }
 
     fun release() {
         if (!released.compareAndSet(false, true)) return
         outputEnabled.set(false)
+        logSummary()
         renderThread.interrupt()
         runCatching { stopped.await(RELEASE_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
         runCatching { frameSignalThread.quitSafely() }
@@ -98,10 +129,19 @@ class RealTimeCfrSurfaceBridge(
 
     data class Stats(
         val realFrames: Long,
-        val interpolatedFrames: Long
+        val interpolatedFrames: Long,
+        /** Frames reais descartados porque a câmera entregou acima do FPS nominal. */
+        val droppedFrames: Long = 0L,
+        /** Maior sequência de slots ausentes preenchida de uma vez. */
+        val largestFillSlots: Int = 0,
+        /** Pior tempo de processamento de um frame (cópia + blends + encoder). */
+        val worstFrameMs: Long = 0L,
+        /** Maior fila de frames aguardando a thread GL. */
+        val maxBacklogSignals: Int = 0
     )
 
     private fun renderLoop() {
+        renderThreadRef = Thread.currentThread()
         runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY) }
 
         var display = EGL14.EGL_NO_DISPLAY
@@ -177,6 +217,8 @@ class RealTimeCfrSurfaceBridge(
                         pendingFrames.updateAndGet { current ->
                             if (current >= MAX_PENDING_SIGNAL_COUNT) current else current + 1
                         }
+                        // Acorda a thread GL na hora em vez de esperar o próximo poll de 1 ms.
+                        LockSupport.unpark(renderThreadRef)
                     },
                     frameSignalHandler
                 )
@@ -197,35 +239,60 @@ class RealTimeCfrSurfaceBridge(
             ready.countDown()
 
             val frameIntervalNs = 1_000_000_000L / fps.coerceAtLeast(1)
+            val slotClock = CfrSlotClock(frameIntervalNs)
             var haveLatchedFrame = false
             var timelineStarted = false
             var previousSourceTimestampNs = 0L
+            var copiedTimestampNs = Long.MIN_VALUE
             var outputPtsNs = 0L
 
             while (!released.get()) {
                 if (!outputEnabled.get()) {
-                    if (pendingFrames.getAndSet(0) > 0) {
+                    // Consome TODOS os buffers enfileirados. Antes era um por poll, e a fila
+                    // do SurfaceTexture podia chegar ao início da gravação com frames velhos.
+                    val queued = pendingFrames.getAndSet(0)
+                    var consumed = 0
+                    while (consumed < queued) {
                         runCatching {
                             st.updateTexImage()
                             haveLatchedFrame = true
                         }
+                        consumed++
                     }
                     timelineStarted = false
                     LockSupport.parkNanos(IDLE_POLL_NS)
                     continue
                 }
 
-                if (pendingFrames.get() <= 0) {
+                if (flushRequested.compareAndSet(true, false)) {
+                    val stale = pendingFrames.getAndSet(0)
+                    var flushed = 0
+                    while (flushed < stale) {
+                        runCatching {
+                            st.updateTexImage()
+                            haveLatchedFrame = true
+                        }
+                        flushed++
+                    }
+                    timelineStarted = false
+                }
+
+                val backlog = pendingFrames.get()
+                if (backlog <= 0) {
                     LockSupport.parkNanos(IDLE_POLL_NS)
                     continue
                 }
+                if (backlog > maxBacklogSignals) maxBacklogSignals = backlog
 
                 pendingFrames.decrementAndGet()
+                val frameStartNs = System.nanoTime()
 
                 if (!timelineStarted) {
                     st.updateTexImage()
                     haveLatchedFrame = true
                     previousSourceTimestampNs = st.timestamp
+                    slotClock.start(previousSourceTimestampNs)
+                    copiedTimestampNs = Long.MIN_VALUE
                     outputPtsNs = System.nanoTime()
                     renderExternalToEncoder(
                         st = st,
@@ -251,16 +318,21 @@ class RealTimeCfrSurfaceBridge(
                     continue
                 }
 
-                // Preserva o frame real anterior antes de SurfaceTexture avançar.
-                copyExternalToPreviousTexture(
-                    st = st,
-                    textureMatrix = textureMatrix,
-                    program = externalProgram,
-                    externalTexture = externalTexture,
-                    framebuffer = previousFramebuffer,
-                    vertices = vertices,
-                    texCoords = texCoords
-                )
+                // Preserva o frame real anterior antes de SurfaceTexture avançar. A cópia
+                // só acontece uma vez por frame latched: iteração sem frame novo não gasta
+                // mais um passe de GPU em resolução cheia.
+                if (copiedTimestampNs != previousSourceTimestampNs) {
+                    copyExternalToPreviousTexture(
+                        st = st,
+                        textureMatrix = textureMatrix,
+                        program = externalProgram,
+                        externalTexture = externalTexture,
+                        framebuffer = previousFramebuffer,
+                        vertices = vertices,
+                        texCoords = texCoords
+                    )
+                    copiedTimestampNs = previousSourceTimestampNs
+                }
 
                 st.updateTexImage()
                 val currentSourceTimestampNs = st.timestamp
@@ -271,20 +343,24 @@ class RealTimeCfrSurfaceBridge(
                     continue
                 }
 
-                val deltaNs = (currentSourceTimestampNs - previousSourceTimestampNs)
-                    .coerceAtLeast(frameIntervalNs)
+                // Posição pelo tempo acumulado (e não pelo delta do par): sem blends falsos
+                // por jitter/timestamps pareados e sem a saída correr à frente do tempo real.
+                val decision = slotClock.next(currentSourceTimestampNs)
+                previousSourceTimestampNs = currentSourceTimestampNs
 
-                val sourceSteps = CfrInterpolationPlanner.sourceSteps(
-                    deltaNs = deltaNs,
-                    frameIntervalNs = frameIntervalNs
-                )
+                if (decision.drop) {
+                    // Câmera acima do FPS nominal: a saída já está à frente; este frame real
+                    // só serve de referência para um eventual blend seguinte.
+                    droppedFrames++
+                    continue
+                }
 
                 // main3 fix: preserve geometric integrity.
                 // Missing CFR slots are synthesized only by temporal blending between
                 // the two surrounding real frames. No optical-flow warp is applied,
                 // so a repair frame cannot bend straight lines or create local flashes.
                 val interpolationAlphas =
-                    CfrInterpolationPlanner.interpolationAlphas(sourceSteps)
+                    CfrInterpolationPlanner.interpolationAlphas(decision.missingSlots + 1)
 
                 for (alpha in interpolationAlphas) {
                     renderBlendToEncoder(
@@ -317,7 +393,10 @@ class RealTimeCfrSurfaceBridge(
                 )
                 outputPtsNs += frameIntervalNs
                 realFrames++
-                previousSourceTimestampNs = currentSourceTimestampNs
+
+                if (decision.missingSlots > largestFillSlots) largestFillSlots = decision.missingSlots
+                val frameNs = System.nanoTime() - frameStartNs
+                if (frameNs > worstFrameNs) worstFrameNs = frameNs
             }
         } catch (t: Throwable) {
             initError = t
@@ -423,6 +502,7 @@ class RealTimeCfrSurfaceBridge(
         rotationDegrees: Int
     ) {
         st.getTransformMatrix(textureMatrix)
+        val shaderRotation = if (rotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, rotationDegrees)
         GLES20.glViewport(0, 0, viewportWidth, viewportHeight)
         GLES20.glUseProgram(program)
 
@@ -441,11 +521,62 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
 
         GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
-        GLES20.glUniform1f(rotationHandle, rotationDegrees.toFloat())
+        GLES20.glUniform1f(rotationHandle, shaderRotation.toFloat())
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
         GLES20.glUniform1i(samplerHandle, 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+    }
+
+    @Volatile private var matrixLogged = false
+
+    /**
+     * Escolhe a rotação de UV (0/90/180/270, horária) que, composta com a matriz do
+     * SurfaceTexture, deixa a imagem na orientação pedida por [hintDegrees] (90 ou 270,
+     * mesma convenção de MediaMuxer.setOrientationHint).
+     *
+     * Não assume que a matriz seja só um flip-Y: alguns drivers embutem rotação nela,
+     * e aplicar a rotação do sensor por cima disso espreme a imagem paisagem
+     * dentro do quadro retrato.
+     */
+    private fun resolveShaderRotation(m: FloatArray, hintDegrees: Int): Int {
+        // Parte linear 2x2 (column-major): x' = m0*u + m4*v ; y' = m1*u + m5*v
+        val a = m[0]
+        val b = m[4]
+        val c = m[1]
+        val d = m[5]
+        // Alvo em coordenadas de textura do buffer (linha 0 = topo), row-major [00,01,10,11].
+        val target = if (hintDegrees == 270) {
+            floatArrayOf(0f, 1f, 1f, 0f)
+        } else {
+            floatArrayOf(0f, -1f, -1f, 0f)
+        }
+        var best = hintDegrees
+        var bestError = Float.MAX_VALUE
+        for ((degrees, f) in ROTATION_CANDIDATES) {
+            val error =
+                abs(a * f[0] + b * f[2] - target[0]) +
+                        abs(a * f[1] + b * f[3] - target[1]) +
+                        abs(c * f[0] + d * f[2] - target[2]) +
+                        abs(c * f[1] + d * f[3] - target[3])
+            if (error < bestError - 1e-4f) {
+                bestError = error
+                best = degrees
+            }
+        }
+        if (!matrixLogged) {
+            matrixLogged = true
+            Log.i(
+                "SteadyVaultCfr",
+                "SurfaceTexture matrix=[${a}, ${b}; ${c}, ${d}] hint=$hintDegrees " +
+                        "-> shaderRotation=$best erroResidual=$bestError " +
+                        "src=${sourceWidth}x$sourceHeight out=${outputWidth}x$outputHeight"
+            )
+            if (bestError > 0.01f) {
+                Log.w("SteadyVaultCfr", "matriz do SurfaceTexture espelhada/inesperada; orientação pode sair errada")
+            }
+        }
+        return best
     }
 
     private fun renderBlendToEncoder(
@@ -462,6 +593,7 @@ class RealTimeCfrSurfaceBridge(
         presentationTimeNs: Long
     ) {
         st.getTransformMatrix(textureMatrix)
+        val shaderRotation = if (physicalRotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, physicalRotationDegrees)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, outputWidth, outputHeight)
         GLES20.glUseProgram(program)
@@ -483,7 +615,7 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
 
         GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
-        GLES20.glUniform1f(rotationHandle, physicalRotationDegrees.toFloat())
+        GLES20.glUniform1f(rotationHandle, shaderRotation.toFloat())
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, previousTexture)
@@ -600,12 +732,21 @@ class RealTimeCfrSurfaceBridge(
         private const val RELEASE_TIMEOUT_MS = 1_000L
         private const val IDLE_POLL_NS = 1_000_000L
         private const val MAX_PENDING_SIGNAL_COUNT = 8
+        private const val TAG = "SteadyVaultCfr"
+
+        // Rotações de UV horárias como matriz row-major [00,01,10,11].
+        private val ROTATION_CANDIDATES = listOf(
+            0 to floatArrayOf(1f, 0f, 0f, 1f),
+            90 to floatArrayOf(0f, -1f, 1f, 0f),
+            180 to floatArrayOf(-1f, 0f, 0f, -1f),
+            270 to floatArrayOf(0f, 1f, -1f, 0f)
+        )
 
         private val VERTICES = floatArrayOf(
             -1f, -1f,
-             1f, -1f,
+            1f, -1f,
             -1f,  1f,
-             1f,  1f
+            1f,  1f
         )
 
         private val TEX_COORDS = floatArrayOf(
@@ -623,15 +764,17 @@ class RealTimeCfrSurfaceBridge(
             varying vec2 vTexCoord;
 
             vec2 rotateUv(vec2 uv) {
-                if (uRotationDegrees > 225.0) return vec2(1.0 - uv.y, uv.x);
-                if (uRotationDegrees > 45.0) return vec2(uv.y, 1.0 - uv.x);
+                // Rotação horária (mesma convenção de MediaMuxer.setOrientationHint).
+                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);        // 270°
+                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);  // 180°
+                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);         // 90°
                 return uv;
             }
 
             void main() {
                 gl_Position = aPosition;
-                vec2 cameraUv = (uTextureMatrix * aTexCoord).xy;
-                vTexCoord = rotateUv(cameraUv);
+                vec2 rotated = rotateUv(aTexCoord.xy);
+                vTexCoord = (uTextureMatrix * vec4(rotated, 0.0, 1.0)).xy;
             }
         """
 
@@ -654,16 +797,18 @@ class RealTimeCfrSurfaceBridge(
             varying vec2 vCurrentCoord;
 
             vec2 rotateUv(vec2 uv) {
-                if (uRotationDegrees > 225.0) return vec2(1.0 - uv.y, uv.x);
-                if (uRotationDegrees > 45.0) return vec2(uv.y, 1.0 - uv.x);
+                // Rotação horária (mesma convenção de MediaMuxer.setOrientationHint).
+                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);        // 270°
+                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);  // 180°
+                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);         // 90°
                 return uv;
             }
 
             void main() {
                 gl_Position = aPosition;
-                vPreviousCoord = rotateUv(aTexCoord.xy);
-                vec2 cameraUv = (uTextureMatrix * aTexCoord).xy;
-                vCurrentCoord = rotateUv(cameraUv);
+                vec2 rotated = rotateUv(aTexCoord.xy);
+                vPreviousCoord = rotated;
+                vCurrentCoord = (uTextureMatrix * vec4(rotated, 0.0, 1.0)).xy;
             }
         """
 
