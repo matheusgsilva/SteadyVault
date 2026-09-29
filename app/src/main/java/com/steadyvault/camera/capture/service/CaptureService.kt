@@ -22,6 +22,7 @@ import com.steadyvault.camera.core.capability.CaptureModeCatalog
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.settings.SensorPixelModeSettings
+import com.steadyvault.camera.core.settings.SmartFocusSettings
 import com.steadyvault.camera.core.settings.CameraProfileStore
 import com.steadyvault.camera.core.state.CapturePhase
 import com.steadyvault.camera.core.state.CaptureStateStore
@@ -2371,6 +2372,27 @@ class CaptureService : Service() {
             return
         }
         setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+        if (SmartFocusSettings.enabled(this)) {
+            val faceModes = profile.characteristics.get(
+                CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
+            ) ?: intArrayOf()
+            val faceMode = when {
+                faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL) ->
+                    CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL
+                faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE) ->
+                    CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE
+                else -> CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF
+            }
+            setSafely(builder, CaptureRequest.STATISTICS_FACE_DETECT_MODE, faceMode)
+
+            val sceneModes = profile.characteristics.get(
+                CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES
+            ) ?: intArrayOf()
+            if (sceneModes.contains(CameraMetadata.CONTROL_SCENE_MODE_FACE_PRIORITY)) {
+                setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_USE_SCENE_MODE)
+                setSafely(builder, CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_FACE_PRIORITY)
+            }
+        }
         if (manualCadence == null) {
             setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
