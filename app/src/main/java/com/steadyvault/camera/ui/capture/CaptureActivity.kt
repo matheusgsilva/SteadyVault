@@ -768,6 +768,7 @@ class CaptureActivity : ComponentActivity() {
         hidePreviewTransitionCover(animated = false)
         releaseCameraPreview()
         idlePreview.release()
+        smartPoseAnalyzer.close()
         thumbnailExecutor.shutdownNow()
         capabilityExecutor.shutdownNow()
         super.onDestroy()
@@ -1111,6 +1112,7 @@ class CaptureActivity : ComponentActivity() {
             CameraProfileStore.setActiveMode(this, CameraProfileStore.FunctionMode.PHOTO)
         }
         previewOpen = true
+        startSmartPoseAnalysis()
         setPreviewTopControlsVisible(true)
         updatePreviewSettingsText()
         renderPreviewQuickControls()
@@ -1126,6 +1128,7 @@ class CaptureActivity : ComponentActivity() {
 
     private fun closeCameraPreview(afterClosed: (() -> Unit)? = null) {
         hidePreviewSettingsSheet(animated = false)
+        stopSmartPoseAnalysis()
         mainHandler.removeCallbacks(previewUpdateRunnable)
         pendingPreviewOpen = false
         previewUserRequested = false
@@ -3017,6 +3020,7 @@ class CaptureActivity : ComponentActivity() {
                 previewUserRequested = false
                 pendingPreviewOpen = false
                 previewOpen = false
+                stopSmartPoseAnalysis()
                 mainHandler.removeCallbacks(previewUpdateRunnable)
                 previewContainer.visibility = View.INVISIBLE
             }
@@ -3029,6 +3033,7 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun dismissPreviewForNavigation() {
+        stopSmartPoseAnalysis()
         mainHandler.removeCallbacks(previewUpdateRunnable)
         previewUserRequested = false
         pendingPreviewOpen = false
@@ -3055,6 +3060,7 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun releaseCameraPreview() {
+        stopSmartPoseAnalysis()
         previewUserRequested = false
         previewOpen = false
         closePreviewAfterCapture = false
