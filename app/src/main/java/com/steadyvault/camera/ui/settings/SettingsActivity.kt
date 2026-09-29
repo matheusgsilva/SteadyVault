@@ -373,7 +373,11 @@ class SettingsActivity : FragmentActivity() {
             "Foco inteligente",
             "Detecta rosto, corpo, mãos, pés e gesto mão/boca. Funciona também em gravação pelo widget, em segundo plano e com a tela bloqueada. Desative para remover totalmente a análise por IA.",
             SmartFocusSettings.enabled(this)
-        )
+        ).apply {
+            setOnCheckedChangeListener { _, checked ->
+                if (!building) SmartFocusSettings.setEnabled(this@SettingsActivity, checked)
+            }
+        }
         noiseReduction = addSpinner(
             "Redução de ruído da imagem",
             processingOptions(noise = true, currentValue = snapshot.noiseReduction),
@@ -668,6 +672,7 @@ class SettingsActivity : FragmentActivity() {
 
 
         addSection("Execução em segundo plano")
+        addInfo("Você pode bloquear ou apagar a tela durante a gravação. O vídeo continua pelo serviço em primeiro plano, com câmera/áudio ativos e wake lock parcial; a tela não precisa permanecer ligada.")
         addInfo(
             if (PowerPolicy.isIgnoring(this))
                 "O SteadyVault está fora da otimização de bateria. Gravação e importação ainda obedecem aos limites obrigatórios do Android, mas o sistema não deve aplicar a otimização comum de bateria ao app."
