@@ -40,6 +40,7 @@ class RealTimeCfrSurfaceBridge(
     private val width: Int,
     private val height: Int,
     private val fps: Int,
+    private val superStabilizationEnabled: Boolean = false,
     private val analysisEnabled: Boolean = false,
     private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
     private val onError: (Throwable) -> Unit
@@ -118,6 +119,7 @@ class RealTimeCfrSurfaceBridge(
         var blendProgram = 0
         var motionEstimateProgram = 0
         var motionProgram = 0
+        var stabilizationProgram = 0
         val motionTextures = IntArray(1)
         var motionFramebuffer = 0
         val analysisTexture = IntArray(1)
@@ -201,6 +203,7 @@ class RealTimeCfrSurfaceBridge(
             blendProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_BLEND)
             motionEstimateProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_GPU_MOTION_ESTIMATE)
             motionProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_GPU_MOTION_WARP)
+            stabilizationProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_SUPER_STABILIZE)
 
             val motionWidth = (width / 16).coerceIn(160, 320)
             val motionHeight = ((motionWidth.toLong() * height.toLong()) / width.coerceAtLeast(1).toLong())
@@ -362,7 +365,7 @@ class RealTimeCfrSurfaceBridge(
                 val useMotionInterpolation =
                     CfrInterpolationPlanner.useRealtimeMotionInterpolation(sourceSteps)
 
-                if (useMotionInterpolation) {
+                if (useMotionInterpolation || superStabilizationEnabled) {
                     renderGpuMotionEstimate(
                         st = st,
                         textureMatrix = textureMatrix,
@@ -417,17 +420,34 @@ class RealTimeCfrSurfaceBridge(
                     interpolatedFrames++
                 }
 
-                renderExternalToEncoder(
-                    st = st,
-                    textureMatrix = textureMatrix,
-                    program = externalProgram,
-                    externalTexture = externalTexture,
-                    vertices = vertices,
-                    texCoords = texCoords,
-                    display = display,
-                    window = window,
-                    presentationTimeNs = outputPtsNs
-                )
+                if (superStabilizationEnabled) {
+                    renderSuperStableToEncoder(
+                        st = st,
+                        textureMatrix = textureMatrix,
+                        program = stabilizationProgram,
+                        externalTexture = externalTexture,
+                        motionTexture = motionTextures[0],
+                        motionWidth = motionWidth,
+                        motionHeight = motionHeight,
+                        vertices = vertices,
+                        texCoords = texCoords,
+                        display = display,
+                        window = window,
+                        presentationTimeNs = outputPtsNs
+                    )
+                } else {
+                    renderExternalToEncoder(
+                        st = st,
+                        textureMatrix = textureMatrix,
+                        program = externalProgram,
+                        externalTexture = externalTexture,
+                        vertices = vertices,
+                        texCoords = texCoords,
+                        display = display,
+                        window = window,
+                        presentationTimeNs = outputPtsNs
+                    )
+                }
                 outputPtsNs += frameIntervalNs
                 realFrames++
                 previousSourceTimestampNs = currentSourceTimestampNs
@@ -447,6 +467,7 @@ class RealTimeCfrSurfaceBridge(
                 if (blendProgram != 0) runCatching { GLES20.glDeleteProgram(blendProgram) }
                 if (motionEstimateProgram != 0) runCatching { GLES20.glDeleteProgram(motionEstimateProgram) }
                 if (motionProgram != 0) runCatching { GLES20.glDeleteProgram(motionProgram) }
+                if (stabilizationProgram != 0) runCatching { GLES20.glDeleteProgram(stabilizationProgram) }
                 if (motionFramebuffer != 0) runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(motionFramebuffer), 0) }
                 runCatching { GLES20.glDeleteTextures(1, motionTextures, 0) }
                 runCatching { GLES20.glDeleteTextures(1, analysisTexture, 0) }
@@ -757,6 +778,57 @@ class RealTimeCfrSurfaceBridge(
         }
     }
 
+    private fun renderSuperStableToEncoder(
+        st: SurfaceTexture,
+        textureMatrix: FloatArray,
+        program: Int,
+        externalTexture: Int,
+        motionTexture: Int,
+        motionWidth: Int,
+        motionHeight: Int,
+        vertices: FloatBuffer,
+        texCoords: FloatBuffer,
+        display: android.opengl.EGLDisplay,
+        window: android.opengl.EGLSurface,
+        presentationTimeNs: Long
+    ) {
+        st.getTransformMatrix(textureMatrix)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES20.glViewport(0, 0, width, height)
+        GLES20.glUseProgram(program)
+
+        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
+        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
+        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
+        vertices.position(0)
+        GLES20.glEnableVertexAttribArray(positionHandle)
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
+        texCoords.position(0)
+        GLES20.glEnableVertexAttribArray(texCoordHandle)
+        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
+        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sCurrent"), 0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTexture)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sMotion"), 1)
+
+        GLES20.glUniform2f(
+            GLES20.glGetUniformLocation(program, "uMotionTexel"),
+            1f / motionWidth.coerceAtLeast(1).toFloat(),
+            1f / motionHeight.coerceAtLeast(1).toFloat()
+        )
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uSearchRadius"), GPU_SEARCH_RADIUS_TEXELS)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uStrength"), SUPER_STABLE_STRENGTH)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uCropScale"), SUPER_STABLE_CROP_SCALE)
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
+        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers Super Estável falhou" }
+    }
+
     private fun createExternalTexture(): Int {
         val textures = IntArray(1)
         GLES20.glGenTextures(1, textures, 0)
@@ -990,6 +1062,45 @@ class RealTimeCfrSurfaceBridge(
                 vec2 encoded = bestOffset / max(r, vec2(0.000001));
                 encoded = encoded * 0.5 + 0.5;
                 gl_FragColor = vec4(encoded, confidence, 1.0);
+            }
+        """
+
+        private const val SUPER_STABLE_STRENGTH = 0.68f
+        private const val SUPER_STABLE_CROP_SCALE = 0.90f
+
+        private const val FRAGMENT_SHADER_SUPER_STABILIZE = """
+            #extension GL_OES_EGL_image_external : require
+            precision highp float;
+            varying vec2 vPreviousCoord;
+            varying vec2 vCurrentCoord;
+            uniform samplerExternalOES sCurrent;
+            uniform sampler2D sMotion;
+            uniform vec2 uMotionTexel;
+            uniform float uSearchRadius;
+            uniform float uStrength;
+            uniform float uCropScale;
+
+            vec2 decodeMotion(vec2 uv) {
+                vec4 m = texture2D(sMotion, uv);
+                return (m.rg * 2.0 - 1.0) * (uMotionTexel * uSearchRadius) * m.b;
+            }
+
+            void main() {
+                vec2 m = vec2(0.0);
+                m += decodeMotion(vec2(0.25,0.25));
+                m += decodeMotion(vec2(0.50,0.25));
+                m += decodeMotion(vec2(0.75,0.25));
+                m += decodeMotion(vec2(0.25,0.50));
+                m += decodeMotion(vec2(0.50,0.50)) * 2.0;
+                m += decodeMotion(vec2(0.75,0.50));
+                m += decodeMotion(vec2(0.25,0.75));
+                m += decodeMotion(vec2(0.50,0.75));
+                m += decodeMotion(vec2(0.75,0.75));
+                m /= 10.0;
+
+                vec2 cropped = vec2(0.5) + (vCurrentCoord - vec2(0.5)) * uCropScale;
+                vec2 stabilizedUv = clamp(cropped + m * uStrength, 0.001, 0.999);
+                gl_FragColor = texture2D(sCurrent, stabilizedUv);
             }
         """
 
