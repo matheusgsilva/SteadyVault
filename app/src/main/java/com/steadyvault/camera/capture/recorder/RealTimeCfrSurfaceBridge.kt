@@ -64,6 +64,8 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var interpolatedFrames = 0L
     private val encoderFrameIntervalNs = 1_000_000_000L / fps.coerceAtLeast(1)
     @Volatile private var lastEncoderSwapRealtimeNs = 0L
+    @Volatile private var renderThreadRef: Thread? = null
+    private val flushRequested = AtomicBoolean(false)
 
     private val renderThread = Thread(
         { renderLoop() },
@@ -83,8 +85,7 @@ class RealTimeCfrSurfaceBridge(
 
     fun startOutput() {
         check(!released.get()) { "ponte CFR já liberada" }
-        // Descarta apenas sinais antigos; o próximo frame real abre a timeline útil.
-        pendingFrames.set(0)
+        flushRequested.set(true)
         outputEnabled.set(true)
     }
 
@@ -109,6 +110,7 @@ class RealTimeCfrSurfaceBridge(
     )
 
     private fun renderLoop() {
+        renderThreadRef = Thread.currentThread()
         runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY) }
 
         var display = EGL14.EGL_NO_DISPLAY
@@ -191,6 +193,7 @@ class RealTimeCfrSurfaceBridge(
                         pendingFrames.updateAndGet { current ->
                             if (current >= MAX_PENDING_SIGNAL_COUNT) current else current + 1
                         }
+                        LockSupport.unpark(renderThreadRef)
                     },
                     frameSignalHandler
                 )
@@ -264,15 +267,31 @@ class RealTimeCfrSurfaceBridge(
 
             while (!released.get()) {
                 if (!outputEnabled.get()) {
-                    if (pendingFrames.getAndSet(0) > 0) {
+                    val queued = pendingFrames.getAndSet(0)
+                    var consumed = 0
+                    while (consumed < queued) {
                         runCatching {
                             st.updateTexImage()
                             haveLatchedFrame = true
                         }
+                        consumed++
                     }
                     timelineStarted = false
                     LockSupport.parkNanos(IDLE_POLL_NS)
                     continue
+                }
+
+                if (flushRequested.compareAndSet(true, false)) {
+                    val stale = pendingFrames.getAndSet(0)
+                    var flushed = 0
+                    while (flushed < stale) {
+                        runCatching {
+                            st.updateTexImage()
+                            haveLatchedFrame = true
+                        }
+                        flushed++
+                    }
+                    timelineStarted = false
                 }
 
                 if (pendingFrames.get() <= 0) {
