@@ -3789,7 +3789,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "mediacodec-highlight-guard-fixed-fps-1.8.274"
+        private const val CAPTURE_PIPELINE_REVISION = "main5-gpu-only-motion-cfr-1.9.0"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"
