@@ -32,8 +32,11 @@ import java.util.concurrent.locks.LockSupport
  */
 class RealTimeCfrSurfaceBridge(
     private val encoderSurface: Surface,
-    private val width: Int,
-    private val height: Int,
+    private val sourceWidth: Int,
+    private val sourceHeight: Int,
+    private val outputWidth: Int,
+    private val outputHeight: Int,
+    private val physicalRotationDegrees: Int,
     private val fps: Int,
     private val onError: (Throwable) -> Unit
 ) {
@@ -168,7 +171,7 @@ class RealTimeCfrSurfaceBridge(
 
             externalTexture = createExternalTexture()
             st = SurfaceTexture(externalTexture).apply {
-                setDefaultBufferSize(width, height)
+                setDefaultBufferSize(sourceWidth, sourceHeight)
                 setOnFrameAvailableListener(
                     {
                         pendingFrames.updateAndGet { current ->
@@ -182,7 +185,7 @@ class RealTimeCfrSurfaceBridge(
             camera = Surface(st)
             cameraSurface = camera
 
-            previousTexture = createStorageTexture(width, height)
+            previousTexture = createStorageTexture(sourceWidth, sourceHeight)
             previousFramebuffer = createFramebuffer(previousTexture)
             externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_EXTERNAL)
             blendProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_BLEND)
@@ -373,7 +376,10 @@ class RealTimeCfrSurfaceBridge(
             program = program,
             externalTexture = externalTexture,
             vertices = vertices,
-            texCoords = texCoords
+            texCoords = texCoords,
+            viewportWidth = sourceWidth,
+            viewportHeight = sourceHeight,
+            rotationDegrees = 0
         )
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
     }
@@ -396,7 +402,10 @@ class RealTimeCfrSurfaceBridge(
             program = program,
             externalTexture = externalTexture,
             vertices = vertices,
-            texCoords = texCoords
+            texCoords = texCoords,
+            viewportWidth = outputWidth,
+            viewportHeight = outputHeight,
+            rotationDegrees = physicalRotationDegrees
         )
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers falhou" }
@@ -408,16 +417,20 @@ class RealTimeCfrSurfaceBridge(
         program: Int,
         externalTexture: Int,
         vertices: FloatBuffer,
-        texCoords: FloatBuffer
+        texCoords: FloatBuffer,
+        viewportWidth: Int,
+        viewportHeight: Int,
+        rotationDegrees: Int
     ) {
         st.getTransformMatrix(textureMatrix)
-        GLES20.glViewport(0, 0, width, height)
+        GLES20.glViewport(0, 0, viewportWidth, viewportHeight)
         GLES20.glUseProgram(program)
 
         val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
         val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
         val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
         val samplerHandle = GLES20.glGetUniformLocation(program, "sTexture")
+        val rotationHandle = GLES20.glGetUniformLocation(program, "uRotationDegrees")
 
         vertices.position(0)
         GLES20.glEnableVertexAttribArray(positionHandle)
@@ -428,6 +441,7 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
 
         GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
+        GLES20.glUniform1f(rotationHandle, rotationDegrees.toFloat())
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
         GLES20.glUniform1i(samplerHandle, 0)
@@ -449,7 +463,7 @@ class RealTimeCfrSurfaceBridge(
     ) {
         st.getTransformMatrix(textureMatrix)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-        GLES20.glViewport(0, 0, width, height)
+        GLES20.glViewport(0, 0, outputWidth, outputHeight)
         GLES20.glUseProgram(program)
 
         val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
@@ -458,6 +472,7 @@ class RealTimeCfrSurfaceBridge(
         val previousHandle = GLES20.glGetUniformLocation(program, "sPrevious")
         val currentHandle = GLES20.glGetUniformLocation(program, "sCurrent")
         val alphaHandle = GLES20.glGetUniformLocation(program, "uAlpha")
+        val rotationHandle = GLES20.glGetUniformLocation(program, "uRotationDegrees")
 
         vertices.position(0)
         GLES20.glEnableVertexAttribArray(positionHandle)
@@ -468,6 +483,7 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
 
         GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
+        GLES20.glUniform1f(rotationHandle, physicalRotationDegrees.toFloat())
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, previousTexture)
@@ -603,10 +619,19 @@ class RealTimeCfrSurfaceBridge(
             attribute vec4 aPosition;
             attribute vec4 aTexCoord;
             uniform mat4 uTextureMatrix;
+            uniform float uRotationDegrees;
             varying vec2 vTexCoord;
+
+            vec2 rotateUv(vec2 uv) {
+                if (uRotationDegrees > 225.0) return vec2(1.0 - uv.y, uv.x);
+                if (uRotationDegrees > 45.0) return vec2(uv.y, 1.0 - uv.x);
+                return uv;
+            }
+
             void main() {
                 gl_Position = aPosition;
-                vTexCoord = (uTextureMatrix * aTexCoord).xy;
+                vec2 rotated = rotateUv(aTexCoord.xy);
+                vTexCoord = (uTextureMatrix * vec4(rotated, 0.0, 1.0)).xy;
             }
         """
 
@@ -624,12 +649,21 @@ class RealTimeCfrSurfaceBridge(
             attribute vec4 aPosition;
             attribute vec4 aTexCoord;
             uniform mat4 uTextureMatrix;
+            uniform float uRotationDegrees;
             varying vec2 vPreviousCoord;
             varying vec2 vCurrentCoord;
+
+            vec2 rotateUv(vec2 uv) {
+                if (uRotationDegrees > 225.0) return vec2(1.0 - uv.y, uv.x);
+                if (uRotationDegrees > 45.0) return vec2(uv.y, 1.0 - uv.x);
+                return uv;
+            }
+
             void main() {
                 gl_Position = aPosition;
-                vPreviousCoord = aTexCoord.xy;
-                vCurrentCoord = (uTextureMatrix * aTexCoord).xy;
+                vec2 rotated = rotateUv(aTexCoord.xy);
+                vPreviousCoord = rotated;
+                vCurrentCoord = (uTextureMatrix * vec4(rotated, 0.0, 1.0)).xy;
             }
         """
 
