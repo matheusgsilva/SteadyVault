@@ -11,6 +11,7 @@ import com.steadyvault.camera.core.capability.PowerPolicy
 import com.steadyvault.camera.core.camera.CameraLensCatalog
 import com.steadyvault.camera.core.camera.CameraResourceCoordinator
 import com.steadyvault.camera.core.camera.SmartPoseFocusAnalyzer
+import com.steadyvault.camera.core.camera.SmartFocusTargetStore
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
@@ -1467,12 +1468,14 @@ class CaptureActivity : ComponentActivity() {
                 smartPoseTargetKind = null
                 smartPoseLastTargetAtMs = 0L
                 idlePreview.clearSmartFocusPoint()
+                SmartFocusTargetStore.clear()
                 renderPreviewPerformanceOverlay()
             }
             return
         }
 
         smartPoseLastTargetAtMs = now
+        SmartFocusTargetStore.update(target)
         val moved = kotlin.math.hypot(
             (target.x - smartPoseLastX).toDouble(),
             (target.y - smartPoseLastY).toDouble()
