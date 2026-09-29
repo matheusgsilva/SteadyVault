@@ -27,8 +27,13 @@ import java.util.concurrent.locks.LockSupport
  * entre os timestamps da câmera indicar slots ausentes, esses slots são gerados
  * por interpolação temporal entre o frame anterior e o próximo frame real.
  *
- * Não há fallback de duplicação: nenhum slot CFR é preenchido reapresentando
- * exatamente o mesmo frame anterior. O custo fica na GPU; pixels não voltam à CPU.
+ * Main5: gaps curtos são estimados e interpolados totalmente na GPU.
+ * O frame anterior fica em textura 2D, o movimento é estimado em FBO reduzido e
+ * o warp é desenhado diretamente na Surface do encoder. Não existe readback/OpenCV
+ * no caminho crítico dos gaps e nenhum slot é preenchido duplicando endpoint.
+ *
+ * O único readback restante é opcional e esparso para foco inteligente em background;
+ * ele não participa da interpolação CFR.
  */
 class RealTimeCfrSurfaceBridge(
     private val encoderSurface: Surface,
@@ -599,51 +604,6 @@ class RealTimeCfrSurfaceBridge(
 
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers interpolado falhou" }
-    }
-
-    private fun readPreviousAnalysisFrame(
-        texture: Int,
-        framebuffer: Int,
-        width: Int,
-        height: Int,
-        target: ByteArray,
-        readback: ByteBuffer,
-        program: Int,
-        vertices: FloatBuffer,
-        texCoords: FloatBuffer
-    ) {
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer)
-        GLES20.glViewport(0, 0, width, height)
-        GLES20.glUseProgram(program)
-        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
-        val previousHandle = GLES20.glGetUniformLocation(program, "sPrevious")
-        val currentHandle = GLES20.glGetUniformLocation(program, "sCurrent")
-        val alphaHandle = GLES20.glGetUniformLocation(program, "uAlpha")
-        vertices.position(0)
-        GLES20.glEnableVertexAttribArray(positionHandle)
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
-        texCoords.position(0)
-        GLES20.glEnableVertexAttribArray(texCoordHandle)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
-        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, IDENTITY_MATRIX, 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
-        GLES20.glUniform1i(previousHandle, 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
-        GLES20.glUniform1i(currentHandle, 1)
-        GLES20.glUniform1f(alphaHandle, 1f)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        readback.clear()
-        GLES20.glReadPixels(
-            0, 0, width, height,
-            GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, readback
-        )
-        readback.position(0)
-        readback.get(target, 0, target.size)
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
     }
 
     private fun readCurrentAnalysisFrame(
