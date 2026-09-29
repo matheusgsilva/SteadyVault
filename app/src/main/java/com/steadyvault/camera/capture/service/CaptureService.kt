@@ -1305,18 +1305,14 @@ class CaptureService : Service() {
     }
 
     /**
-     * A Surface da Camera2 chega na orientação física do sensor. Para gravação
-     * vertical precisamos aplicar a rotação inversa no container, não copiar
-     * SENSOR_ORIENTATION diretamente. Em sensores traseiros de 90°, isso resulta
-     * em 270°; sensores de 270° resultam em 90°.
+     * Aparelho em retrato (rotação de display 0°): a orientação física que deve ser
+     * aplicada aos pixels é a orientação publicada pelo sensor. O backend MediaCodec
+     * da main3 aplica essa rotação no shader e grava o arquivo já em dimensões retrato,
+     * com metadata de rotação 0°.
      */
     private fun calculateOrientationHint(sensorOrientation: Int): Int {
         val normalized = ((sensorOrientation % 360) + 360) % 360
-        return when (normalized) {
-            90, 270 -> (360 - normalized) % 360
-            180 -> 180
-            else -> 90
-        }
+        return if (normalized == 90 || normalized == 270) normalized else 90
     }
 
     private fun openSelectedCamera(profile: CameraProfile, token: Int) {
