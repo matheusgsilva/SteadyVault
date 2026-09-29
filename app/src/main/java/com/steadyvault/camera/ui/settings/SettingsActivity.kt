@@ -1929,6 +1929,7 @@ class SettingsActivity : FragmentActivity() {
         val activeFps = if (::fps.isInitialized) selected(fps).toIntOrNull() ?: CaptureSettings.snapshot(this).fps else CaptureSettings.snapshot(this).fps
         val specs = listOf(
             FeatureOptionSpec(CaptureSettings.STABILIZATION_AUTO, "Automática", "Escolhe Preview stabilization, EIS, OIS ou Off conforme o formato e as capacidades. Acima de 60 FPS prioriza cadência."),
+            FeatureOptionSpec(CaptureSettings.STABILIZATION_SUPER, "Super Estável", "Combina estabilização da HAL quando disponível com suavização e crop dinâmico na GPU da main5. Feito para movimento forte sem pós-processamento."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_PREVIEW, "Preview stabilization", "Estabilização avançada da câmera."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_EIS, "EIS eletrônica", "Recorta a imagem e usa processamento eletrônico."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_OIS, "OIS óptica", "Usa o movimento físico da lente."),
@@ -1937,7 +1938,12 @@ class SettingsActivity : FragmentActivity() {
         fun directSupport(value: String): Support =
             features?.stabilizationSupport(value) ?: Support.UNVERIFIED
         return featureOptions(specs, currentValue) { value ->
-            if (value == CaptureSettings.STABILIZATION_OFF || value == CaptureSettings.STABILIZATION_AUTO) Support.SUPPORTED else directSupport(value)
+            when (value) {
+                CaptureSettings.STABILIZATION_OFF,
+                CaptureSettings.STABILIZATION_AUTO,
+                CaptureSettings.STABILIZATION_SUPER -> Support.SUPPORTED
+                else -> directSupport(value)
+            }
         }
     }
 
