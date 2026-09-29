@@ -1245,6 +1245,15 @@ class CaptureService : Service() {
 
             if (!preferDirectCodec) throw codecFailure
 
+            val physicalPortraitRequired =
+                cameraProfile.sensorOrientation == 90 || cameraProfile.sensorOrientation == 270
+            if (physicalPortraitRequired) {
+                throw IllegalStateException(
+                    "encoder direto recusou saída física em retrato; fallback OEM foi bloqueado para não salvar vídeo girado",
+                    codecFailure
+                )
+            }
+
             Log.w(
                 LOG_TAG,
                 "MediaCodec direto recusado; usando MediaRecorder como fallback",
