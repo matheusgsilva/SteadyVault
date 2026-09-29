@@ -8,6 +8,7 @@ import android.opengl.GLES20
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Process
+import android.os.SystemClock
 import android.view.Surface
 import com.steadyvault.camera.processing.motion.OpenCvMotionEstimator
 import java.nio.ByteBuffer
@@ -35,6 +36,8 @@ class RealTimeCfrSurfaceBridge(
     private val width: Int,
     private val height: Int,
     private val fps: Int,
+    private val analysisEnabled: Boolean = false,
+    private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
     private val onError: (Throwable) -> Unit
 ) {
     private val released = AtomicBoolean(false)
@@ -250,6 +253,7 @@ class RealTimeCfrSurfaceBridge(
             var timelineStarted = false
             var previousSourceTimestampNs = 0L
             var outputPtsNs = 0L
+            var lastAnalysisSampleMs = 0L
 
             while (!released.get()) {
                 if (!outputEnabled.get()) {
@@ -313,6 +317,29 @@ class RealTimeCfrSurfaceBridge(
 
                 st.updateTexImage()
                 val currentSourceTimestampNs = st.timestamp
+
+                if (analysisEnabled && onAnalysisFrame != null) {
+                    val nowMs = SystemClock.elapsedRealtime()
+                    if (nowMs - lastAnalysisSampleMs >= BACKGROUND_ANALYSIS_INTERVAL_MS) {
+                        readCurrentAnalysisFrame(
+                            st = st,
+                            externalTexture = externalTexture,
+                            framebuffer = analysisFramebuffer[0],
+                            width = motionWidth,
+                            height = motionHeight,
+                            target = currentMotionPixels,
+                            readback = motionReadback,
+                            program = externalProgram,
+                            vertices = vertices,
+                            texCoords = texCoords,
+                            textureMatrix = textureMatrix
+                        )
+                        lastAnalysisSampleMs = nowMs
+                        runCatching {
+                            onAnalysisFrame.invoke(currentMotionPixels.copyOf(), motionWidth, motionHeight)
+                        }
+                    }
+                }
 
                 // Alguns drivers podem coalescer callbacks da SurfaceTexture.
                 // O mesmo timestamp nunca pode virar um segundo frame no arquivo.
@@ -893,6 +920,8 @@ class RealTimeCfrSurfaceBridge(
             }
 
     companion object {
+        private const val BACKGROUND_ANALYSIS_INTERVAL_MS = 1_500L
+
         private const val EGL_RECORDABLE_ANDROID = 0x3142
         private const val PREPARE_TIMEOUT_SECONDS = 5L
         private const val RELEASE_TIMEOUT_MS = 1_000L
