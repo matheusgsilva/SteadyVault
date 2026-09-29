@@ -42,16 +42,20 @@ class SmartPoseFocusAnalyzer : Closeable {
             .build()
     )
 
-    fun analyze(bitmap: Bitmap, onResult: (Target?) -> Unit) {
+    fun analyze(bitmap: Bitmap, rotationDegrees: Int = 0, onResult: (Target?) -> Unit) {
         if (!busy.compareAndSet(false, true)) {
             onResult(null)
             return
         }
 
-        val image = InputImage.fromBitmap(bitmap, 0)
+        val normalizedRotation = ((rotationDegrees % 360) + 360) % 360
+        val image = InputImage.fromBitmap(bitmap, normalizedRotation)
         detector.process(image)
             .addOnSuccessListener { pose ->
-                onResult(selectTarget(pose, bitmap.width, bitmap.height))
+                val rotated = normalizedRotation == 90 || normalizedRotation == 270
+                val analysisWidth = if (rotated) bitmap.height else bitmap.width
+                val analysisHeight = if (rotated) bitmap.width else bitmap.height
+                onResult(selectTarget(pose, analysisWidth, analysisHeight))
             }
             .addOnFailureListener {
                 onResult(null)
