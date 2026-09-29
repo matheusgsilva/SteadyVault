@@ -72,6 +72,7 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.10.1")
     implementation("org.videolan.android:libvlc-all:3.7.4")
     implementation("org.opencv:opencv:4.13.0")
+    implementation("com.google.mlkit:pose-detection:18.0.0-beta5")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test:runner:1.7.0")
