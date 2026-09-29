@@ -2717,6 +2717,8 @@ class CaptureService : Service() {
 
     private fun refreshBackgroundSmartFocusRequest() {
         if (!serviceActive.get() || stopping.get() || !SmartFocusSettings.enabled(this)) return
+        if (recordingSettings.lockAeAwbForCadence) return
+        if (recordingSettings.focusMode == CaptureSettings.FOCUS_LOCKED || recordingSettings.focusMode == CaptureSettings.FOCUS_OFF) return
         val profile = selectedCamera ?: return
         if (profile.highSpeed) return
         val camera = synchronized(resourceLock) { cameraDevice } ?: return
@@ -2724,19 +2726,20 @@ class CaptureService : Service() {
         val surface = synchronized(resourceLock) { recorderSurface } ?: return
         if (!surface.isValid) return
 
+        val fixedCadenceActive =
+            !recordingSettings.autoFpsLowLight &&
+            profile.targetFps == CaptureModeStore.FPS_60 &&
+            !profile.hdrHlg10 &&
+            supportsManualSensor(profile)
+        val manualPlan = if (fixedCadenceActive) {
+            Camera3AStateStore.recentExposure(profile.cameraId)?.let {
+                fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso)
+            } ?: return
+        } else null
+
         val request = runCatching {
             createRecordRequestBuilder(camera).apply {
                 addTarget(surface)
-                val manualPlan = if (
-                    !recordingSettings.autoFpsLowLight &&
-                    profile.targetFps == CaptureModeStore.FPS_60 &&
-                    !profile.hdrHlg10 &&
-                    supportsManualSensor(profile)
-                ) {
-                    Camera3AStateStore.recentExposure(profile.cameraId)?.let {
-                        fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso)
-                    }
-                } else null
                 configureCaptureRequest(this, profile, manualPlan)
                 applyFinalWhiteBalance(this, profile)
             }.build()
