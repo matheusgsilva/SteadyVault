@@ -1211,9 +1211,7 @@ class CaptureActivity : ComponentActivity() {
                 "${codecLabel(settings.codec)} • ${stabilizationLabel(settings.stabilization)} • " +
                 exposureLabel(settings.exposureCompensation)
         }
-        if (previewMeasuredFps <= 0.0) {
-            previewPerformanceText.text = if (previewPhotoMode) "Preview • medindo FPS…" else "FPS real -- / ${settings.fps}"
-        }
+        renderPreviewPerformanceOverlay()
     }
 
     private fun selectPreviewRecordingMode(targetFps: Int) {
@@ -1517,14 +1515,20 @@ class CaptureActivity : ComponentActivity() {
         OneUiDialog.choices(
             activity = this,
             title = "Foco inteligente",
-            message = "Prioriza pessoas pela detecção de rostos da própria Camera2/Samsung. Não adiciona uma segunda stream de análise, preservando o desempenho do 4K60.",
+            message = "Prioriza rosto, corpo, mãos e pés pelo preview reduzido. Mão próxima da boca recebe prioridade extra. A análise não adiciona uma segunda stream Camera2.",
             choices = listOf(
-                OneUiDialog.Choice("Ativado", "Acompanha rostos no preview e usa face-priority da HAL durante a gravação."),
+                OneUiDialog.Choice("Ativado", "Usa pose no preview e face-priority da HAL durante a gravação."),
                 OneUiDialog.Choice("Desativado", "Usa somente o autofocus normal/tap-to-focus.")
             ),
             selectedIndex = if (enabled) 0 else 1
         ) { position ->
             SmartFocusSettings.setEnabled(this, position == 0)
+            if (position == 0) {
+                startSmartPoseAnalysis()
+            } else {
+                stopSmartPoseAnalysis()
+                idlePreview.clearSmartFocusPoint()
+            }
             if (previewOpen) restartPreviewForUpdatedSettings()
             renderPreviewSettingsSheetContent()
         }
@@ -1564,12 +1568,7 @@ class CaptureActivity : ComponentActivity() {
         val elapsedNs = timestampNs - previewFpsWindowStartedNs
         if (elapsedNs < 1_000_000_000L) return
         previewMeasuredFps = (previewFpsFrameCount - 1).toDouble() * 1_000_000_000.0 / elapsedNs.toDouble()
-        val target = CaptureSettings.snapshot(this).fps
-        previewPerformanceText.text = if (previewPhotoMode) {
-            "Preview • ${String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)} FPS"
-        } else {
-            "FPS real ${String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)} / $target"
-        }
+        renderPreviewPerformanceOverlay()
         previewFpsWindowStartedNs = timestampNs
         previewFpsFrameCount = 1
     }
@@ -1579,7 +1578,7 @@ class CaptureActivity : ComponentActivity() {
         previewFpsLastTimestampNs = 0L
         previewFpsFrameCount = 0
         previewMeasuredFps = 0.0
-        if (::previewPerformanceText.isInitialized && previewOpen) previewPerformanceText.text = "FPS real --"
+        renderPreviewPerformanceOverlay()
     }
     private fun showLiveResolutionChoices() {
         val settings = CaptureSettings.snapshot(this)
@@ -4556,5 +4555,12 @@ class CaptureActivity : ComponentActivity() {
         private const val PREVIEW_MODE_TRANSITION_TIMEOUT_MS = 1_800L
         private const val PREVIEW_TRANSITION_MAX_HOLD_MS = 12_000L
         private const val PREVIEW_TRANSITION_MAX_DIMENSION_PX = 1_280
+        private const val SMART_POSE_ANALYSIS_INTERVAL_MS = 520L
+        private const val SMART_POSE_INITIAL_DELAY_MS = 700L
+        private const val SMART_POSE_MAX_DIMENSION_PX = 480
+        private const val SMART_POSE_MIN_DIMENSION_PX = 160
+        private const val SMART_POSE_TARGET_RELEASE_MS = 2_400L
+        private const val SMART_POSE_FORCE_REFRESH_MS = 1_600L
+        private const val SMART_POSE_MIN_MOVE = 0.045
     }
 }
