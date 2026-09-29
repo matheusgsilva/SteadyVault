@@ -630,8 +630,8 @@ class RealTimeCfrSurfaceBridge(
 
             void main() {
                 gl_Position = aPosition;
-                vec2 rotated = rotateUv(aTexCoord.xy);
-                vTexCoord = (uTextureMatrix * vec4(rotated, 0.0, 1.0)).xy;
+                vec2 cameraUv = (uTextureMatrix * aTexCoord).xy;
+                vTexCoord = rotateUv(cameraUv);
             }
         """
 
@@ -661,9 +661,9 @@ class RealTimeCfrSurfaceBridge(
 
             void main() {
                 gl_Position = aPosition;
-                vec2 rotated = rotateUv(aTexCoord.xy);
-                vPreviousCoord = rotated;
-                vCurrentCoord = (uTextureMatrix * vec4(rotated, 0.0, 1.0)).xy;
+                vPreviousCoord = rotateUv(aTexCoord.xy);
+                vec2 cameraUv = (uTextureMatrix * aTexCoord).xy;
+                vCurrentCoord = rotateUv(cameraUv);
             }
         """
 
