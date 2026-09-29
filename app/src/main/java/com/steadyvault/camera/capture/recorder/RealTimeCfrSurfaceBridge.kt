@@ -10,7 +10,6 @@ import android.os.HandlerThread
 import android.os.Process
 import android.os.SystemClock
 import android.view.Surface
-import com.steadyvault.camera.processing.motion.OpenCvMotionEstimator
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -112,8 +111,10 @@ class RealTimeCfrSurfaceBridge(
         var previousFramebuffer = 0
         var externalProgram = 0
         var blendProgram = 0
+        var motionEstimateProgram = 0
         var motionProgram = 0
-        val motionTextures = IntArray(2)
+        val motionTextures = IntArray(1)
+        var motionFramebuffer = 0
         val analysisTexture = IntArray(1)
         val analysisFramebuffer = IntArray(1)
         var st: SurfaceTexture? = null
@@ -193,33 +194,28 @@ class RealTimeCfrSurfaceBridge(
             previousFramebuffer = createFramebuffer(previousTexture)
             externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_EXTERNAL)
             blendProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_BLEND)
-            motionProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_MOTION)
+            motionEstimateProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_GPU_MOTION_ESTIMATE)
+            motionProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_GPU_MOTION_WARP)
 
             val motionWidth = (width / 16).coerceIn(160, 320)
             val motionHeight = ((motionWidth.toLong() * height.toLong()) / width.coerceAtLeast(1).toLong())
                 .toInt().coerceIn(90, 240)
             val motionReadback = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4)
                 .order(ByteOrder.nativeOrder())
-            val previousMotionPixels = ByteArray(motionWidth * motionHeight * 4)
             val currentMotionPixels = ByteArray(motionWidth * motionHeight * 4)
-            val forwardUpload = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4)
-                .order(ByteOrder.nativeOrder())
-            val backwardUpload = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4)
-                .order(ByteOrder.nativeOrder())
 
-            GLES20.glGenTextures(2, motionTextures, 0)
-            for (id in motionTextures) {
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-                GLES20.glTexImage2D(
-                    GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
-                    motionWidth, motionHeight, 0,
-                    GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
-                )
-            }
+            GLES20.glGenTextures(1, motionTextures, 0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTextures[0])
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
+                motionWidth, motionHeight, 0,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
+            )
+            motionFramebuffer = createFramebuffer(motionTextures[0])
             GLES20.glGenTextures(1, analysisTexture, 0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, analysisTexture[0])
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
@@ -361,69 +357,33 @@ class RealTimeCfrSurfaceBridge(
                 val useMotionInterpolation =
                     CfrInterpolationPlanner.useRealtimeMotionInterpolation(sourceSteps)
 
-                val motionField = if (useMotionInterpolation) {
-                    readPreviousAnalysisFrame(
-                        texture = previousTexture,
-                        framebuffer = analysisFramebuffer[0],
-                        width = motionWidth,
-                        height = motionHeight,
-                        target = previousMotionPixels,
-                        readback = motionReadback,
-                        program = blendProgram,
+                if (useMotionInterpolation) {
+                    renderGpuMotionEstimate(
+                        st = st,
+                        textureMatrix = textureMatrix,
+                        program = motionEstimateProgram,
+                        previousTexture = previousTexture,
+                        externalTexture = externalTexture,
+                        framebuffer = motionFramebuffer,
+                        motionWidth = motionWidth,
+                        motionHeight = motionHeight,
                         vertices = vertices,
                         texCoords = texCoords
                     )
-                    readCurrentAnalysisFrame(
-                        st = st,
-                        externalTexture = externalTexture,
-                        framebuffer = analysisFramebuffer[0],
-                        width = motionWidth,
-                        height = motionHeight,
-                        target = currentMotionPixels,
-                        readback = motionReadback,
-                        program = externalProgram,
-                        vertices = vertices,
-                        texCoords = texCoords,
-                        textureMatrix = textureMatrix
-                    )
-                    runCatching {
-                        OpenCvMotionEstimator.estimate(
-                            previousRgba = previousMotionPixels,
-                            currentRgba = currentMotionPixels,
-                            width = motionWidth,
-                            height = motionHeight,
-                            highQuality = false
-                        )
-                    }.getOrNull()
-                } else {
-                    null
                 }
 
-                if (motionField != null) {
-                    uploadMotionTexture(
-                        motionTextures[0], forwardUpload, motionField.forwardRgba,
-                        motionWidth, motionHeight
-                    )
-                    uploadMotionTexture(
-                        motionTextures[1], backwardUpload, motionField.backwardRgba,
-                        motionWidth, motionHeight
-                    )
-                }
-
-                // Nenhum slot é duplicado. Com campo válido, fazemos warp
-                // bidirecional. Se o fluxo falhar, mantemos blend temporal único
-                // apenas como último fallback — ainda sem repetir endpoint.
+                // O campo de movimento é estimado e consumido inteiramente na GPU.
+                // Confiança baixa faz o próprio shader convergir para blend temporal,
+                // sem glReadPixels/OpenCV no caminho crítico de correção de gaps.
                 for (alpha in interpolationAlphas) {
-                    if (motionField != null && !motionField.sceneChangeLikely) {
-                        renderMotionToEncoder(
+                    if (useMotionInterpolation) {
+                        renderGpuMotionToEncoder(
                             st = st,
                             textureMatrix = textureMatrix,
                             program = motionProgram,
                             previousTexture = previousTexture,
                             externalTexture = externalTexture,
-                            forwardMotionTexture = motionTextures[0],
-                            backwardMotionTexture = motionTextures[1],
-                            field = motionField,
+                            motionTexture = motionTextures[0],
                             motionWidth = motionWidth,
                             motionHeight = motionHeight,
                             alpha = alpha,
@@ -480,8 +440,10 @@ class RealTimeCfrSurfaceBridge(
             if (display != EGL14.EGL_NO_DISPLAY) {
                 if (externalProgram != 0) runCatching { GLES20.glDeleteProgram(externalProgram) }
                 if (blendProgram != 0) runCatching { GLES20.glDeleteProgram(blendProgram) }
+                if (motionEstimateProgram != 0) runCatching { GLES20.glDeleteProgram(motionEstimateProgram) }
                 if (motionProgram != 0) runCatching { GLES20.glDeleteProgram(motionProgram) }
-                runCatching { GLES20.glDeleteTextures(2, motionTextures, 0) }
+                if (motionFramebuffer != 0) runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(motionFramebuffer), 0) }
+                runCatching { GLES20.glDeleteTextures(1, motionTextures, 0) }
                 runCatching { GLES20.glDeleteTextures(1, analysisTexture, 0) }
                 runCatching { GLES20.glDeleteFramebuffers(1, analysisFramebuffer, 0) }
                 if (previousFramebuffer != 0) {
