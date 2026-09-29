@@ -688,33 +688,62 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
     }
 
-    private fun uploadMotionTexture(
-        texture: Int,
-        upload: ByteBuffer,
-        rgba: ByteArray,
-        width: Int,
-        height: Int
-    ) {
-        upload.clear()
-        upload.put(rgba)
-        upload.flip()
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
-        GLES20.glTexSubImage2D(
-            GLES20.GL_TEXTURE_2D, 0, 0, 0, width, height,
-            GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, upload
-        )
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
-    }
-
-    private fun renderMotionToEncoder(
+    private fun renderGpuMotionEstimate(
         st: SurfaceTexture,
         textureMatrix: FloatArray,
         program: Int,
         previousTexture: Int,
         externalTexture: Int,
-        forwardMotionTexture: Int,
-        backwardMotionTexture: Int,
-        field: OpenCvMotionEstimator.Field,
+        framebuffer: Int,
+        motionWidth: Int,
+        motionHeight: Int,
+        vertices: FloatBuffer,
+        texCoords: FloatBuffer
+    ) {
+        st.getTransformMatrix(textureMatrix)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer)
+        GLES20.glViewport(0, 0, motionWidth, motionHeight)
+        GLES20.glUseProgram(program)
+
+        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
+        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
+        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
+        vertices.position(0)
+        GLES20.glEnableVertexAttribArray(positionHandle)
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
+        texCoords.position(0)
+        GLES20.glEnableVertexAttribArray(texCoordHandle)
+        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
+        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, previousTexture)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sPrevious"), 0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sCurrent"), 1)
+
+        GLES20.glUniform2f(
+            GLES20.glGetUniformLocation(program, "uMotionTexel"),
+            1f / motionWidth.coerceAtLeast(1).toFloat(),
+            1f / motionHeight.coerceAtLeast(1).toFloat()
+        )
+        GLES20.glUniform1f(
+            GLES20.glGetUniformLocation(program, "uSearchRadius"),
+            GPU_SEARCH_RADIUS_TEXELS
+        )
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+    }
+
+    private fun renderGpuMotionToEncoder(
+        st: SurfaceTexture,
+        textureMatrix: FloatArray,
+        program: Int,
+        previousTexture: Int,
+        externalTexture: Int,
+        motionTexture: Int,
         motionWidth: Int,
         motionHeight: Int,
         alpha: Float,
@@ -747,43 +776,24 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sCurrent"), 1)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, forwardMotionTexture)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sForwardMotion"), 2)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE3)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, backwardMotionTexture)
-        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sBackwardMotion"), 3)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTexture)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sMotion"), 2)
 
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uAlpha"), alpha)
-        GLES20.glUniform2f(
-            GLES20.glGetUniformLocation(program, "uFlowScale"),
-            field.flowScaleX, field.flowScaleY
-        )
-        GLES20.glUniform2f(
-            GLES20.glGetUniformLocation(program, "uGlobalForward"),
-            field.globalForwardUvX, field.globalForwardUvY
-        )
-        GLES20.glUniform2f(
-            GLES20.glGetUniformLocation(program, "uGlobalBackward"),
-            field.globalBackwardUvX, field.globalBackwardUvY
-        )
-        GLES20.glUniform1f(
-            GLES20.glGetUniformLocation(program, "uLocalWarpSafe"),
-            if (field.localWarpSafe) 1f else 0f
-        )
-        GLES20.glUniform1f(
-            GLES20.glGetUniformLocation(program, "uGlobalMotionUnstable"),
-            if (field.globalMotionIsUnstable) 1f else 0f
-        )
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uAlpha"), alpha.coerceIn(0.001f, 0.999f))
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "uMotionTexel"),
             1f / motionWidth.coerceAtLeast(1).toFloat(),
             1f / motionHeight.coerceAtLeast(1).toFloat()
         )
+        GLES20.glUniform1f(
+            GLES20.glGetUniformLocation(program, "uSearchRadius"),
+            GPU_SEARCH_RADIUS_TEXELS
+        )
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) {
-            "eglSwapBuffers de interpolação por movimento falhou"
+            "eglSwapBuffers GPU-only interpolation falhou"
         }
     }
 
@@ -960,75 +970,110 @@ class RealTimeCfrSurfaceBridge(
             }
         """
 
-        private const val FRAGMENT_SHADER_MOTION = """
+        private const val GPU_SEARCH_RADIUS_TEXELS = 3.0f
+
+        private const val FRAGMENT_SHADER_GPU_MOTION_ESTIMATE = """
             #extension GL_OES_EGL_image_external : require
             precision highp float;
             varying vec2 vPreviousCoord;
             varying vec2 vCurrentCoord;
             uniform sampler2D sPrevious;
             uniform samplerExternalOES sCurrent;
-            uniform sampler2D sForwardMotion;
-            uniform sampler2D sBackwardMotion;
-            uniform float uAlpha;
-            uniform vec2 uFlowScale;
-            uniform vec2 uGlobalForward;
-            uniform vec2 uGlobalBackward;
-            uniform float uLocalWarpSafe;
-            uniform float uGlobalMotionUnstable;
             uniform vec2 uMotionTexel;
+            uniform float uSearchRadius;
 
-            vec4 smoothFlow(sampler2D tex, vec2 uv) {
-                vec4 c = texture2D(tex, uv);
-                vec4 l = texture2D(tex, clamp(uv-vec2(uMotionTexel.x,0.0),0.0,1.0));
-                vec4 r = texture2D(tex, clamp(uv+vec2(uMotionTexel.x,0.0),0.0,1.0));
-                vec4 u = texture2D(tex, clamp(uv+vec2(0.0,uMotionTexel.y),0.0,1.0));
-                vec4 d = texture2D(tex, clamp(uv-vec2(0.0,uMotionTexel.y),0.0,1.0));
-                float cw = 0.56 + 0.44*c.b;
-                float lw = 0.11*l.b;
-                float rw = 0.11*r.b;
-                float uw = 0.11*u.b;
-                float dw = 0.11*d.b;
-                float sum = max(cw+lw+rw+uw+dw, 0.0001);
-                return (c*cw+l*lw+r*rw+u*uw+d*dw)/sum;
+            float luma(vec3 c) {
+                return dot(c, vec3(0.299, 0.587, 0.114));
+            }
+
+            float patchError(vec2 prevUv, vec2 currUv, vec2 offset) {
+                vec2 tx = vec2(uMotionTexel.x, 0.0);
+                vec2 ty = vec2(0.0, uMotionTexel.y);
+                float e = 0.0;
+                e += abs(luma(texture2D(sPrevious, clamp(prevUv,0.0,1.0)).rgb) -
+                         luma(texture2D(sCurrent, clamp(currUv+offset,0.0,1.0)).rgb));
+                e += 0.55*abs(luma(texture2D(sPrevious, clamp(prevUv+tx,0.0,1.0)).rgb) -
+                              luma(texture2D(sCurrent, clamp(currUv+offset+tx,0.0,1.0)).rgb));
+                e += 0.55*abs(luma(texture2D(sPrevious, clamp(prevUv-tx,0.0,1.0)).rgb) -
+                              luma(texture2D(sCurrent, clamp(currUv+offset-tx,0.0,1.0)).rgb));
+                e += 0.55*abs(luma(texture2D(sPrevious, clamp(prevUv+ty,0.0,1.0)).rgb) -
+                              luma(texture2D(sCurrent, clamp(currUv+offset+ty,0.0,1.0)).rgb));
+                e += 0.55*abs(luma(texture2D(sPrevious, clamp(prevUv-ty,0.0,1.0)).rgb) -
+                              luma(texture2D(sCurrent, clamp(currUv+offset-ty,0.0,1.0)).rgb));
+                return e / 3.2;
+            }
+
+            void consider(inout float bestError, inout vec2 bestOffset, vec2 candidate) {
+                float e = patchError(vPreviousCoord, vCurrentCoord, candidate);
+                if (e < bestError) {
+                    bestError = e;
+                    bestOffset = candidate;
+                }
             }
 
             void main() {
-                float a = clamp(uAlpha, 0.001, 0.999);
-                vec2 basePrev = vPreviousCoord;
-                vec2 baseCurr = vCurrentCoord;
-                vec4 f = smoothFlow(sForwardMotion, basePrev);
-                vec4 b = smoothFlow(sBackwardMotion, baseCurr);
+                vec2 r = uMotionTexel * uSearchRadius;
+                float bestError = 999.0;
+                vec2 bestOffset = vec2(0.0);
 
-                vec2 prevUv = basePrev;
-                vec2 currUv = baseCurr;
+                consider(bestError,bestOffset,vec2(0.0));
+                consider(bestError,bestOffset,vec2( r.x, 0.0));
+                consider(bestError,bestOffset,vec2(-r.x, 0.0));
+                consider(bestError,bestOffset,vec2(0.0, r.y));
+                consider(bestError,bestOffset,vec2(0.0,-r.y));
+                consider(bestError,bestOffset,vec2( r.x, r.y));
+                consider(bestError,bestOffset,vec2(-r.x, r.y));
+                consider(bestError,bestOffset,vec2( r.x,-r.y));
+                consider(bestError,bestOffset,vec2(-r.x,-r.y));
 
-                // Duas iterações aproximam o inverse warp e reduzem o erro
-                // espacial em objetos rápidos sem recalcular optical flow.
-                for (int i = 0; i < 2; i++) {
-                    vec2 localF = (f.rg*2.0-1.0)*uFlowScale;
-                    vec2 localB = (b.rg*2.0-1.0)*uFlowScale;
-                    float fConfStep = smoothstep(0.12,0.72,f.b);
-                    float bConfStep = smoothstep(0.12,0.72,b.b);
-                    vec2 globalFStep = (uGlobalMotionUnstable>0.5) ? vec2(0.0) : uGlobalForward;
-                    vec2 globalBStep = (uGlobalMotionUnstable>0.5) ? vec2(0.0) : uGlobalBackward;
-                    float localOkStep = step(0.5,uLocalWarpSafe);
-                    vec2 flowFStep = mix(globalFStep, mix(globalFStep,localF,fConfStep), localOkStep);
-                    vec2 flowBStep = mix(globalBStep, mix(globalBStep,localB,bConfStep), localOkStep);
-                    prevUv = clamp(basePrev-flowFStep*a,0.0,1.0);
-                    currUv = clamp(baseCurr-flowBStep*(1.0-a),0.0,1.0);
-                    f = smoothFlow(sForwardMotion,prevUv);
-                    b = smoothFlow(sBackwardMotion,currUv);
-                }
-
-                float fConf = smoothstep(0.12,0.72,f.b);
-                float bConf = smoothstep(0.12,0.72,b.b);
-                vec4 prevWarped = texture2D(sPrevious,prevUv);
-                vec4 currWarped = texture2D(sCurrent,currUv);
-
-                float wp = max((1.0-a)*(0.25+0.75*fConf),0.001);
-                float wc = max(a*(0.25+0.75*bConf),0.001);
-                gl_FragColor = (prevWarped*wp + currWarped*wc) / (wp+wc);
+                float confidence = 1.0 - smoothstep(0.035, 0.22, bestError);
+                vec2 encoded = bestOffset / max(r, vec2(0.000001));
+                encoded = encoded * 0.5 + 0.5;
+                gl_FragColor = vec4(encoded, confidence, 1.0);
             }
         """
+
+        private const val FRAGMENT_SHADER_GPU_MOTION_WARP = """
+            #extension GL_OES_EGL_image_external : require
+            precision highp float;
+            varying vec2 vPreviousCoord;
+            varying vec2 vCurrentCoord;
+            uniform sampler2D sPrevious;
+            uniform samplerExternalOES sCurrent;
+            uniform sampler2D sMotion;
+            uniform float uAlpha;
+            uniform vec2 uMotionTexel;
+            uniform float uSearchRadius;
+
+            vec4 smoothMotion(vec2 uv) {
+                vec4 c = texture2D(sMotion, uv);
+                vec4 l = texture2D(sMotion, clamp(uv-vec2(uMotionTexel.x,0.0),0.0,1.0));
+                vec4 r = texture2D(sMotion, clamp(uv+vec2(uMotionTexel.x,0.0),0.0,1.0));
+                vec4 u = texture2D(sMotion, clamp(uv+vec2(0.0,uMotionTexel.y),0.0,1.0));
+                vec4 d = texture2D(sMotion, clamp(uv-vec2(0.0,uMotionTexel.y),0.0,1.0));
+                float sum = 1.0 + l.b + r.b + u.b + d.b;
+                return (c + l*l.b + r*r.b + u*u.b + d*d.b) / max(sum,0.0001);
+            }
+
+            void main() {
+                float a = clamp(uAlpha,0.001,0.999);
+                vec4 m = smoothMotion(vPreviousCoord);
+                vec2 motion = (m.rg*2.0-1.0) * (uMotionTexel*uSearchRadius);
+                float conf = smoothstep(0.18,0.72,m.b);
+
+                vec2 prevUv = clamp(vPreviousCoord - motion*a,0.0,1.0);
+                vec2 currUv = clamp(vCurrentCoord + motion*(1.0-a),0.0,1.0);
+                vec4 prevWarp = texture2D(sPrevious,prevUv);
+                vec4 currWarp = texture2D(sCurrent,currUv);
+                vec4 warped = mix(prevWarp,currWarp,a);
+
+                vec4 simplePrev = texture2D(sPrevious,vPreviousCoord);
+                vec4 simpleCurr = texture2D(sCurrent,vCurrentCoord);
+                vec4 temporal = mix(simplePrev,simpleCurr,a);
+
+                gl_FragColor = mix(temporal, warped, conf);
+            }
+        """
+
     }
 }
