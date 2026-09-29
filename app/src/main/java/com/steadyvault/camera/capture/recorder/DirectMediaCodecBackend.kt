@@ -42,12 +42,13 @@ class DirectMediaCodecBackend(
     private val audioAgc: Boolean,
     private val audioNoiseSuppressor: Boolean,
     private val audioLowCut: Boolean,
+    private val superStabilizationEnabled: Boolean = false,
     private val analysisEnabled: Boolean = false,
     private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
 
-    override val backendName: String = "MediaCodec + CFR GPU"
+    override val backendName: String = if (superStabilizationEnabled) "MediaCodec + CFR GPU + Super Estável" else "MediaCodec + CFR GPU"
     override val videoBitrateBps: Long get() = videoBitrate.toLong()
     override val audioBitrateBps: Long get() = if (integratedAudio) audioBitrate.toLong() else 0L
 
@@ -157,6 +158,7 @@ class DirectMediaCodecBackend(
                 width = width,
                 height = height,
                 fps = targetFps,
+                superStabilizationEnabled = superStabilizationEnabled,
                 analysisEnabled = analysisEnabled,
                 onAnalysisFrame = onAnalysisFrame,
                 onError = onError
