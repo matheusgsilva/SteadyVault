@@ -1195,6 +1195,7 @@ class CaptureService : Service() {
                     audioAgc = recordingSettings.audioAgc,
                     audioNoiseSuppressor = recordingSettings.audioNoiseSuppressor,
                     audioLowCut = recordingSettings.audioLowCut,
+                    superStabilizationEnabled = recordingSettings.stabilization == CaptureSettings.STABILIZATION_SUPER,
                     analysisEnabled = SmartFocusSettings.enabled(this),
                     onAnalysisFrame = { rgba, frameWidth, frameHeight ->
                         analyzeBackgroundSmartFocusFrame(rgba, frameWidth, frameHeight)
@@ -3039,6 +3040,12 @@ class CaptureService : Service() {
             }
         }
         return when (recordingSettings.stabilization) {
+            CaptureSettings.STABILIZATION_SUPER -> when {
+                profile.previewStabilizationSupported -> RecordingStabilizationPolicy.Mode.PREVIEW
+                profile.eisSupported -> RecordingStabilizationPolicy.Mode.EIS
+                profile.oisSupported -> RecordingStabilizationPolicy.Mode.OIS
+                else -> RecordingStabilizationPolicy.Mode.OFF
+            }
             CaptureSettings.STABILIZATION_PREVIEW -> RecordingStabilizationPolicy.Mode.PREVIEW
             CaptureSettings.STABILIZATION_EIS -> RecordingStabilizationPolicy.Mode.EIS
             CaptureSettings.STABILIZATION_OIS -> RecordingStabilizationPolicy.Mode.OIS
@@ -3555,6 +3562,7 @@ class CaptureService : Service() {
             CaptureSettings.STABILIZATION_PREVIEW -> "preview stabilization"
             CaptureSettings.STABILIZATION_EIS -> "EIS"
             CaptureSettings.STABILIZATION_OIS -> "OIS"
+            CaptureSettings.STABILIZATION_SUPER -> "Super Estável (HAL + GPU)"
             CaptureSettings.STABILIZATION_OFF -> "sem estabilização"
             else -> "estabilização inválida"
         }
