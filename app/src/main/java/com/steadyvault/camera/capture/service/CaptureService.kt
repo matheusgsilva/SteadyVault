@@ -2379,8 +2379,14 @@ class CaptureService : Service() {
             val faceModes = profile.characteristics.get(
                 CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
             ) ?: intArrayOf()
+            // 60 FPS prioriza cadência: SIMPLE entrega regiões de rosto sem ativar
+            // o caminho FULL da HAL. Em 30 FPS podemos aceitar FULL.
             val faceMode = when {
-                faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL) ->
+                profile.targetFps >= CaptureModeStore.FPS_60 &&
+                    faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE) ->
+                    CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE
+                profile.targetFps < CaptureModeStore.FPS_60 &&
+                    faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL) ->
                     CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL
                 faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE) ->
                     CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE
@@ -2388,12 +2394,16 @@ class CaptureService : Service() {
             }
             setSafely(builder, CaptureRequest.STATISTICS_FACE_DETECT_MODE, faceMode)
 
-            val sceneModes = profile.characteristics.get(
-                CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES
-            ) ?: intArrayOf()
-            if (sceneModes.contains(CameraMetadata.CONTROL_SCENE_MODE_FACE_PRIORITY)) {
-                setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_USE_SCENE_MODE)
-                setSafely(builder, CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_FACE_PRIORITY)
+            // FACE_PRIORITY pode mudar o pipeline 3A/ISP do fabricante. Mantemos
+            // esse scene mode fora de 60 FPS e fora da cadência manual.
+            if (profile.targetFps < CaptureModeStore.FPS_60 && manualCadence == null) {
+                val sceneModes = profile.characteristics.get(
+                    CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES
+                ) ?: intArrayOf()
+                if (sceneModes.contains(CameraMetadata.CONTROL_SCENE_MODE_FACE_PRIORITY)) {
+                    setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_USE_SCENE_MODE)
+                    setSafely(builder, CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_FACE_PRIORITY)
+                }
             }
         }
         if (manualCadence == null) {
