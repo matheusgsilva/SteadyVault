@@ -57,6 +57,8 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var surfaceTexture: SurfaceTexture? = null
     @Volatile private var realFrames = 0L
     @Volatile private var interpolatedFrames = 0L
+    private val encoderFrameIntervalNs = 1_000_000_000L / fps.coerceAtLeast(1)
+    @Volatile private var lastEncoderSwapRealtimeNs = 0L
 
     private val renderThread = Thread(
         { renderLoop() },
@@ -248,7 +250,8 @@ class RealTimeCfrSurfaceBridge(
 
             ready.countDown()
 
-            val frameIntervalNs = 1_000_000_000L / fps.coerceAtLeast(1)
+            val frameIntervalNs = encoderFrameIntervalNs
+            val slotClock = CfrSlotClock(frameIntervalNs)
             var haveLatchedFrame = false
             var timelineStarted = false
             var previousSourceTimestampNs = 0L
@@ -279,7 +282,9 @@ class RealTimeCfrSurfaceBridge(
                     st.updateTexImage()
                     haveLatchedFrame = true
                     previousSourceTimestampNs = st.timestamp
-                    outputPtsNs = System.nanoTime()
+                    slotClock.start(previousSourceTimestampNs)
+                    lastEncoderSwapRealtimeNs = 0L
+                    outputPtsNs = System.nanoTime() + frameIntervalNs * OUTPUT_PREBUFFER_SLOTS
                     renderExternalToEncoder(
                         st = st,
                         textureMatrix = textureMatrix,
@@ -347,13 +352,11 @@ class RealTimeCfrSurfaceBridge(
                     continue
                 }
 
-                val deltaNs = (currentSourceTimestampNs - previousSourceTimestampNs)
-                    .coerceAtLeast(frameIntervalNs)
+                val decision = slotClock.next(currentSourceTimestampNs)
+                previousSourceTimestampNs = currentSourceTimestampNs
+                if (decision.drop) continue
 
-                val sourceSteps = CfrInterpolationPlanner.sourceSteps(
-                    deltaNs = deltaNs,
-                    frameIntervalNs = frameIntervalNs
-                )
+                val sourceSteps = decision.missingSlots + 1
 
                 val interpolationAlphas =
                     CfrInterpolationPlanner.interpolationAlphas(sourceSteps)
@@ -533,6 +536,21 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
     }
 
+    private fun paceEncoderSwap(presentationTimeNs: Long) {
+        val previousSwap = lastEncoderSwapRealtimeNs
+        val targetNs = if (previousSwap <= 0L) {
+            presentationTimeNs
+        } else {
+            maxOf(presentationTimeNs, previousSwap + encoderFrameIntervalNs)
+        }
+        while (!released.get()) {
+            val remaining = targetNs - System.nanoTime()
+            if (remaining <= 0L) break
+            LockSupport.parkNanos(minOf(remaining, MAX_PACING_SLEEP_NS))
+        }
+        lastEncoderSwapRealtimeNs = System.nanoTime()
+    }
+
     private fun renderExternalToEncoder(
         st: SurfaceTexture,
         textureMatrix: FloatArray,
@@ -553,6 +571,7 @@ class RealTimeCfrSurfaceBridge(
             vertices = vertices,
             texCoords = texCoords
         )
+        paceEncoderSwap(presentationTimeNs)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers falhou" }
     }
@@ -635,6 +654,7 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glUniform1f(alphaHandle, alpha.coerceIn(0.001f, 0.999f))
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
+        paceEncoderSwap(presentationTimeNs)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers interpolado falhou" }
     }
@@ -819,6 +839,7 @@ class RealTimeCfrSurfaceBridge(
         )
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        paceEncoderSwap(presentationTimeNs)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) {
             "eglSwapBuffers de interpolação por movimento falhou"
@@ -927,6 +948,8 @@ class RealTimeCfrSurfaceBridge(
         private const val RELEASE_TIMEOUT_MS = 1_000L
         private const val IDLE_POLL_NS = 1_000_000L
         private const val MAX_PENDING_SIGNAL_COUNT = 8
+        private const val OUTPUT_PREBUFFER_SLOTS = 3L
+        private const val MAX_PACING_SLEEP_NS = 2_000_000L
 
         private val VERTICES = floatArrayOf(
             -1f, -1f,
