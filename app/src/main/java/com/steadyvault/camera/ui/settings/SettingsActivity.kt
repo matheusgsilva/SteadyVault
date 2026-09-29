@@ -40,6 +40,7 @@ import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.settings.CameraProfileStore
 import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
 import com.steadyvault.camera.core.settings.SensorPixelModeSettings
+import com.steadyvault.camera.core.settings.SmartFocusSettings
 import com.steadyvault.camera.core.settings.VisualIdentityStore
 import com.steadyvault.camera.core.camera.CameraLensCatalog
 import com.steadyvault.camera.core.state.CaptureStateStore
@@ -82,6 +83,7 @@ class SettingsActivity : FragmentActivity() {
     private lateinit var colorProfile: Spinner
     private lateinit var stabilization: Spinner
     private lateinit var focus: Spinner
+    private lateinit var smartFocus: Switch
     private lateinit var noiseReduction: Spinner
     private lateinit var edge: Spinner
     private lateinit var antibanding: Spinner
@@ -366,6 +368,11 @@ class SettingsActivity : FragmentActivity() {
             "Modo de foco da câmera",
             focusOptions(snapshot.focusMode),
             snapshot.focusMode
+        )
+        smartFocus = addSwitch(
+            "Foco inteligente",
+            "Detecta rosto, corpo, mãos, pés e gesto mão/boca. Funciona também em gravação pelo widget, em segundo plano e com a tela bloqueada. Desative para remover totalmente a análise por IA.",
+            SmartFocusSettings.enabled(this)
         )
         noiseReduction = addSpinner(
             "Redução de ruído da imagem",
@@ -1410,6 +1417,9 @@ class SettingsActivity : FragmentActivity() {
         }
         if (::sensorPixelMode.isInitialized) {
             SensorPixelModeSettings.save(this, selected(sensorPixelMode))
+        }
+        if (::smartFocus.isInitialized) {
+            SmartFocusSettings.setEnabled(this, smartFocus.isChecked)
         }
         val oldPlayback = PlaybackSettings.snapshot(this)
         val newPlayback = oldPlayback.copy(
