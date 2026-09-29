@@ -17,6 +17,8 @@ import com.steadyvault.camera.core.camera.CameraResourceCoordinator
 import com.steadyvault.camera.core.camera.OpticalStabilizationCapability
 import com.steadyvault.camera.core.camera.WhiteBalanceCorrection
 import com.steadyvault.camera.core.camera.CctWhiteBalanceController
+import com.steadyvault.camera.core.camera.SmartFocusTargetStore
+import com.steadyvault.camera.core.camera.SmartPoseFocusAnalyzer
 import com.steadyvault.camera.core.capability.CaptureCapabilityMatrix
 import com.steadyvault.camera.core.capability.CaptureModeCatalog
 import com.steadyvault.camera.core.settings.CaptureModeStore
@@ -62,6 +64,7 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.DynamicRangeProfiles
+import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.camera2.params.ColorSpaceTransform
@@ -2428,6 +2431,7 @@ class CaptureService : Service() {
             CameraMetadata.CONTROL_AF_MODE_OFF
         ).distinct().firstOrNull { afModes.contains(it) }
         fallbackAf?.let { setSafely(builder, CaptureRequest.CONTROL_AF_MODE, it) }
+        applySmartFocusTarget(builder, profile)
 
         if (!profile.highSpeed) {
             setSafely(builder, CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
@@ -2643,6 +2647,67 @@ class CaptureService : Service() {
         setSafely(builder, CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
         OpticalStabilizationCapability.apply(builder, profile.oisCapability, enabled = false)
         CameraZoom.apply(builder, profile.characteristics, recordingSettings.zoomRatio)
+    }
+
+    private fun applySmartFocusTarget(
+        builder: CaptureRequest.Builder,
+        profile: CameraProfile
+    ) {
+        if (!SmartFocusSettings.enabled(this)) return
+        val target = SmartFocusTargetStore.fresh() ?: return
+        val activeArray = CameraZoom.sensorRegion(
+            profile.characteristics,
+            recordingSettings.zoomRatio
+        ) ?: profile.characteristics.get(
+            CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE
+        ) ?: return
+
+        val viewX = target.x.coerceIn(0f, 1f)
+        val viewY = target.y.coerceIn(0f, 1f)
+        val relativeRotation = ((profile.sensorOrientation % 360) + 360) % 360
+        val (sensorX, sensorY) = when (relativeRotation) {
+            90 -> viewY to (1f - viewX)
+            180 -> (1f - viewX) to (1f - viewY)
+            270 -> (1f - viewY) to viewX
+            else -> viewX to viewY
+        }
+
+        val fraction = when (target.kind) {
+            SmartPoseFocusAnalyzer.Kind.HAND_TO_MOUTH -> 0.12f
+            SmartPoseFocusAnalyzer.Kind.FACE -> 0.14f
+            SmartPoseFocusAnalyzer.Kind.HANDS -> 0.16f
+            SmartPoseFocusAnalyzer.Kind.FEET -> 0.18f
+            SmartPoseFocusAnalyzer.Kind.BODY -> 0.24f
+        }
+
+        val regionWidth = (activeArray.width() * fraction).toInt()
+            .coerceIn(1, activeArray.width())
+        val regionHeight = (activeArray.height() * fraction).toInt()
+            .coerceIn(1, activeArray.height())
+        val centerX = activeArray.left + (sensorX * activeArray.width()).toInt()
+        val centerY = activeArray.top + (sensorY * activeArray.height()).toInt()
+        val left = (centerX - regionWidth / 2)
+            .coerceIn(activeArray.left, activeArray.right - regionWidth)
+        val top = (centerY - regionHeight / 2)
+            .coerceIn(activeArray.top, activeArray.bottom - regionHeight)
+
+        val region = MeteringRectangle(
+            left,
+            top,
+            regionWidth,
+            regionHeight,
+            MeteringRectangle.METERING_WEIGHT_MAX
+        )
+
+        if (
+            recordingSettings.focusMode != CaptureSettings.FOCUS_OFF &&
+            (profile.characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0
+        ) {
+            setSafely(builder, CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
+        }
+        if ((profile.characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0) > 0) {
+            setSafely(builder, CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
+        }
     }
 
     private fun applyExperimentalSensorPixelMode(
