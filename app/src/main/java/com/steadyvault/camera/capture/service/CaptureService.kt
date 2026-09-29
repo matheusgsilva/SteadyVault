@@ -53,6 +53,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.ColorSpace
 import android.graphics.ImageFormat
+import android.graphics.Bitmap
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession
@@ -88,6 +89,7 @@ import android.util.Range
 import android.util.Size
 import android.view.Surface
 import java.io.File
+import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -141,6 +143,7 @@ class CaptureService : Service() {
 
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var encoderPreparationExecutor: ExecutorService
+    private lateinit var smartFocusExecutor: ExecutorService
     private val mainHandler = Handler(Looper.getMainLooper())
     private val threadCounter = AtomicInteger(0)
     private val serviceActive = AtomicBoolean(false)
@@ -205,6 +208,12 @@ class CaptureService : Service() {
     @Volatile
     private var foregroundNotificationStarted = false
 
+    private val backgroundSmartFocusAnalyzer by lazy { SmartPoseFocusAnalyzer() }
+    private var backgroundSmartFocusLastX = 0.5f
+    private var backgroundSmartFocusLastY = 0.5f
+    private var backgroundSmartFocusLastKind: SmartPoseFocusAnalyzer.Kind? = null
+    private var backgroundSmartFocusLastAppliedMs = 0L
+
 
 
 
@@ -216,6 +225,9 @@ class CaptureService : Service() {
         )
         encoderPreparationExecutor = Executors.newSingleThreadExecutor(
             createThreadFactory("SteadyVault-EncoderPrepare", Process.THREAD_PRIORITY_URGENT_DISPLAY)
+        )
+        smartFocusExecutor = Executors.newSingleThreadExecutor(
+            createThreadFactory("SteadyVault-SmartFocus", Process.THREAD_PRIORITY_BACKGROUND)
         )
 
         createNotificationChannel()
@@ -1183,6 +1195,10 @@ class CaptureService : Service() {
                     audioAgc = recordingSettings.audioAgc,
                     audioNoiseSuppressor = recordingSettings.audioNoiseSuppressor,
                     audioLowCut = recordingSettings.audioLowCut,
+                    analysisEnabled = SmartFocusSettings.enabled(this),
+                    onAnalysisFrame = { rgba, frameWidth, frameHeight ->
+                        analyzeBackgroundSmartFocusFrame(rgba, frameWidth, frameHeight)
+                    },
                     onError = { throwable ->
                         if (!stopping.get() && serviceActive.get()) {
                             failAndStop("MediaCodec direto: ${errorText(throwable)}")
@@ -3599,6 +3615,10 @@ class CaptureService : Service() {
         }
         if (::encoderPreparationExecutor.isInitialized && !encoderPreparationExecutor.isShutdown) {
             encoderPreparationExecutor.shutdownNow()
+        }
+        runCatching { backgroundSmartFocusAnalyzer.close() }
+        if (::smartFocusExecutor.isInitialized && !smartFocusExecutor.isShutdown) {
+            smartFocusExecutor.shutdownNow()
         }
         VaultStartupCoordinator.resumeAfterCapture(cameraLeaseToken)
         super.onDestroy()
