@@ -46,12 +46,17 @@ class DirectMediaCodecBackend(
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
 
+    private val physicallyRotatePortrait = orientationHint == 90 || orientationHint == 270
+    private val encoderWidth = if (physicallyRotatePortrait) height else width
+    private val encoderHeight = if (physicallyRotatePortrait) width else height
+    private val encoderOrientationHint = if (physicallyRotatePortrait) 0 else orientationHint
+
     override val backendName: String = "MediaCodec + CFR GPU"
     override val videoBitrateBps: Long get() = videoBitrate.toLong()
     override val audioBitrateBps: Long get() = if (integratedAudio) audioBitrate.toLong() else 0L
 
     val profileDescription: String
-        get() = "${width}x${height} ${targetFps} FPS " +
+        get() = "${encoderWidth}x${encoderHeight} ${targetFps} FPS " +
             "${videoMime.substringAfter('/').uppercase()} ${videoBitrate / 1_000_000} Mbps • CFR GPU"
 
     private val drainExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -92,9 +97,9 @@ class DirectMediaCodecBackend(
 
         val codecInfo = selectEncoder()
             ?: throw IllegalStateException(
-                "nenhum encoder de hardware suporta ${width}x${height} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
+                "nenhum encoder de hardware suporta ${encoderWidth}x${encoderHeight} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
             )
-        val format = MediaFormat.createVideoFormat(videoMime, width, height).apply {
+        val format = MediaFormat.createVideoFormat(videoMime, encoderWidth, encoderHeight).apply {
             setInteger(
                 MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
@@ -123,7 +128,7 @@ class DirectMediaCodecBackend(
                 outputFile.absolutePath,
                 MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
             )
-            mediaMuxer.setOrientationHint(orientationHint)
+            mediaMuxer.setOrientationHint(encoderOrientationHint)
             muxer = mediaMuxer
 
             if (integratedAudio) {
@@ -153,8 +158,11 @@ class DirectMediaCodecBackend(
 
             val bridge = RealTimeCfrSurfaceBridge(
                 encoderSurface = encoderSurface,
-                width = width,
-                height = height,
+                sourceWidth = width,
+                sourceHeight = height,
+                outputWidth = encoderWidth,
+                outputHeight = encoderHeight,
+                physicalRotationDegrees = if (physicallyRotatePortrait) orientationHint else 0,
                 fps = targetFps,
                 onError = onError
             )
@@ -374,7 +382,7 @@ class DirectMediaCodecBackend(
                 MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
             )
             mergedMuxer = localMuxer
-            localMuxer.setOrientationHint(orientationHint)
+            localMuxer.setOrientationHint(encoderOrientationHint)
 
             val videoTargetTrack =
                 localMuxer.addTrack(videoExtractor.getTrackFormat(videoSourceTrack))
@@ -474,10 +482,10 @@ class DirectMediaCodecBackend(
                     val caps = info.getCapabilitiesForType(videoMime)
                     val videoCaps = caps.videoCapabilities
                     videoCaps != null &&
-                        videoCaps.isSizeSupported(width, height) &&
+                        videoCaps.isSizeSupported(encoderWidth, encoderHeight) &&
                         videoCaps.areSizeAndRateSupported(
-                            width,
-                            height,
+                            encoderWidth,
+                            encoderHeight,
                             targetFps.toDouble()
                         )
                 }.getOrDefault(false)
