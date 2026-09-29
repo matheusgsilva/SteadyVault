@@ -15,6 +15,7 @@ import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.settings.SensorPixelModeSettings
+import com.steadyvault.camera.core.settings.SmartFocusSettings
 import com.steadyvault.camera.core.settings.CameraProfileStore
 import com.steadyvault.camera.core.settings.BackgroundRecordingZoom
 import com.steadyvault.camera.core.state.CapturePhase
@@ -1377,6 +1378,24 @@ class CaptureActivity : ComponentActivity() {
         }
     }
 
+    private fun showSmartFocusChoices() {
+        val enabled = SmartFocusSettings.enabled(this)
+        OneUiDialog.choices(
+            activity = this,
+            title = "Foco inteligente",
+            message = "Prioriza pessoas pela detecção de rostos da própria Camera2/Samsung. Não adiciona uma segunda stream de análise, preservando o desempenho do 4K60.",
+            choices = listOf(
+                OneUiDialog.Choice("Ativado", "Acompanha rostos no preview e usa face-priority da HAL durante a gravação."),
+                OneUiDialog.Choice("Desativado", "Usa somente o autofocus normal/tap-to-focus.")
+            ),
+            selectedIndex = if (enabled) 0 else 1
+        ) { position ->
+            SmartFocusSettings.setEnabled(this, position == 0)
+            if (previewOpen) restartPreviewForUpdatedSettings()
+            renderPreviewSettingsSheetContent()
+        }
+    }
+
     private fun showSensorPixelModeChoices() {
         val values = listOf(SensorPixelModeSettings.AUTO, SensorPixelModeSettings.NORMAL, SensorPixelModeSettings.MAXIMUM_RESOLUTION)
         val current = SensorPixelModeSettings.selected(this)
@@ -2332,6 +2351,10 @@ class CaptureActivity : ComponentActivity() {
             }) { showSensorPixelModeChoices() }
             addPreviewSettingsAction("Codec e bitrate", "${codecLabel(settings.codec)} • ${settings.bitrateMbps} Mbps") { showLiveCodecAndBitrateMenu() }
         }
+        addPreviewSettingsAction(
+            "Foco inteligente",
+            if (SmartFocusSettings.enabled(this)) "Pessoas/rostos • ativo" else "Desativado"
+        ) { showSmartFocusChoices() }
         addPreviewSettingsAction("Estabilização", stabilizationLabel(settings.stabilization)) { showLiveStabilizationChoices() }
         addPreviewSettingsAction("Exposição", exposureLabel(settings.exposureCompensation)) { showLiveExposureChoices() }
         addPreviewSettingsAction("Foco", focusLabel(settings.focusMode)) { showLiveFocusChoices() }
