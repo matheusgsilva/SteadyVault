@@ -1531,6 +1531,7 @@ class CaptureActivity : ComponentActivity() {
             } else {
                 stopSmartPoseAnalysis()
                 idlePreview.clearSmartFocusPoint()
+                SmartFocusTargetStore.clear()
             }
             if (previewOpen) restartPreviewForUpdatedSettings()
             renderPreviewSettingsSheetContent()
@@ -2489,7 +2490,7 @@ class CaptureActivity : ComponentActivity() {
         }
         addPreviewSettingsAction(
             "Foco inteligente",
-            if (SmartFocusSettings.enabled(this)) "Pessoas/rostos • ativo" else "Desativado"
+            if (SmartFocusSettings.enabled(this)) "Rosto • corpo • mãos • pés" else "Desativado"
         ) { showSmartFocusChoices() }
         addPreviewSettingsAction("Estabilização", stabilizationLabel(settings.stabilization)) { showLiveStabilizationChoices() }
         addPreviewSettingsAction("Exposição", exposureLabel(settings.exposureCompensation)) { showLiveExposureChoices() }
