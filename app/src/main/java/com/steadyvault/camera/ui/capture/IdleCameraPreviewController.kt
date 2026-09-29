@@ -98,6 +98,7 @@ class IdleCameraPreviewController(
     private var smartFocusRegion: MeteringRectangle? = null
     private var smartFocusLastUpdateMs = 0L
     private var smartFocusLastSeenMs = 0L
+    private var smartPoseOverrideUntilMs = 0L
 
     data class SavedPhoto(
         val file: File,
@@ -577,6 +578,31 @@ class IdleCameraPreviewController(
         cameraId in cameraManager.cameraIdList
     }.getOrDefault(false)
 
+
+    fun setSmartFocusPoint(normalizedX: Float, normalizedY: Float) {
+        handler.post {
+            val characteristics = activeCharacteristics ?: return@post
+            if (!SmartFocusSettings.enabled(context)) return@post
+            val region = meteringRegion(
+                characteristics,
+                normalizedX.coerceIn(0f, 1f),
+                normalizedY.coerceIn(0f, 1f)
+            ) ?: return@post
+            smartFocusRegion = region
+            smartFocusLastSeenMs = SystemClock.elapsedRealtime()
+            smartFocusLastUpdateMs = smartFocusLastSeenMs
+            smartPoseOverrideUntilMs = smartFocusLastSeenMs + SMART_POSE_OVERRIDE_MS
+            restoreRepeatingAfterFocus()
+        }
+    }
+
+    fun clearSmartFocusPoint() {
+        handler.post {
+            smartFocusRegion = null
+            smartPoseOverrideUntilMs = 0L
+            restoreRepeatingAfterFocus()
+        }
+    }
 
     fun focusAt(
         normalizedX: Float,
@@ -1115,6 +1141,7 @@ class IdleCameraPreviewController(
         token: Int
     ) {
         val now = SystemClock.elapsedRealtime()
+        if (now < smartPoseOverrideUntilMs) return
         val active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
         val faces = result.get(CaptureResult.STATISTICS_FACES).orEmpty()
 
@@ -1490,6 +1517,7 @@ class IdleCameraPreviewController(
         private const val SMART_FOCUS_RELEASE_MS = 1_800L
         private const val SMART_FOCUS_REGION_FRACTION = 0.10f
         private const val SMART_FOCUS_MOVE_FRACTION = 0.035f
+        private const val SMART_POSE_OVERRIDE_MS = 1_600L
 
         const val PREVIEW_WIDTH = 1280
         const val PREVIEW_HEIGHT = 720
