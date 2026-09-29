@@ -26,6 +26,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Range
 import android.util.Size
 import android.view.Surface
@@ -38,6 +39,7 @@ import com.steadyvault.camera.core.camera.WhiteBalanceCorrection
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.settings.SensorPixelModeSettings
+import com.steadyvault.camera.core.settings.SmartFocusSettings
 import com.steadyvault.camera.storage.vault.VaultRepository
 import java.io.File
 import java.util.concurrent.Executor
@@ -93,6 +95,9 @@ class IdleCameraPreviewController(
     private var pendingPhotoCapture: PendingPhotoCapture? = null
     @Volatile private var latestAwbGains: RggbChannelVector? = null
     @Volatile private var latestColorTransform: ColorSpaceTransform? = null
+    private var smartFocusRegion: MeteringRectangle? = null
+    private var smartFocusLastUpdateMs = 0L
+    private var smartFocusLastSeenMs = 0L
 
     data class SavedPhoto(
         val file: File,
@@ -1036,6 +1041,19 @@ class IdleCameraPreviewController(
                     mainHandler.post { onPreviewFrame(photoMode) }
                 }
                 result.get(CaptureResult.SENSOR_TIMESTAMP)?.let(onFrameTimestampNs)
+                if (!highSpeed && SmartFocusSettings.enabled(context)) {
+                    updateSmartFocusFromFaces(
+                        result = result,
+                        device = device,
+                        session = value,
+                        surface = surface,
+                        settings = settings,
+                        characteristics = characteristics,
+                        fpsRange = fpsRange,
+                        callback = callback,
+                        token = token
+                    )
+                }
                 result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { latestAwbGains = it }
                 result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { latestColorTransform = it }
                 val measuredGains = latestAwbGains
@@ -1085,6 +1103,90 @@ class IdleCameraPreviewController(
         }
     }
 
+    private fun updateSmartFocusFromFaces(
+        result: TotalCaptureResult,
+        device: CameraDevice,
+        session: CameraCaptureSession,
+        surface: Surface,
+        settings: CaptureSettings.Snapshot,
+        characteristics: CameraCharacteristics,
+        fpsRange: Range<Int>?,
+        callback: CameraCaptureSession.CaptureCallback,
+        token: Int
+    ) {
+        val now = SystemClock.elapsedRealtime()
+        val active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+        val faces = result.get(CaptureResult.STATISTICS_FACES).orEmpty()
+
+        val target = faces
+            .filter { it.score >= SMART_FOCUS_MIN_FACE_SCORE }
+            .maxByOrNull { face ->
+                val bounds = face.bounds
+                val area = bounds.width().toLong().coerceAtLeast(1L) * bounds.height().toLong().coerceAtLeast(1L)
+                val dx = bounds.centerX() - active.centerX()
+                val dy = bounds.centerY() - active.centerY()
+                val distancePenalty = (dx.toLong() * dx + dy.toLong() * dy) / 8L
+                area - distancePenalty
+            }
+
+        if (target == null) {
+            if (smartFocusRegion != null && now - smartFocusLastSeenMs >= SMART_FOCUS_RELEASE_MS) {
+                smartFocusRegion = null
+                smartFocusLastUpdateMs = now
+                reinstallSmartFocusRepeating(device, session, surface, settings, characteristics, fpsRange, callback, token)
+            }
+            return
+        }
+
+        smartFocusLastSeenMs = now
+        if (now - smartFocusLastUpdateMs < SMART_FOCUS_UPDATE_MS) return
+
+        val bounds = target.bounds
+        val centerX = bounds.centerX().coerceIn(active.left, active.right)
+        val centerY = bounds.centerY().coerceIn(active.top, active.bottom)
+        val regionWidth = maxOf(bounds.width(), (active.width() * SMART_FOCUS_REGION_FRACTION).toInt())
+            .coerceAtMost(active.width())
+        val regionHeight = maxOf(bounds.height(), (active.height() * SMART_FOCUS_REGION_FRACTION).toInt())
+            .coerceAtMost(active.height())
+        val left = (centerX - regionWidth / 2).coerceIn(active.left, active.right - regionWidth)
+        val top = (centerY - regionHeight / 2).coerceIn(active.top, active.bottom - regionHeight)
+        val next = MeteringRectangle(left, top, regionWidth, regionHeight, MeteringRectangle.METERING_WEIGHT_MAX)
+
+        val previous = smartFocusRegion
+        if (previous != null) {
+            val dx = kotlin.math.abs(previous.rect.centerX() - next.rect.centerX())
+            val dy = kotlin.math.abs(previous.rect.centerY() - next.rect.centerY())
+            if (dx < active.width() * SMART_FOCUS_MOVE_FRACTION && dy < active.height() * SMART_FOCUS_MOVE_FRACTION) return
+        }
+
+        smartFocusRegion = next
+        smartFocusLastUpdateMs = now
+        reinstallSmartFocusRepeating(device, session, surface, settings, characteristics, fpsRange, callback, token)
+    }
+
+    private fun reinstallSmartFocusRepeating(
+        device: CameraDevice,
+        session: CameraCaptureSession,
+        surface: Surface,
+        settings: CaptureSettings.Snapshot,
+        characteristics: CameraCharacteristics,
+        fpsRange: Range<Int>?,
+        callback: CameraCaptureSession.CaptureCallback,
+        token: Int
+    ) {
+        if (token != generation.get() || !surface.isValid) return
+        runCatching {
+            val request = createRequestBuilder(
+                device,
+                if (settings.fps >= CaptureModeStore.FPS_60) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW
+            ).apply {
+                addTarget(surface)
+                configureRequest(this, settings, characteristics, fpsRange, latestAwbGains, latestColorTransform, 0f)
+            }.build()
+            session.setSingleRepeatingRequest(request, executor, callback)
+        }
+    }
+
     private fun configureRequest(
         builder: CaptureRequest.Builder,
         settings: CaptureSettings.Snapshot,
@@ -1106,6 +1208,29 @@ class IdleCameraPreviewController(
             }
         )
         fpsRange?.let { set(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+
+        if (SmartFocusSettings.enabled(context)) {
+            val faceModes = characteristics.get(
+                CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
+            ) ?: intArrayOf()
+            val mode = when {
+                faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL) ->
+                    CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL
+                faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE) ->
+                    CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE
+                else -> CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF
+            }
+            set(builder, CaptureRequest.STATISTICS_FACE_DETECT_MODE, mode)
+            smartFocusRegion?.let { region ->
+                if ((characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0) {
+                    set(builder, CaptureRequest.CONTROL_AF_REGIONS, arrayOf(region))
+                }
+                if ((characteristics.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0) > 0) {
+                    set(builder, CaptureRequest.CONTROL_AE_REGIONS, arrayOf(region))
+                }
+            }
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             when (SensorPixelModeSettings.selected(context)) {
                 SensorPixelModeSettings.NORMAL ->
@@ -1360,6 +1485,12 @@ class IdleCameraPreviewController(
     }
 
     private companion object {
+        private const val SMART_FOCUS_MIN_FACE_SCORE = 45
+        private const val SMART_FOCUS_UPDATE_MS = 700L
+        private const val SMART_FOCUS_RELEASE_MS = 1_800L
+        private const val SMART_FOCUS_REGION_FRACTION = 0.10f
+        private const val SMART_FOCUS_MOVE_FRACTION = 0.035f
+
         const val PREVIEW_WIDTH = 1280
         const val PREVIEW_HEIGHT = 720
         const val COLOR_MEASURE_FRAMES = 8
