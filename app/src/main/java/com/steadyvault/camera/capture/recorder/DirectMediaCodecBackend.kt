@@ -43,6 +43,8 @@ class DirectMediaCodecBackend(
     private val audioAgc: Boolean,
     private val audioNoiseSuppressor: Boolean,
     private val audioLowCut: Boolean,
+    private val analysisEnabled: Boolean = false,
+    private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
 
@@ -156,6 +158,8 @@ class DirectMediaCodecBackend(
                 width = width,
                 height = height,
                 fps = targetFps,
+                analysisEnabled = analysisEnabled,
+                onAnalysisFrame = onAnalysisFrame,
                 onError = onError
             )
             cfrBridge = bridge
