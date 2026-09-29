@@ -2477,8 +2477,18 @@ class CaptureService : Service() {
         applyStabilization(builder, profile)
         if (profile.highSpeed) return
 
-        val faceModes = profile.characteristics.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES) ?: intArrayOf()
-        if (faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF)) setSafely(builder, CaptureRequest.STATISTICS_FACE_DETECT_MODE, CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF)
+        if (!SmartFocusSettings.enabled(this)) {
+            val faceModes = profile.characteristics.get(
+                CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
+            ) ?: intArrayOf()
+            if (faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF)) {
+                setSafely(
+                    builder,
+                    CaptureRequest.STATISTICS_FACE_DETECT_MODE,
+                    CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF
+                )
+            }
+        }
         setSafely(builder, CaptureRequest.CONTROL_ENABLE_ZSL, false)
         setSafely(builder, CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
 
