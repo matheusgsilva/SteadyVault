@@ -560,7 +560,15 @@ object VaultRepository {
             }
 
             if (duration > 0L) synchronized(videoDurationCache) { videoDurationCache[pathKey] = length to duration }
-            if (rotationDegrees == 90 || rotationDegrees == 270) {
+
+            // Vídeos novos da captura direta podem ser gravados fisicamente em retrato.
+            // Nesse caso a geometria do stream já é a orientação final e nenhuma rotação
+            // adicional deve ser aplicada pelo player/galeria interna.
+            if (encodedHeight > encodedWidth && file.name.startsWith("SV_")) {
+                rotationDegrees = 0
+                width = encodedWidth
+                height = encodedHeight
+            } else if (rotationDegrees == 90 || rotationDegrees == 270) {
                 width = encodedHeight
                 height = encodedWidth
             } else {
