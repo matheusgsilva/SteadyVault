@@ -215,6 +215,7 @@ class CaptureActivity : ComponentActivity() {
     private var smartPoseLastX = 0.5f
     private var smartPoseLastY = 0.5f
     private var smartPoseTargetKind: SmartPoseFocusAnalyzer.Kind? = null
+    private var smartPoseBitmap: Bitmap? = null
     private var closePreviewAfterCapture = false
     private var pendingPreviewOpen = false
     private var recordingRequestedFromPreview = false
@@ -770,6 +771,8 @@ class CaptureActivity : ComponentActivity() {
         releaseCameraPreview()
         idlePreview.release()
         smartPoseAnalyzer.close()
+        smartPoseBitmap?.takeIf { !it.isRecycled }?.recycle()
+        smartPoseBitmap = null
         thumbnailExecutor.shutdownNow()
         capabilityExecutor.shutdownNow()
         super.onDestroy()
@@ -1433,29 +1436,29 @@ class CaptureActivity : ComponentActivity() {
         )
         val width = (sourceWidth * scale).toInt().coerceAtLeast(SMART_POSE_MIN_DIMENSION_PX)
         val height = (sourceHeight * scale).toInt().coerceAtLeast(SMART_POSE_MIN_DIMENSION_PX)
-        val bitmap = runCatching {
-            Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        }.getOrNull() ?: return
+        val bitmap = smartPoseBitmap
+            ?.takeIf { !it.isRecycled && it.width == width && it.height == height }
+            ?: runCatching {
+                smartPoseBitmap?.takeIf { !it.isRecycled }?.recycle()
+                Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also { smartPoseBitmap = it }
+            }.getOrNull() ?: return
 
         smartPoseAnalysisInFlight = true
         runCatching {
             PixelCopy.request(previewTexture, bitmap, { result ->
                 if (result != PixelCopy.SUCCESS || isFinishing || isDestroyed) {
                     smartPoseAnalysisInFlight = false
-                    bitmap.recycle()
                     return@request
                 }
                 smartPoseAnalyzer.analyze(bitmap) { target ->
                     mainHandler.post {
                         smartPoseAnalysisInFlight = false
-                        if (!bitmap.isRecycled) bitmap.recycle()
                         applySmartPoseTarget(target)
                     }
                 }
             }, mainHandler)
         }.onFailure {
             smartPoseAnalysisInFlight = false
-            if (!bitmap.isRecycled) bitmap.recycle()
         }
     }
 
@@ -4559,9 +4562,9 @@ class CaptureActivity : ComponentActivity() {
         private const val PREVIEW_MODE_TRANSITION_TIMEOUT_MS = 1_800L
         private const val PREVIEW_TRANSITION_MAX_HOLD_MS = 12_000L
         private const val PREVIEW_TRANSITION_MAX_DIMENSION_PX = 1_280
-        private const val SMART_POSE_ANALYSIS_INTERVAL_MS = 520L
+        private const val SMART_POSE_ANALYSIS_INTERVAL_MS = 700L
         private const val SMART_POSE_INITIAL_DELAY_MS = 700L
-        private const val SMART_POSE_MAX_DIMENSION_PX = 480
+        private const val SMART_POSE_MAX_DIMENSION_PX = 640
         private const val SMART_POSE_MIN_DIMENSION_PX = 160
         private const val SMART_POSE_TARGET_RELEASE_MS = 2_400L
         private const val SMART_POSE_FORCE_REFRESH_MS = 1_600L
