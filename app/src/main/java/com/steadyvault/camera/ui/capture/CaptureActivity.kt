@@ -10,6 +10,7 @@ import com.steadyvault.camera.core.capability.HardwareSupportPolicy.Support
 import com.steadyvault.camera.core.capability.PowerPolicy
 import com.steadyvault.camera.core.camera.CameraLensCatalog
 import com.steadyvault.camera.core.camera.CameraResourceCoordinator
+import com.steadyvault.camera.core.camera.SmartPoseFocusAnalyzer
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureModeStore
 import com.steadyvault.camera.core.settings.RecordingDisplayPreferences
@@ -104,6 +105,14 @@ class CaptureActivity : ComponentActivity() {
     }
     private val hidePreviewTransitionRunnable = Runnable { hidePreviewTransitionCover(animated = true) }
     private val previewUpdateRunnable = Runnable { applyPendingPreviewUpdate() }
+    private val smartPoseAnalysisRunnable = object : Runnable {
+        override fun run() {
+            analyzeSmartPoseFrame()
+            if (previewOpen && SmartFocusSettings.enabled(this@CaptureActivity)) {
+                mainHandler.postDelayed(this, SMART_POSE_ANALYSIS_INTERVAL_MS)
+            }
+        }
+    }
 
     private lateinit var mainRoot: View
     private lateinit var bottomNavigationRoot: View
@@ -198,6 +207,13 @@ class CaptureActivity : ComponentActivity() {
     private var previewFpsLastTimestampNs = 0L
     private var previewFpsFrameCount = 0
     private var previewMeasuredFps = 0.0
+    private val smartPoseAnalyzer by lazy { SmartPoseFocusAnalyzer() }
+    private var smartPoseAnalysisInFlight = false
+    private var smartPoseLastTargetAtMs = 0L
+    private var smartPoseLastAppliedAtMs = 0L
+    private var smartPoseLastX = 0.5f
+    private var smartPoseLastY = 0.5f
+    private var smartPoseTargetKind: SmartPoseFocusAnalyzer.Kind? = null
     private var closePreviewAfterCapture = false
     private var pendingPreviewOpen = false
     private var recordingRequestedFromPreview = false
