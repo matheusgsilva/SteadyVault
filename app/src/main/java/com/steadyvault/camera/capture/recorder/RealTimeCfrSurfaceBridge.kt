@@ -66,8 +66,6 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var renderThreadRef: Thread? = null
     private val flushRequested = AtomicBoolean(false)
     private val summaryLogged = AtomicBoolean(false)
-    private val encoderFrameIntervalNs = 1_000_000_000L / fps.coerceAtLeast(1)
-    @Volatile private var lastEncoderSwapRealtimeNs = 0L
 
     private val renderThread = Thread(
         { renderLoop() },
@@ -240,7 +238,7 @@ class RealTimeCfrSurfaceBridge(
 
             ready.countDown()
 
-            val frameIntervalNs = encoderFrameIntervalNs
+            val frameIntervalNs = 1_000_000_000L / fps.coerceAtLeast(1)
             val slotClock = CfrSlotClock(frameIntervalNs)
             var haveLatchedFrame = false
             var timelineStarted = false
@@ -295,8 +293,7 @@ class RealTimeCfrSurfaceBridge(
                     previousSourceTimestampNs = st.timestamp
                     slotClock.start(previousSourceTimestampNs)
                     copiedTimestampNs = Long.MIN_VALUE
-                    lastEncoderSwapRealtimeNs = 0L
-                    outputPtsNs = System.nanoTime() + frameIntervalNs * OUTPUT_PREBUFFER_SLOTS
+                    outputPtsNs = System.nanoTime()
                     renderExternalToEncoder(
                         st = st,
                         textureMatrix = textureMatrix,
@@ -466,28 +463,6 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
     }
 
-    /**
-     * Impede rajadas de frames no MediaCodec. Mesmo quando um gap exige vários
-     * frames sintetizados, cada swap é entregue no máximo uma vez por intervalo CFR.
-     * A pequena janela inicial dá tempo para conhecer o próximo frame real antes de
-     * emitir os blends de gaps curtos.
-     */
-    private fun paceEncoderSwap(presentationTimeNs: Long) {
-        val previousSwap = lastEncoderSwapRealtimeNs
-        val targetNs = if (previousSwap <= 0L) {
-            presentationTimeNs
-        } else {
-            maxOf(presentationTimeNs, previousSwap + encoderFrameIntervalNs)
-        }
-
-        while (!released.get()) {
-            val remaining = targetNs - System.nanoTime()
-            if (remaining <= 0L) break
-            LockSupport.parkNanos(minOf(remaining, MAX_PACING_SLEEP_NS))
-        }
-        lastEncoderSwapRealtimeNs = System.nanoTime()
-    }
-
     private fun renderExternalToEncoder(
         st: SurfaceTexture,
         textureMatrix: FloatArray,
@@ -511,7 +486,6 @@ class RealTimeCfrSurfaceBridge(
             viewportHeight = outputHeight,
             rotationDegrees = physicalRotationDegrees
         )
-        paceEncoderSwap(presentationTimeNs)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers falhou" }
     }
@@ -654,7 +628,6 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glUniform1f(alphaHandle, alpha.coerceIn(0.001f, 0.999f))
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
-        paceEncoderSwap(presentationTimeNs)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers interpolado falhou" }
     }
@@ -759,8 +732,6 @@ class RealTimeCfrSurfaceBridge(
         private const val RELEASE_TIMEOUT_MS = 1_000L
         private const val IDLE_POLL_NS = 1_000_000L
         private const val MAX_PENDING_SIGNAL_COUNT = 8
-        private const val OUTPUT_PREBUFFER_SLOTS = 3L
-        private const val MAX_PACING_SLEEP_NS = 2_000_000L
         private const val TAG = "SteadyVaultCfr"
 
         // Rotações de UV horárias como matriz row-major [00,01,10,11].
