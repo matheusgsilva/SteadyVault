@@ -2392,37 +2392,8 @@ class CaptureService : Service() {
             return
         }
         setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        if (SmartFocusSettings.enabled(this)) {
-            val faceModes = profile.characteristics.get(
-                CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
-            ) ?: intArrayOf()
-            // 60 FPS prioriza cadência: SIMPLE entrega regiões de rosto sem ativar
-            // o caminho FULL da HAL. Em 30 FPS podemos aceitar FULL.
-            val faceMode = when {
-                profile.targetFps >= CaptureModeStore.FPS_60 &&
-                    faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE) ->
-                    CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE
-                profile.targetFps < CaptureModeStore.FPS_60 &&
-                    faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL) ->
-                    CameraMetadata.STATISTICS_FACE_DETECT_MODE_FULL
-                faceModes.contains(CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE) ->
-                    CameraMetadata.STATISTICS_FACE_DETECT_MODE_SIMPLE
-                else -> CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF
-            }
-            setSafely(builder, CaptureRequest.STATISTICS_FACE_DETECT_MODE, faceMode)
-
-            // FACE_PRIORITY pode mudar o pipeline 3A/ISP do fabricante. Mantemos
-            // esse scene mode fora de 60 FPS e fora da cadência manual.
-            if (profile.targetFps < CaptureModeStore.FPS_60 && manualCadence == null) {
-                val sceneModes = profile.characteristics.get(
-                    CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES
-                ) ?: intArrayOf()
-                if (sceneModes.contains(CameraMetadata.CONTROL_SCENE_MODE_FACE_PRIORITY)) {
-                    setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_USE_SCENE_MODE)
-                    setSafely(builder, CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_FACE_PRIORITY)
-                }
-            }
-        }
+        // O foco inteligente usa a análise de pose da própria ponte GPU; metadados de rosto da
+        // HAL não são lidos durante a gravação e só custariam tempo de ISP em 4K60.
         if (manualCadence == null) {
             setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
@@ -2508,7 +2479,7 @@ class CaptureService : Service() {
         applyStabilization(builder, profile)
         if (profile.highSpeed) return
 
-        if (!SmartFocusSettings.enabled(this)) {
+        run {
             val faceModes = profile.characteristics.get(
                 CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES
             ) ?: intArrayOf()
