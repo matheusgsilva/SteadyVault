@@ -1,3 +1,9 @@
+## main3 — look na GPU: nitidez, cor e contraste
+
+- `VideoLook`: máscara de nitidez (raio 2 px), saturação (1,2) e curva em S suave (0,4) aplicadas na GPU a toda saída enviada ao encoder (frame real, mistura e frame interpolado, com o mesmo código para não pulsar). O frame anterior guardado para a interpolação continua cru, então o look é aplicado uma vez só. Ajuste os três `#define` em `VideoLook.kt` (0 desliga cada um).
+- Os shaders de saída passaram a aplicar rotação e matriz no fragment (para amostrar os vizinhos do filtro).
+- Limite: o look realça o que a câmera captura, não recupera foco nem borrão de movimento.
+
 ## main3 — preenchimento de lacunas por movimento, em tempo real
 
 - **Causa real dos travamentos:** os logs mostram o encoder limpo (0 buracos de PTS) e os intervalos do sensor bimodais (16,7 ms ou exatamente 33 ms): a câmera/HAL entrega ~5-6% de frames a menos em 4K60, com ou sem "Priorizar qualidade em pouca luz". Nenhum ajuste de tempo recupera um frame que nunca chegou, então o app agora o recria.

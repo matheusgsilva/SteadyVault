@@ -175,6 +175,8 @@ internal class MotionInterpolator(
             GLES20.glUniform1f(loc(p, "uCostHigh"), COST_HIGH)
             GLES20.glUniform1f(loc(p, "uDiffLow"), DIFF_LOW)
             GLES20.glUniform1f(loc(p, "uDiffHigh"), DIFF_HIGH)
+            GLES20.glUniform1f(loc(p, "uLook"), 1f)
+            GLES20.glUniform2f(loc(p, "uLookTexel"), VideoLook.RADIUS_PX / width, VideoLook.RADIUS_PX / height)
         }
     }
 
@@ -275,7 +277,7 @@ internal class MotionInterpolator(
 
     private fun program(fragment: String, defines: String): Int {
         val vertexShader = compile(GLES20.GL_VERTEX_SHADER, MotionShaders.VERTEX)
-        val fragmentShader = compile(GLES20.GL_FRAGMENT_SHADER, defines + fragment)
+        val fragmentShader = compile(GLES20.GL_FRAGMENT_SHADER, defines + VideoLook.insert(fragment))
         val program = GLES20.glCreateProgram()
         GLES20.glAttachShader(program, vertexShader)
         GLES20.glAttachShader(program, fragmentShader)

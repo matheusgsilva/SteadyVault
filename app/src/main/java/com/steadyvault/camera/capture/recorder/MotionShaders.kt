@@ -166,6 +166,8 @@ uniform float uCostLow;
 uniform float uCostHigh;
 uniform float uDiffLow;
 uniform float uDiffHigh;
+uniform float uLook;
+LOOK_GLSL
 #ifdef SOURCE_OES
 uniform samplerExternalOES sC;
 uniform mat4 uTextureMatrix;
@@ -188,17 +190,31 @@ vec3 currentColor(vec2 uv) {
 vec3 previousColor(vec2 uv) {
     return texture2D(sP, uv).rgb;
 }
+vec2 gFlow;
+float gConfidence;
+vec3 composite(vec2 uv) {
+    float t = uAlpha;
+    vec3 warped = mix(previousColor(uv - t * gFlow), currentColor(uv + (1.0 - t) * gFlow), t);
+    vec3 plain = mix(previousColor(uv), currentColor(uv), t);
+    return mix(plain, warped, gConfidence);
+}
 void main() {
     vec4 flow = texture2D(sFlow, vUv);
-    vec2 f = flow.rg;
+    gFlow = flow.rg;
     float t = uAlpha;
-    vec3 p = previousColor(vUv - t * f);
-    vec3 c = currentColor(vUv + (1.0 - t) * f);
-    vec3 warped = mix(p, c, t);
-    vec3 plain = mix(previousColor(vUv), currentColor(vUv), t);
-    float confidence = (1.0 - smoothstep(uCostLow, uCostHigh, flow.b)) *
-                       (1.0 - smoothstep(uDiffLow, uDiffHigh, length(p - c)));
-    gl_FragColor = vec4(mix(plain, warped, confidence), 1.0);
+    vec3 p = previousColor(vUv - t * gFlow);
+    vec3 c = currentColor(vUv + (1.0 - t) * gFlow);
+    gConfidence = (1.0 - smoothstep(uCostLow, uCostHigh, flow.b)) *
+                  (1.0 - smoothstep(uDiffLow, uDiffHigh, length(p - c)));
+    vec3 result = composite(vUv);
+    if (uLook > 0.5) {
+        vec2 dx = vec2(uLookTexel.x, 0.0);
+        vec2 dy = vec2(0.0, uLookTexel.y);
+        vec3 blur = 0.25 * (composite(vUv + dx) + composite(vUv - dx) +
+                            composite(vUv + dy) + composite(vUv - dy));
+        result = lookGrade(result, blur);
+    }
+    gl_FragColor = vec4(result, 1.0);
 }
 """
 }

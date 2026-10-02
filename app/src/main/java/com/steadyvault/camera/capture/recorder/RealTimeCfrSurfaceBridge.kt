@@ -275,8 +275,8 @@ class RealTimeCfrSurfaceBridge(
 
             previousTexture = createStorageTexture(outputWidth, outputHeight)
             previousFramebuffer = createFramebuffer(previousTexture)
-            externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_EXTERNAL)
-            blendProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_BLEND)
+            externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_EXTERNAL))
+            blendProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_BLEND))
 
             val interpolator = MotionInterpolator(outputWidth, outputHeight)
             motion = interpolator
@@ -552,7 +552,8 @@ class RealTimeCfrSurfaceBridge(
             texCoords = texCoords,
             viewportWidth = outputWidth,
             viewportHeight = outputHeight,
-            rotationDegrees = physicalRotationDegrees
+            rotationDegrees = physicalRotationDegrees,
+            look = true
         )
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers falhou" }
@@ -567,7 +568,8 @@ class RealTimeCfrSurfaceBridge(
         texCoords: FloatBuffer,
         viewportWidth: Int,
         viewportHeight: Int,
-        rotationDegrees: Int
+        rotationDegrees: Int,
+        look: Boolean = false
     ) {
         st.getTransformMatrix(textureMatrix)
         val shaderRotation = if (rotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, rotationDegrees)
@@ -590,6 +592,12 @@ class RealTimeCfrSurfaceBridge(
 
         GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
         GLES20.glUniform1f(rotationHandle, shaderRotation.toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), if (look) 1f else 0f)
+        GLES20.glUniform2f(
+            GLES20.glGetUniformLocation(program, "uLookTexel"),
+            VideoLook.RADIUS_PX / viewportWidth,
+            VideoLook.RADIUS_PX / viewportHeight
+        )
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
         GLES20.glUniform1i(samplerHandle, 0)
@@ -693,6 +701,11 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
         GLES20.glUniform1i(currentHandle, 1)
 
+        GLES20.glUniform2f(
+            GLES20.glGetUniformLocation(program, "uLookTexel"),
+            VideoLook.RADIUS_PX / outputWidth,
+            VideoLook.RADIUS_PX / outputHeight
+        )
         GLES20.glUniform1f(alphaHandle, alpha.coerceIn(0.001f, 0.999f))
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
@@ -869,46 +882,31 @@ class RealTimeCfrSurfaceBridge(
             1f, 1f
         )
 
+        // Os shaders de saída só repassam o UV; rotação e matriz são aplicadas no fragment
+        // para amostrar também os vizinhos do filtro de nitidez (VideoLook).
         private const val VERTEX_SHADER_EXTERNAL = """
             attribute vec4 aPosition;
             attribute vec4 aTexCoord;
-            uniform mat4 uTextureMatrix;
-            uniform float uRotationDegrees;
-            varying vec2 vTexCoord;
-
-            vec2 rotateUv(vec2 uv) {
-                // Rotação horária (mesma convenção de MediaMuxer.setOrientationHint).
-                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);        // 270°
-                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);  // 180°
-                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);         // 90°
-                return uv;
-            }
-
+            varying vec2 vUv;
             void main() {
                 gl_Position = aPosition;
-                vec2 rotated = rotateUv(aTexCoord.xy);
-                vTexCoord = (uTextureMatrix * vec4(rotated, 0.0, 1.0)).xy;
+                vUv = aTexCoord.xy;
             }
         """
 
         private const val FRAGMENT_SHADER_EXTERNAL = """
             #extension GL_OES_EGL_image_external : require
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
             precision mediump float;
-            varying vec2 vTexCoord;
+            #endif
+            varying vec2 vUv;
             uniform samplerExternalOES sTexture;
-            void main() {
-                gl_FragColor = texture2D(sTexture, vTexCoord);
-            }
-        """
-
-        private const val VERTEX_SHADER_BLEND = """
-            attribute vec4 aPosition;
-            attribute vec4 aTexCoord;
             uniform mat4 uTextureMatrix;
             uniform float uRotationDegrees;
-            varying vec2 vPreviousCoord;
-            varying vec2 vCurrentCoord;
-
+            uniform float uLook;
+            LOOK_GLSL
             vec2 rotateUv(vec2 uv) {
                 // Rotação horária (mesma convenção de MediaMuxer.setOrientationHint).
                 if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);        // 270°
@@ -916,14 +914,23 @@ class RealTimeCfrSurfaceBridge(
                 if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);         // 90°
                 return uv;
             }
-
+            vec3 fetchColor(vec2 uv) {
+                return texture2D(sTexture, (uTextureMatrix * vec4(rotateUv(uv), 0.0, 1.0)).xy).rgb;
+            }
             void main() {
-                gl_Position = aPosition;
-                vec2 rotated = rotateUv(aTexCoord.xy);
-                vPreviousCoord = aTexCoord.xy; // anterior já está no espaço de saída
-                vCurrentCoord = (uTextureMatrix * vec4(rotated, 0.0, 1.0)).xy;
+                vec3 c = fetchColor(vUv);
+                if (uLook > 0.5) {
+                    vec2 dx = vec2(uLookTexel.x, 0.0);
+                    vec2 dy = vec2(0.0, uLookTexel.y);
+                    vec3 blur = 0.25 * (fetchColor(vUv + dx) + fetchColor(vUv - dx) +
+                                        fetchColor(vUv + dy) + fetchColor(vUv - dy));
+                    c = lookGrade(c, blur);
+                }
+                gl_FragColor = vec4(c, 1.0);
             }
         """
+
+        private const val VERTEX_SHADER_BLEND = VERTEX_SHADER_EXTERNAL
 
         private val IDENTITY_MATRIX = floatArrayOf(
             1f, 0f, 0f, 0f,
@@ -932,20 +939,41 @@ class RealTimeCfrSurfaceBridge(
             0f, 0f, 0f, 1f
         )
 
+        // O frame anterior já está no espaço de saída (cru); o atual é rotacionado aqui.
         private const val FRAGMENT_SHADER_BLEND = """
             #extension GL_OES_EGL_image_external : require
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
             precision mediump float;
-            varying vec2 vPreviousCoord;
-            varying vec2 vCurrentCoord;
+            #endif
+            varying vec2 vUv;
             uniform sampler2D sPrevious;
             uniform samplerExternalOES sCurrent;
+            uniform mat4 uTextureMatrix;
+            uniform float uRotationDegrees;
             uniform float uAlpha;
+            LOOK_GLSL
+            vec2 rotateUv(vec2 uv) {
+                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
+                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
+                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);
+                return uv;
+            }
+            vec3 composite(vec2 uv) {
+                vec3 previousColor = texture2D(sPrevious, uv).rgb;
+                vec3 currentColor = texture2D(sCurrent, (uTextureMatrix * vec4(rotateUv(uv), 0.0, 1.0)).xy).rgb;
+                return mix(previousColor, currentColor, uAlpha);
+            }
             void main() {
-                vec4 previousColor = texture2D(sPrevious, vPreviousCoord);
-                vec4 currentColor = texture2D(sCurrent, vCurrentCoord);
-                gl_FragColor = mix(previousColor, currentColor, uAlpha);
+                vec2 dx = vec2(uLookTexel.x, 0.0);
+                vec2 dy = vec2(0.0, uLookTexel.y);
+                vec3 blur = 0.25 * (composite(vUv + dx) + composite(vUv - dx) +
+                                    composite(vUv + dy) + composite(vUv - dy));
+                gl_FragColor = vec4(lookGrade(composite(vUv), blur), 1.0);
             }
         """
+
 
 
     }

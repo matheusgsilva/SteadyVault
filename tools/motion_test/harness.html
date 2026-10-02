@@ -13,6 +13,25 @@ function tex(u,v){let s=0;const f=[[0.021,0.017,60],[0.047,0.055,40],[0.11,0.09,
   for(const [a,b,w] of f)s+=w*Math.sin(a*u+1.3*Math.sin(b*v)+b*v*0.7);return 128+s*0.9;}
 function psnr(a,b){let e=0,n=0;for(let i=0;i<a.length;i+=4){for(let k=0;k<3;k++){const q=a[i+k]-b[i+k];e+=q*q;n++}}
   return 10*Math.log10(255*255/(e/n+1e-9));}
+window.lookTest=async function(S,url){
+  const img=new Image();img.src=url;await img.decode();
+  const cv=document.createElement('canvas');cv.width=img.width;cv.height=img.height;
+  const gl=cv.getContext('webgl',{preserveDrawingBuffer:true});
+  const mk=(t,s)=>{const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(sh));return sh};
+  const fs=`precision highp float;varying vec2 vUv;uniform sampler2D s;`+S.LOOK_GLSL+`vec3 f(vec2 u){return texture2D(s,u).rgb;}
+  void main(){vec3 c=f(vUv);vec2 dx=vec2(uLookTexel.x,0.),dy=vec2(0.,uLookTexel.y);
+  vec3 b=0.25*(f(vUv+dx)+f(vUv-dx)+f(vUv+dy)+f(vUv-dy));gl_FragColor=vec4(lookGrade(c,b),1.);}`;
+  const p=gl.createProgram();gl.attachShader(p,mk(gl.VERTEX_SHADER,S.VERTEX));gl.attachShader(p,mk(gl.FRAGMENT_SHADER,fs));
+  gl.bindAttribLocation(p,0,'aPosition');gl.bindAttribLocation(p,1,'aTexCoord');gl.linkProgram(p);gl.useProgram(p);
+  const q=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,q);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,0,1, 1,-1,1,1, -1,1,0,0, 1,1,1,0]),gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);gl.enableVertexAttribArray(1);gl.vertexAttribPointer(0,2,gl.FLOAT,false,16,0);gl.vertexAttribPointer(1,2,gl.FLOAT,false,16,8);
+  const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);
+  for(const [k,v] of [[gl.TEXTURE_MIN_FILTER,gl.LINEAR],[gl.TEXTURE_MAG_FILTER,gl.LINEAR],[gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE]])gl.texParameteri(gl.TEXTURE_2D,k,v);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img);
+  gl.uniform2f(gl.getUniformLocation(p,'uLookTexel'),2/img.width,2/img.height);
+  gl.viewport(0,0,img.width,img.height);gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+  return cv.toDataURL('image/png');};
 window.runTests=function(S){
   const cv=document.getElementById('c');
   const gl=cv.getContext('webgl',{preserveDrawingBuffer:true,antialias:false});
