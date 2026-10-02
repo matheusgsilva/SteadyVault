@@ -1142,7 +1142,10 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uShiftRadius"), GlobalMotionEstimator.RADIUS.toFloat())
         GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uOutTexel"), 1f / outputWidth, 1f / outputHeight)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uNoiseScale"), SensorNoiseHint.motionGateScale())
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uMaxAge"), TEMPORAL_MAX_AGE)
+        GLES20.glUniform1f(
+            GLES20.glGetUniformLocation(program, "uMaxAge"),
+            (TEMPORAL_MAX_AGE + 4f * (SensorNoiseHint.motionGateScale() - 1f)).coerceIn(TEMPORAL_MAX_AGE, TEMPORAL_MAX_AGE_HIGH_ISO)
+        )
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
@@ -1503,6 +1506,7 @@ class RealTimeCfrSurfaceBridge(
         private const val SPATIAL_DENOISE_RADIUS_PX = 1f
         // Teto da idade de confiança: peso máximo = idade/(idade+1) = 5/6 (~0,83) em área parada.
         private const val TEMPORAL_MAX_AGE = 5f
+        private const val TEMPORAL_MAX_AGE_HIGH_ISO = 8f
 
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
         private const val TIMING_DIAGNOSTICS = false
@@ -1648,6 +1652,9 @@ class RealTimeCfrSurfaceBridge(
                 vec3 accC = c0; float wC = 1.0;
                 vec3 accL = c0; float wL = 1.0;
                 float curLuma = y0;
+                // Limiares espaciais crescem com o ISO (mais ruído: vizinhos ruidosos não podem ser
+                // rejeitados como "borda"); nunca abaixo do valor base.
+                float spScale = max(uNoiseScale, 1.0);
                 // Histórico alinhado: o pixel p do frame atual estava em p - d no anterior (d inteiro,
                 // em pixels de saída, para amostrar sempre no centro do texel, sem borrar).
                 vec4 m = texture2D(sMotion, vec2(0.5));
@@ -1662,8 +1669,8 @@ class RealTimeCfrSurfaceBridge(
                     vec3 n = fetchColor(vUv + o);
                     float yn = lumaOf(n);
                     float dn = abs(yn - y0);
-                    float a = 1.0 - smoothstep(0.03, 0.10, dn);
-                    float b = 0.4 * (1.0 - smoothstep(0.02, 0.06, dn));
+                    float a = 1.0 - smoothstep(0.03 * spScale, 0.10 * spScale, dn);
+                    float b = 0.4 * (1.0 - smoothstep(0.02 * spScale, 0.06 * spScale, dn));
                     accC += n * a; wC += a;
                     accL += n * b; wL += b;
                     curLuma += yn;
