@@ -16,6 +16,12 @@ internal object VideoLook {
      * Perfis de cor (Configurações > Perfil de cor). Na câmera, SOFT/FLAT já aplicam uma curva de
      * tons no sensor; por isso o look da GPU fica mais leve neles, em vez de desfazer a escolha.
      */
+    /**
+     * false = vídeo ORIGINAL: nenhuma nitidez/saturação/curva da GPU (a nitidez amplificava o
+     * grão). Os perfis abaixo só voltam a valer com true.
+     */
+    const val ENABLED = false
+
     const val PROFILE_NATURAL = 0
     const val PROFILE_SOFT = 1
     const val PROFILE_FLAT = 2

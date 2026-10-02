@@ -194,7 +194,7 @@ internal class MotionInterpolator(
             GLES20.glUniform1f(loc(p, "uSpreadLow"), SPREAD_LOW)
             GLES20.glUniform1f(loc(p, "uSpreadHigh"), SPREAD_HIGH)
             GLES20.glUniform2f(loc(p, "uFlowTexel"), 1f / quarterSize[0], 1f / quarterSize[1])
-            GLES20.glUniform1f(loc(p, "uLook"), 1f)
+            GLES20.glUniform1f(loc(p, "uLook"), if (VideoLook.ENABLED) 1f else 0f)
             GLES20.glUniform2f(loc(p, "uLookTexel"), VideoLook.RADIUS_PX / width, VideoLook.RADIUS_PX / height)
         }
     }

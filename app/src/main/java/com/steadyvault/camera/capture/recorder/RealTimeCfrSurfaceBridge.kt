@@ -783,8 +783,12 @@ class RealTimeCfrSurfaceBridge(
             // Movimento global (panorâmica) para alinhar o histórico do filtro temporal. Se a GPU
             // não suportar, o filtro continua como antes (sem alinhamento).
             gmc = GlobalMotionEstimator(outputWidth, outputHeight)
-            gmc.initialize()
-            Log.i("SteadyVaultCfr", "movimento global: ${if (gmc.available) "ativo" else "indisponível"}")
+            if (!ORIGINAL_IMAGE) gmc.initialize()
+            Log.i(
+                "SteadyVaultCfr",
+                if (ORIGINAL_IMAGE) "imagem: ORIGINAL (sem denoise, sem alinhamento, sem look); só tempo/CFR e foco"
+                else "movimento global: ${if (gmc.available) "ativo" else "indisponível"}"
+            )
             val gmcShift = FloatArray(2)
             var gmcSamples = 0L
             var gmcMoving = 0L
@@ -1011,7 +1015,7 @@ class RealTimeCfrSurfaceBridge(
         val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
         val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
         val samplerHandle = GLES20.glGetUniformLocation(program, "sTexture")
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), if (look) 1f else 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), if (look && APPLY_LOOK) 1f else 0f)
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "uLookTexel"),
             VideoLook.RADIUS_PX / viewportWidth,
@@ -1103,7 +1107,7 @@ class RealTimeCfrSurfaceBridge(
     ) {
         st.getTransformMatrix(textureMatrix)
         val shaderRotation = if (physicalRotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, physicalRotationDegrees)
-        val motionActive = motion != null && motion.available
+        val motionActive = !ORIGINAL_IMAGE && motion != null && motion.available
         if (motionActive) {
             motion!!.estimate(
                 externalTexture = externalTexture,
@@ -1142,6 +1146,7 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uShiftRadius"), GlobalMotionEstimator.RADIUS.toFloat())
         GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uOutTexel"), 1f / outputWidth, 1f / outputHeight)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uNoiseScale"), SensorNoiseHint.motionGateScale())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uPassthrough"), if (ORIGINAL_IMAGE) 1f else 0f)
         GLES20.glUniform1f(
             GLES20.glGetUniformLocation(program, "uMaxAge"),
             (TEMPORAL_MAX_AGE + 4f * (SensorNoiseHint.motionGateScale() - 1f)).coerceIn(TEMPORAL_MAX_AGE, TEMPORAL_MAX_AGE_HIGH_ISO)
@@ -1163,7 +1168,7 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glViewport(0, 0, outputWidth, outputHeight)
         GLES20.glUseProgram(program)
         bindQuad(program, vertices, texCoords)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), 1f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), if (APPLY_LOOK) 1f else 0f)
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "uLookTexel"),
             VideoLook.RADIUS_PX / outputWidth,
@@ -1218,6 +1223,7 @@ class RealTimeCfrSurfaceBridge(
             VideoLook.RADIUS_PX / outputWidth,
             VideoLook.RADIUS_PX / outputHeight
         )
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), if (APPLY_LOOK) 1f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uAlpha"), alpha.coerceIn(0.001f, 0.999f))
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
@@ -1387,7 +1393,7 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uSearchRadius"), GPU_SEARCH_RADIUS_TEXELS)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uStrength"), SUPER_STABLE_STRENGTH)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uCropScale"), SUPER_STABLE_CROP_SCALE)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), 1f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), if (APPLY_LOOK) 1f else 0f)
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "uLookTexel"),
             VideoLook.RADIUS_PX / outputWidth,
@@ -1507,6 +1513,15 @@ class RealTimeCfrSurfaceBridge(
         // Teto da idade de confiança: peso máximo = idade/(idade+1) = 5/6 (~0,83) em área parada.
         private const val TEMPORAL_MAX_AGE = 5f
         private const val TEMPORAL_MAX_AGE_HIGH_ISO = 8f
+
+        /**
+         * Vídeo ORIGINAL: o filtro de granulado (espacial + temporal), o alinhamento por movimento
+         * global e o "look" (nitidez/saturação/curva) ficam desligados; o que vai para o encoder é
+         * o pixel da câmera. Continuam: reamostragem CFR por timestamp (frames sem repetir) e
+         * foco inteligente. Troque para false para voltar ao processamento.
+         */
+        private const val ORIGINAL_IMAGE = true
+        private const val APPLY_LOOK = VideoLook.ENABLED
 
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
         private const val TIMING_DIAGNOSTICS = false
@@ -1634,6 +1649,7 @@ class RealTimeCfrSurfaceBridge(
             uniform float uShiftScale;      // pixels de saída por pixel pequeno
             uniform float uShiftRadius;
             uniform vec2 uOutTexel;
+            uniform float uPassthrough;     // 1 = vídeo original: cópia pura, sem denoise
             vec2 rotateUv(vec2 uv) {
                 if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
                 if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
@@ -1646,6 +1662,10 @@ class RealTimeCfrSurfaceBridge(
             float lumaOf(vec3 v) { return dot(v, vec3(0.299, 0.587, 0.114)); }
             void main() {
                 vec3 c0 = fetchColor(vUv);
+                if (uPassthrough > 0.5) {
+                    gl_FragColor = vec4(c0, 1.0 / 16.0);
+                    return;
+                }
                 // Filtro espacial que preserva bordas (4 diagonais): o croma (colorido do grão) é
                 // suavizado com força; a luma só levemente, para não perder textura fina.
                 float y0 = lumaOf(c0);
@@ -1730,11 +1750,16 @@ class RealTimeCfrSurfaceBridge(
             uniform sampler2D sPrevious;
             uniform sampler2D sCurrent;
             uniform float uAlpha;
+            uniform float uLook;
             LOOK_GLSL
             vec3 composite(vec2 uv) {
                 return mix(texture2D(sPrevious, uv).rgb, texture2D(sCurrent, uv).rgb, uAlpha);
             }
             void main() {
+                if (uLook < 0.5) {
+                    gl_FragColor = vec4(composite(vUv), 1.0);
+                    return;
+                }
                 vec2 dx = vec2(uLookTexel.x, 0.0);
                 vec2 dy = vec2(0.0, uLookTexel.y);
                 vec3 blur = 0.25 * (composite(vUv + dx) + composite(vUv - dx) +
