@@ -30,6 +30,8 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.ScrubbingModeParameters
 import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.DecoderReuseEvaluation
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.steadyvault.camera.core.playback.PlaybackSettings
@@ -905,6 +907,15 @@ class ZoomableVideoView @JvmOverloads constructor(
                 .build()
 
             player.addListener(media3Listener)
+            player.addAnalyticsListener(playbackDiagnostics)
+            startPlaybackStatsLog(player)
+            Log.i(
+                TAG,
+                "diagnóstico: motor=Media3 perfil=${media3Profile.name} fps=$sourceFrameRate " +
+                    "${sourceVideoWidth}x$sourceVideoHeight velocidade=$speed " +
+                    "limiteDescarte=${lateDropThresholdUs / 1000}ms telaHz=${display?.refreshRate ?: 0f} " +
+                    "exigente=$demandingPlayback"
+            )
             player.setSeekParameters(SeekParameters.EXACT)
             player.setScrubbingModeParameters(ScrubbingModeParameters.DEFAULT)
             if (previewSeekActive) player.setScrubbingModeEnabled(true)
@@ -1493,6 +1504,10 @@ class ZoomableVideoView @JvmOverloads constructor(
         val surface = findSurfaceView(root)?.holder?.surface?.takeIf { it.isValid } ?: return
         val requested = if (playbackProfile.cadenceUnstable && sourceFrameRate < HIGH_FRAME_RATE_SOURCE_MIN) 0f
         else normalizedDisplayFrameRate(sourceFrameRate * speed)
+        if (requested != lastLoggedDisplayRate) {
+            lastLoggedDisplayRate = requested
+            Log.i(TAG, "diagnóstico: taxa pedida à tela=${requested}Hz (fonte=$sourceFrameRate x$speed) telaAtual=${display?.refreshRate ?: 0f}Hz motor=$engine")
+        }
         runCatching {
             val compatibility = if (requested > 0f) {
                 Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
@@ -1581,6 +1596,75 @@ class ZoomableVideoView @JvmOverloads constructor(
         clearSurfaceFrameRate(vlcVideoLayout)
     }
 
+    private var statsLogRunnable: Runnable? = null
+    private var lastLoggedDisplayRate = -1f
+
+    // Diagnóstico por log (SteadyVaultPlayer): decodificador usado, quadros descartados e
+    // contadores do decodificador a cada 2 s, para comparar com o player da Galeria sem mp4.
+    private val playbackDiagnostics = object : AnalyticsListener {
+        override fun onVideoDecoderInitialized(
+            eventTime: AnalyticsListener.EventTime,
+            decoderName: String,
+            initializedTimestampMs: Long,
+            initializationDurationMs: Long
+        ) {
+            Log.i(TAG, "diagnóstico: decodificador=$decoderName (iniciou em ${initializationDurationMs}ms)")
+        }
+
+        override fun onDroppedVideoFrames(
+            eventTime: AnalyticsListener.EventTime,
+            droppedFrames: Int,
+            elapsedMs: Long
+        ) {
+            Log.w(
+                TAG,
+                "diagnóstico: $droppedFrames quadros descartados em ${elapsedMs}ms pos=${eventTime.currentPlaybackPositionMs}ms"
+            )
+        }
+
+        override fun onVideoInputFormatChanged(
+            eventTime: AnalyticsListener.EventTime,
+            format: androidx.media3.common.Format,
+            decoderReuseEvaluation: DecoderReuseEvaluation?
+        ) {
+            Log.i(
+                TAG,
+                "diagnóstico: formato=${format.sampleMimeType} ${format.width}x${format.height} " +
+                    "fps=${format.frameRate} bitrate=${format.bitrate / 1000}kbps"
+            )
+        }
+    }
+
+    private fun startPlaybackStatsLog(player: ExoPlayer) {
+        statsLogRunnable?.let { removeCallbacks(it) }
+        var lastRendered = 0
+        var lastDropped = 0
+        var lastSkipped = 0
+        val runnable = object : Runnable {
+            override fun run() {
+                if (media3Player !== player) return
+                val counters = player.videoDecoderCounters
+                if (counters != null && player.isPlaying) {
+                    counters.ensureUpdated()
+                    Log.i(
+                        TAG,
+                        "diagnóstico(2s): exibidos=${counters.renderedOutputBufferCount - lastRendered} " +
+                            "descartados=${counters.droppedBufferCount - lastDropped} " +
+                            "pulados=${counters.skippedOutputBufferCount - lastSkipped} " +
+                            "maxDescartesSeguidos=${counters.maxConsecutiveDroppedBufferCount} " +
+                            "pos=${player.currentPosition}ms bufferado=${player.totalBufferedDuration}ms"
+                    )
+                    lastRendered = counters.renderedOutputBufferCount
+                    lastDropped = counters.droppedBufferCount
+                    lastSkipped = counters.skippedOutputBufferCount
+                }
+                postDelayed(this, 2_000L)
+            }
+        }
+        statsLogRunnable = runnable
+        postDelayed(runnable, 2_000L)
+    }
+
     private fun releaseMedia3Player(keepPosition: Boolean) {
         media3Player?.let { player ->
             if (keepPosition) {
@@ -1588,6 +1672,9 @@ class ZoomableVideoView @JvmOverloads constructor(
                 playWhenReady = player.playWhenReady || player.isPlaying || playWhenReady
             }
             player.removeListener(media3Listener)
+            runCatching { player.removeAnalyticsListener(playbackDiagnostics) }
+            statsLogRunnable?.let { removeCallbacks(it) }
+            statsLogRunnable = null
             runCatching { player.setScrubbingModeEnabled(false) }
             player.release()
         }
