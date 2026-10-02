@@ -172,7 +172,7 @@ class SmartPoseFocusAnalyzer : Closeable {
         vararg types: Int,
         minLikelihood: Float
     ): Candidate? {
-        val landmarks = types.mapNotNull { type ->
+        val landmarks = types.asList().mapNotNull { type ->
             pose.getPoseLandmark(type)?.takeIf { it.inFrameLikelihood >= minLikelihood }
         }
         if (landmarks.isEmpty()) return null
