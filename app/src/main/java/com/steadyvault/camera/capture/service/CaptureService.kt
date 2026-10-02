@@ -3011,7 +3011,16 @@ class CaptureService : Service() {
             }
         }
         return when (recordingSettings.stabilization) {
+            // Super Estável = estabilização na GPU (ponte CFR) + a parte óptica da HAL. Em 4K60,
+            // Preview stabilization/EIS sobrecarregam o ISP e derrubam frames (a câmera entregava
+            // ~43 fps contra ~58 fps da câmera original); em 60 FPS usa OIS (ou nada).
             CaptureSettings.STABILIZATION_SUPER -> when {
+                profile.targetFps >= CaptureModeStore.FPS_60 ->
+                    if (profile.oisSupported) {
+                        RecordingStabilizationPolicy.Mode.OIS
+                    } else {
+                        RecordingStabilizationPolicy.Mode.OFF
+                    }
                 profile.previewStabilizationSupported -> RecordingStabilizationPolicy.Mode.PREVIEW
                 profile.eisSupported -> RecordingStabilizationPolicy.Mode.EIS
                 profile.oisSupported -> RecordingStabilizationPolicy.Mode.OIS
