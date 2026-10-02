@@ -432,7 +432,10 @@ class RealTimeCfrSurfaceBridge(
                     val stale = frameQueue.poll() ?: break
                     val staleFence: android.opengl.EGLSync? = stale.fence
                     if (staleFence != null) {
-                        runCatching { EGLExt.eglDestroySyncKHR(display, staleFence) }
+                        try {
+                            EGLExt.eglDestroySyncKHR(display, staleFence)
+                        } catch (_: Throwable) {
+                        }
                     }
                     stale.fence = null
                     freeSlots.add(stale)
@@ -458,12 +461,16 @@ class RealTimeCfrSurfaceBridge(
                 val current = frameQueue.poll(2, TimeUnit.MILLISECONDS) ?: continue
                 val currentFence: android.opengl.EGLSync? = current.fence
                 if (currentFence != null) {
-                    runCatching {
+                    try {
                         EGLExt.eglClientWaitSyncKHR(
                             display, currentFence, EGLExt.EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, FENCE_TIMEOUT_NS
                         )
+                    } catch (_: Throwable) {
                     }
-                    runCatching { EGLExt.eglDestroySyncKHR(display, currentFence) }
+                    try {
+                        EGLExt.eglDestroySyncKHR(display, currentFence)
+                    } catch (_: Throwable) {
+                    }
                     current.fence = null
                 }
                 if (current.sequence <= lastSequence) orderViolations++
@@ -861,9 +868,13 @@ class RealTimeCfrSurfaceBridge(
                 // O slot vai ser lido pelo contexto de saída: a cópia precisa ter terminado.
                 // Cerca EGL (padrão para compartilhar texturas entre contextos); se a cerca não
                 // existir, glFinish.
-                val fence = runCatching {
-                    EGLExt.eglCreateSyncKHR(display, EGLExt.EGL_SYNC_FENCE_KHR, null, 0)
-                }.getOrNull()
+                val fence: android.opengl.EGLSync? = try {
+                    EGLExt.eglCreateSyncKHR(
+                        display, EGLExt.EGL_SYNC_FENCE_KHR, longArrayOf(EGL14.EGL_NONE.toLong()), 0
+                    )
+                } catch (_: Throwable) {
+                    null
+                }
                 if (fence != null) {
                     GLES20.glFlush()
                     destination.fence = fence
