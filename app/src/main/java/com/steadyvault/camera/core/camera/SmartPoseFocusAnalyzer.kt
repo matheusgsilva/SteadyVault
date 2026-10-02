@@ -32,10 +32,13 @@ class SmartPoseFocusAnalyzer : Closeable {
         FACE,
         HANDS,
         FEET,
-        BODY
+        BODY,
+        /** Pele (mão/pé) que acabou de entrar no quadro; achada por cor, sem pose. */
+        SKIN
     }
 
     private val busy = AtomicBoolean(false)
+    private val skinFinder = SkinBlobFinder()
     private val detector = PoseDetection.getClient(
         PoseDetectorOptions.Builder()
             .setDetectorMode(PoseDetectorOptions.STREAM_MODE)
@@ -49,13 +52,21 @@ class SmartPoseFocusAnalyzer : Closeable {
         }
 
         val normalizedRotation = ((rotationDegrees % 360) + 360) % 360
+        // Atualiza o fundo de pele a cada análise (barato); só vale se a pose não achar ninguém.
+        val skin = runCatching { skinFinder.find(bitmap) }.getOrNull()
         val image = InputImage.fromBitmap(bitmap, normalizedRotation)
         detector.process(image)
             .addOnSuccessListener { pose ->
                 val rotated = normalizedRotation == 90 || normalizedRotation == 270
                 val analysisWidth = if (rotated) bitmap.height else bitmap.width
                 val analysisHeight = if (rotated) bitmap.width else bitmap.height
-                onResult(selectTarget(pose, analysisWidth, analysisHeight))
+                val poseTarget = selectTarget(pose, analysisWidth, analysisHeight)
+                onResult(
+                    poseTarget ?: skin?.let { blob ->
+                        val point = skinFinder.toUpright(blob, normalizedRotation)
+                        Target(point.x.coerceIn(0f, 1f), point.y.coerceIn(0f, 1f), Kind.SKIN, 0.5f)
+                    }
+                )
             }
             .addOnFailureListener {
                 onResult(null)
@@ -221,7 +232,7 @@ class SmartPoseFocusAnalyzer : Closeable {
     }
 
     companion object {
-        private const val MIN_LIKELIHOOD = 0.48f
+        private const val MIN_LIKELIHOOD = 0.4f
         private const val HAND_TO_MOUTH_DISTANCE = 0.16f
     }
 }

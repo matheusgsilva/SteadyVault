@@ -773,9 +773,9 @@ class RealTimeCfrSurfaceBridge(
             var frameCounter = 0L
 
             // Frame de análise do foco inteligente: orientação do SENSOR (o consumidor rotaciona).
-            val analysisWidth = (sourceWidth / 16).coerceIn(160, 320)
+            val analysisWidth = (sourceWidth / 8).coerceIn(240, 480)
             val analysisHeight = ((analysisWidth.toLong() * sourceHeight.toLong()) / sourceWidth.coerceAtLeast(1).toLong())
-                .toInt().coerceIn(90, 240)
+                .toInt().coerceIn(90, 270)
             val motionReadback = ByteBuffer.allocateDirect(analysisWidth * analysisHeight * 4)
                 .order(ByteOrder.nativeOrder())
             val currentMotionPixels = ByteArray(analysisWidth * analysisHeight * 4)
@@ -1471,7 +1471,7 @@ class RealTimeCfrSurfaceBridge(
             }
 
     companion object {
-        private const val BACKGROUND_ANALYSIS_INTERVAL_MS = 1_500L
+        private const val BACKGROUND_ANALYSIS_INTERVAL_MS = 700L
 
         /**
          * Texturas do anel (4K RGBA ~33 MB cada): frame anterior + frame em processamento +

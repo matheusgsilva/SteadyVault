@@ -1502,6 +1502,7 @@ class CaptureActivity : ComponentActivity() {
         SmartPoseFocusAnalyzer.Kind.HANDS -> "mãos"
         SmartPoseFocusAnalyzer.Kind.FEET -> "pés"
         SmartPoseFocusAnalyzer.Kind.BODY -> "corpo"
+        SmartPoseFocusAnalyzer.Kind.SKIN -> "mão/pé"
         null -> null
     }
 

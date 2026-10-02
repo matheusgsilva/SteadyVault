@@ -2790,6 +2790,7 @@ class CaptureService : Service() {
             SmartPoseFocusAnalyzer.Kind.HANDS -> 0.16f
             SmartPoseFocusAnalyzer.Kind.FEET -> 0.18f
             SmartPoseFocusAnalyzer.Kind.BODY -> 0.24f
+            SmartPoseFocusAnalyzer.Kind.SKIN -> 0.2f
         }
 
         val regionWidth = (activeArray.width() * fraction).toInt()
