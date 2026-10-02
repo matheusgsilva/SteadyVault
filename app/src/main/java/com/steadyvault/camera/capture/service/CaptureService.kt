@@ -2696,6 +2696,17 @@ class CaptureService : Service() {
             }.getOrNull() ?: return@execute
 
             backgroundSmartFocusAnalyzer.analyze(bitmap, sensorRotation) { target ->
+                // Diagnóstico por log: o alvo escolhido está mais nítido que o quadro?
+                runCatching {
+                    com.steadyvault.camera.core.camera.FocusSharpness.measure(bitmap, target?.x, target?.y, sensorRotation)
+                }.getOrNull()?.let { sharp ->
+                    Log.i(
+                        "SteadyVaultCfr",
+                        "foco inteligente: nitidez alvo=${if (sharp.region.isNaN()) "-" else "%.0f".format(sharp.region)} " +
+                            "quadro=${"%.0f".format(sharp.frame)}" +
+                            if (sharp.region.isNaN() || sharp.frame <= 0f) "" else " razão=${"%.2f".format(sharp.region / sharp.frame)}"
+                    )
+                }
                 runCatching { bitmap.recycle() }
                 if (target == null) {
                     Log.i("SteadyVaultCfr", "foco inteligente: nada identificado neste quadro")
@@ -3902,6 +3913,10 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
     private var prevFocus = 0f
     private var prevExposure = 0L
     private var prevIso = 0
+    private var focusMin = Float.MAX_VALUE
+    private var focusMax = 0f
+    private var afRegionRequested = "-"
+    private var afRegionApplied = "-"
     private var totalResults = 0L
     private var totalLong = 0L
 
@@ -3946,6 +3961,16 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
                 )
             }
         }
+        if (focus > 0f) {
+            if (focus < focusMin) focusMin = focus
+            if (focus > focusMax) focusMax = focus
+        }
+        afRegionRequested = request.get(CaptureRequest.CONTROL_AF_REGIONS)?.firstOrNull()?.let {
+            "[${it.x},${it.y} ${it.width}x${it.height}]"
+        } ?: "-"
+        afRegionApplied = result.get(CaptureResult.CONTROL_AF_REGIONS)?.firstOrNull()?.let {
+            "[${it.x},${it.y} ${it.width}x${it.height}]"
+        } ?: "-"
         lastTimestampNs = timestamp
         prevAf = af
         prevAe = aeState
@@ -3970,7 +3995,7 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
                     "isoMedia=$isoMean isoMax=$isoMax luz(exp*iso)=${expMean * isoMean / 1_000_000L} " +
                     "duracaoMedia=${durationSumNs / count / 1_000L}us duracaoMax=${durationMaxNs / 1_000L}us " +
                     "intervaloMax=${maxIntervalNs / 1_000_000L}ms longos=$longIntervals longosComAF=$longWithAfActive " +
-                    "afVarrendo=$afScanning aeState=$aeState frameNumbersPulados=$skippedFrameNumbers " +
+                    "afVarrendo=$afScanning foco=${"%.2f".format(if (focusMin == Float.MAX_VALUE) 0f else focusMin)}-${"%.2f".format(focusMax)} afPedido=$afRegionRequested afAplicado=$afRegionApplied aeState=$aeState frameNumbersPulados=$skippedFrameNumbers " +
                     "falhas=$failures buffersPerdidos=$bufferLost totalResultados=$totalResults totalLongos=$totalLong"
             )
             count = 0
@@ -3984,6 +4009,8 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
             longIntervals = 0
             longWithAfActive = 0
             afScanning = 0
+            focusMin = Float.MAX_VALUE
+            focusMax = 0f
         }
     }
 

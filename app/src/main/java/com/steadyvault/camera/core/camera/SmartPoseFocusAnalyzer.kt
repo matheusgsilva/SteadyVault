@@ -2,6 +2,7 @@ package com.steadyvault.camera.core.camera
 
 import android.graphics.Bitmap
 import android.graphics.PointF
+import android.util.Log
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.pose.Pose
 import com.google.mlkit.vision.pose.PoseDetection
@@ -69,7 +70,27 @@ class SmartPoseFocusAnalyzer : Closeable {
                 // e mão-na-boca (agora só com rosto confiável) continuam com prioridade.
                 val poseIsSolid = poseTarget != null &&
                     (poseTarget.kind == Kind.FACE || poseTarget.kind == Kind.HAND_TO_MOUTH)
-                onResult(if (poseIsSolid) poseTarget else (skinTarget ?: poseTarget))
+                val chosen = if (poseIsSolid) poseTarget else (skinTarget ?: poseTarget)
+                runCatching {
+                    val landmarks = pose.allPoseLandmarks
+                    val strong = landmarks.count { it.inFrameLikelihood >= MIN_LIKELIHOOD }
+                    val faceCount = listOf(
+                        PoseLandmark.NOSE, PoseLandmark.LEFT_EYE, PoseLandmark.RIGHT_EYE,
+                        PoseLandmark.LEFT_EAR, PoseLandmark.RIGHT_EAR
+                    ).count { (pose.getPoseLandmark(it)?.inFrameLikelihood ?: 0f) >= FACE_LIKELIHOOD }
+                    val handMax = listOf(
+                        PoseLandmark.LEFT_WRIST, PoseLandmark.RIGHT_WRIST, PoseLandmark.LEFT_INDEX,
+                        PoseLandmark.RIGHT_INDEX, PoseLandmark.LEFT_THUMB, PoseLandmark.RIGHT_THUMB
+                    ).maxOf { pose.getPoseLandmark(it)?.inFrameLikelihood ?: 0f }
+                    Log.i(
+                        "SteadyVaultCfr",
+                        "foco inteligente: pose=${poseTarget?.kind ?: "nada"} marcos=$strong/${landmarks.size} " +
+                            "rostoConfiavel=$faceCount/5 maoMax=${"%.2f".format(handMax)} " +
+                            "pele=${skin?.let { "área=${"%.0f".format(it.areaFraction * 100)}% centro=(${"%.2f".format(it.x)},${"%.2f".format(it.y)}) corCr=${"%.0f".format(it.meanCr)} R/G=${"%.2f".format(it.meanRg)}" } ?: "nenhuma"} " +
+                            "-> ${chosen?.kind ?: "nada"}"
+                    )
+                }
+                onResult(chosen)
             }
             .addOnFailureListener {
                 onResult(null)

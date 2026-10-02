@@ -19,12 +19,21 @@ import android.graphics.PointF
  */
 internal class SkinBlobFinder {
 
-    data class Blob(val x: Float, val y: Float, val areaFraction: Float)
+    data class Blob(
+        val x: Float,
+        val y: Float,
+        val areaFraction: Float,
+        /** Cr e R/G médios dos pixels de pele do quadro (diagnóstico de cor). */
+        val meanCr: Float = 0f,
+        val meanRg: Float = 0f
+    )
 
     private var background: FloatArray? = null
     private var gridWidth = 0
     private var gridHeight = 0
     private var updates = 0
+    private var meanCr = 0f
+    private var meanRg = 0f
 
     fun reset() {
         background = null
@@ -49,13 +58,27 @@ internal class SkinBlobFinder {
         val pixels = IntArray(width * height)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
         val skinCount = IntArray(gw * gh)
+        var crSum = 0.0
+        var rgSum = 0.0
+        var skinPixels = 0
         for (y in 0 until gh * cell) {
             val row = y * width
             val cellRow = (y / cell) * gw
             for (x in 0 until gw * cell) {
-                if (isSkin(pixels[row + x])) skinCount[cellRow + x / cell]++
+                val argb = pixels[row + x]
+                if (isSkin(argb)) {
+                    skinCount[cellRow + x / cell]++
+                    val r = ((argb shr 16) and 0xFF).toFloat()
+                    val g = ((argb shr 8) and 0xFF).toFloat()
+                    val b = (argb and 0xFF).toFloat()
+                    crSum += 128f + 0.5f * r - 0.418688f * g - 0.081312f * b
+                    rgSum += r / g.coerceAtLeast(1f)
+                    skinPixels++
+                }
             }
         }
+        meanCr = if (skinPixels > 0) (crSum / skinPixels).toFloat() else 0f
+        meanRg = if (skinPixels > 0) (rgSum / skinPixels).toFloat() else 0f
         val cellArea = cell * cell
         val skinCell = BooleanArray(gw * gh) { skinCount[it] * 2 > cellArea }
 
@@ -98,7 +121,7 @@ internal class SkinBlobFinder {
         }
         val total = (gw * gh).toFloat()
         if (bestSize < MIN_AREA * total || bestSize > MAX_AREA * total) return null
-        return Blob(bestX, bestY, bestSize / total)
+        return Blob(bestX, bestY, bestSize / total, meanCr, meanRg)
     }
 
     private fun push(index: Int, novel: BooleanArray, visited: BooleanArray, queue: IntArray, tail: Int): Int {
