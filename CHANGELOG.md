@@ -10,6 +10,7 @@ Porta para a main5, mantendo o Super Estável e o foco inteligente em background
 - **Look (`VideoLook`):** nitidez, saturação e curva em S, aplicados uma vez a toda saída (frame real, estabilizado, mistura e recriado). O frame anterior guardado fica cru. A amostra do foco inteligente não recebe o look.
 - **Telemetria (`SteadyVaultCfr`):** `resumo encoder`, `resumo CFR`, `movimento:` (estado, compensados, voltaram ao crossfade, duplicados, repetições da grade) e `sensor:` (histograma dos intervalos).
 - `CfrInterpolationPlanner` deixa de ser usado pela ponte (continua no projeto com os testes).
+- **Orientação (vídeo de lado):** em retrato o arquivo sai girado fisicamente pela GPU (encoder 2160x3840, hint do muxer 0), com a rotação escolhida compondo a matriz do `SurfaceTexture` (`resolveShaderRotation`, log `SurfaceTexture matrix=… -> shaderRotation=…`). Frame anterior, estimativa/recorte do Super Estável, interpolação e look trabalham no espaço de saída; a amostra do foco inteligente continua na orientação do sensor, então o `CaptureService` não muda.
 
 ## 1.8.266 — correção do Looper no início da gravação
 

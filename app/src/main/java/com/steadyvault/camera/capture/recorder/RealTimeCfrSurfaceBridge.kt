@@ -42,8 +42,11 @@ import kotlin.math.abs
  */
 class RealTimeCfrSurfaceBridge(
     private val encoderSurface: Surface,
-    private val width: Int,
-    private val height: Int,
+    private val sourceWidth: Int,
+    private val sourceHeight: Int,
+    private val outputWidth: Int,
+    private val outputHeight: Int,
+    private val physicalRotationDegrees: Int,
     private val fps: Int,
     private val superStabilizationEnabled: Boolean = false,
     private val analysisEnabled: Boolean = false,
@@ -133,7 +136,7 @@ class RealTimeCfrSurfaceBridge(
             "resumo CFR: reais=${stats.realFrames} misturaDeTempo=${stats.timingBlends} " +
                 "gapsPreenchidos=${stats.gapFilledFrames} descartados=${stats.droppedFrames} " +
                 "maiorGap=${stats.largestFillSlots}slots piorFrame=${stats.worstFrameMs}ms " +
-                "filaMax=${stats.maxBacklogSignals} fps=$fps saida=${width}x$height"
+                "filaMax=${stats.maxBacklogSignals} fps=$fps saida=${outputWidth}x$outputHeight"
         )
         Log.i(
             TAG,
@@ -277,7 +280,7 @@ class RealTimeCfrSurfaceBridge(
 
             externalTexture = createExternalTexture()
             st = SurfaceTexture(externalTexture).apply {
-                setDefaultBufferSize(width, height)
+                setDefaultBufferSize(sourceWidth, sourceHeight)
                 setOnFrameAvailableListener(
                     {
                         pendingFrames.updateAndGet { current ->
@@ -292,19 +295,24 @@ class RealTimeCfrSurfaceBridge(
             camera = Surface(st)
             cameraSurface = camera
 
-            previousTexture = createStorageTexture(width, height)
+            previousTexture = createStorageTexture(outputWidth, outputHeight)
             previousFramebuffer = createFramebuffer(previousTexture)
             externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_EXTERNAL))
             blendProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_BLEND))
             motionEstimateProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_GPU_MOTION_ESTIMATE)
             stabilizationProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_SUPER_STABILIZE))
 
-            val motionWidth = (width / 16).coerceIn(160, 320)
-            val motionHeight = ((motionWidth.toLong() * height.toLong()) / width.coerceAtLeast(1).toLong())
+            // Estimativa do Super Estável: no espaço de SAÍDA (retrato).
+            val motionWidth = (outputWidth / 16).coerceIn(90, 320)
+            val motionHeight = ((motionWidth.toLong() * outputHeight.toLong()) / outputWidth.coerceAtLeast(1).toLong())
+                .toInt().coerceIn(90, 320)
+            // Frame de análise do foco inteligente: orientação do SENSOR (o consumidor rotaciona).
+            val analysisWidth = (sourceWidth / 16).coerceIn(160, 320)
+            val analysisHeight = ((analysisWidth.toLong() * sourceHeight.toLong()) / sourceWidth.coerceAtLeast(1).toLong())
                 .toInt().coerceIn(90, 240)
-            val motionReadback = ByteBuffer.allocateDirect(motionWidth * motionHeight * 4)
+            val motionReadback = ByteBuffer.allocateDirect(analysisWidth * analysisHeight * 4)
                 .order(ByteOrder.nativeOrder())
-            val currentMotionPixels = ByteArray(motionWidth * motionHeight * 4)
+            val currentMotionPixels = ByteArray(analysisWidth * analysisHeight * 4)
 
             GLES20.glGenTextures(1, motionTextures, 0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTextures[0])
@@ -326,7 +334,7 @@ class RealTimeCfrSurfaceBridge(
             GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
             GLES20.glTexImage2D(
                 GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
-                motionWidth, motionHeight, 0,
+                analysisWidth, analysisHeight, 0,
                 GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
             )
             GLES20.glGenFramebuffers(1, analysisFramebuffer, 0)
@@ -340,7 +348,7 @@ class RealTimeCfrSurfaceBridge(
             }
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
 
-            val interpolator = MotionInterpolator(width, height)
+            val interpolator = MotionInterpolator(outputWidth, outputHeight)
             motion = interpolator
             motionState = if (interpolator.initialize()) "ativo" else "indisponivel"
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -470,8 +478,8 @@ class RealTimeCfrSurfaceBridge(
                             st = st,
                             externalTexture = externalTexture,
                             framebuffer = analysisFramebuffer[0],
-                            width = motionWidth,
-                            height = motionHeight,
+                            width = analysisWidth,
+                            height = analysisHeight,
                             target = currentMotionPixels,
                             readback = motionReadback,
                             program = externalProgram,
@@ -481,7 +489,7 @@ class RealTimeCfrSurfaceBridge(
                         )
                         lastAnalysisSampleMs = nowMs
                         runCatching {
-                            onAnalysisFrame?.invoke(currentMotionPixels.copyOf(), motionWidth, motionHeight)
+                            onAnalysisFrame?.invoke(currentMotionPixels.copyOf(), analysisWidth, analysisHeight)
                         }
                     }
                 }
@@ -723,11 +731,16 @@ class RealTimeCfrSurfaceBridge(
         externalTexture: Int,
         vertices: FloatBuffer,
         texCoords: FloatBuffer,
+        viewportWidth: Int = outputWidth,
+        viewportHeight: Int = outputHeight,
+        rotationDegrees: Int = physicalRotationDegrees,
         look: Boolean = false
     ) {
         st.getTransformMatrix(textureMatrix)
-        GLES20.glViewport(0, 0, width, height)
+        val shaderRotation = if (rotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, rotationDegrees)
+        GLES20.glViewport(0, 0, viewportWidth, viewportHeight)
         GLES20.glUseProgram(program)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uRotationDegrees"), shaderRotation.toFloat())
 
         val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
         val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
@@ -736,8 +749,8 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), if (look) 1f else 0f)
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "uLookTexel"),
-            VideoLook.RADIUS_PX / width,
-            VideoLook.RADIUS_PX / height
+            VideoLook.RADIUS_PX / viewportWidth,
+            VideoLook.RADIUS_PX / viewportHeight
         )
 
         vertices.position(0)
@@ -755,6 +768,60 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
+    @Volatile private var matrixLogged = false
+
+    /**
+     * Escolhe a rotação de UV (0/90/180/270, horária) que, composta com a matriz do
+     * SurfaceTexture, deixa a imagem na orientação pedida por [hintDegrees] (90 ou 270,
+     * mesma convenção de MediaMuxer.setOrientationHint).
+     *
+     * Não assume que a matriz seja só um flip-Y: alguns drivers embutem rotação nela,
+     * e aplicar a rotação do sensor por cima disso espreme a imagem paisagem
+     * dentro do quadro retrato.
+     */
+    private fun resolveShaderRotation(m: FloatArray, hintDegrees: Int): Int {
+        // Parte linear 2x2 (column-major): x' = m0*u + m4*v ; y' = m1*u + m5*v
+        val a = m[0]
+        val b = m[4]
+        val c = m[1]
+        val d = m[5]
+        // Alvo em coordenadas de textura do buffer (linha 0 = topo), row-major [00,01,10,11].
+        val target = if (hintDegrees == 270) {
+            floatArrayOf(0f, 1f, 1f, 0f)
+        } else {
+            floatArrayOf(0f, -1f, -1f, 0f)
+        }
+        var best = hintDegrees
+        var bestError = Float.MAX_VALUE
+        for ((degrees, f) in ROTATION_CANDIDATES) {
+            val error =
+                abs(a * f[0] + b * f[2] - target[0]) +
+                        abs(a * f[1] + b * f[3] - target[1]) +
+                        abs(c * f[0] + d * f[2] - target[2]) +
+                        abs(c * f[1] + d * f[3] - target[3])
+            if (error < bestError - 1e-4f) {
+                bestError = error
+                best = degrees
+            }
+        }
+        if (!matrixLogged) {
+            matrixLogged = true
+            Log.i(
+                "SteadyVaultCfr",
+                "SurfaceTexture matrix=[${a}, ${b}; ${c}, ${d}] hint=$hintDegrees " +
+                        "-> shaderRotation=$best erroResidual=$bestError " +
+                        "src=${sourceWidth}x$sourceHeight out=${outputWidth}x$outputHeight"
+            )
+            if (bestError > 0.01f) {
+                Log.w("SteadyVaultCfr", "matriz do SurfaceTexture espelhada/inesperada; orientação pode sair errada")
+            }
+        }
+        return best
+    }
+
+    private fun currentRotation(textureMatrix: FloatArray): Int =
+        if (physicalRotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, physicalRotationDegrees)
+
     private fun renderBlendToEncoder(
         st: SurfaceTexture,
         textureMatrix: FloatArray,
@@ -770,8 +837,12 @@ class RealTimeCfrSurfaceBridge(
     ) {
         st.getTransformMatrix(textureMatrix)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-        GLES20.glViewport(0, 0, width, height)
+        GLES20.glViewport(0, 0, outputWidth, outputHeight)
         GLES20.glUseProgram(program)
+        GLES20.glUniform1f(
+            GLES20.glGetUniformLocation(program, "uRotationDegrees"),
+            currentRotation(textureMatrix).toFloat()
+        )
 
         val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
         val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
@@ -781,8 +852,8 @@ class RealTimeCfrSurfaceBridge(
         val alphaHandle = GLES20.glGetUniformLocation(program, "uAlpha")
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "uLookTexel"),
-            VideoLook.RADIUS_PX / width,
-            VideoLook.RADIUS_PX / height
+            VideoLook.RADIUS_PX / outputWidth,
+            VideoLook.RADIUS_PX / outputHeight
         )
 
         vertices.position(0)
@@ -826,6 +897,8 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer)
         GLES20.glViewport(0, 0, width, height)
         GLES20.glUseProgram(program)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uRotationDegrees"), 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), 0f)
         val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
         val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
         val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
@@ -868,6 +941,10 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer)
         GLES20.glViewport(0, 0, motionWidth, motionHeight)
         GLES20.glUseProgram(program)
+        GLES20.glUniform1f(
+            GLES20.glGetUniformLocation(program, "uRotationDegrees"),
+            currentRotation(textureMatrix).toFloat()
+        )
 
         val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
         val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
@@ -918,7 +995,7 @@ class RealTimeCfrSurfaceBridge(
         return try {
             GLES20.glGetError()
             st.getTransformMatrix(textureMatrix)
-            val changed = mi.analyze(externalTexture, textureMatrix, 0, vertices, texCoords, compare)
+            val changed = mi.analyze(externalTexture, textureMatrix, currentRotation(textureMatrix), vertices, texCoords, compare)
             if (!mi.healthy()) throw IllegalStateException("erro GL na análise do frame")
             changed
         } catch (t: Throwable) {
@@ -959,7 +1036,7 @@ class RealTimeCfrSurfaceBridge(
             // Com o Super Estável, os frames reais saem recortados; o frame recriado usa o
             // mesmo recorte para não "pulsar" de zoom a cada lacuna.
             val crop = if (superStabilizationEnabled) SUPER_STABLE_CROP_SCALE else 1f
-            mi.warp(alpha, previousTexture, externalTexture, textureMatrix, 0, vertices, texCoords, crop)
+            mi.warp(alpha, previousTexture, externalTexture, textureMatrix, currentRotation(textureMatrix), vertices, texCoords, crop)
             if (!mi.healthy()) throw IllegalStateException("erro GL no warp")
         } catch (t: Throwable) {
             Log.w(TAG, "interpolação com movimento falhou, voltando ao crossfade: ${t.message}")
@@ -990,8 +1067,12 @@ class RealTimeCfrSurfaceBridge(
     ) {
         st.getTransformMatrix(textureMatrix)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-        GLES20.glViewport(0, 0, width, height)
+        GLES20.glViewport(0, 0, outputWidth, outputHeight)
         GLES20.glUseProgram(program)
+        GLES20.glUniform1f(
+            GLES20.glGetUniformLocation(program, "uRotationDegrees"),
+            currentRotation(textureMatrix).toFloat()
+        )
 
         val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
         val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
@@ -1022,8 +1103,8 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), 1f)
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "uLookTexel"),
-            VideoLook.RADIUS_PX / width,
-            VideoLook.RADIUS_PX / height
+            VideoLook.RADIUS_PX / outputWidth,
+            VideoLook.RADIUS_PX / outputHeight
         )
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
@@ -1144,6 +1225,14 @@ class RealTimeCfrSurfaceBridge(
         private const val DUPLICATE_CHANGED_FRACTION = 0.002f
         private const val MAX_CONSECUTIVE_SKIPS = 2
 
+        // Rotações de UV horárias como matriz row-major [00,01,10,11].
+        private val ROTATION_CANDIDATES = listOf(
+            0 to floatArrayOf(1f, 0f, 0f, 1f),
+            90 to floatArrayOf(0f, -1f, 1f, 0f),
+            180 to floatArrayOf(-1f, 0f, 0f, -1f),
+            270 to floatArrayOf(0f, 1f, -1f, 0f)
+        )
+
         private val VERTICES = floatArrayOf(
             -1f, -1f,
              1f, -1f,
@@ -1158,14 +1247,15 @@ class RealTimeCfrSurfaceBridge(
             1f, 1f
         )
 
+        // Os shaders de saída só repassam o UV; rotação e matriz são aplicadas no fragment
+        // para amostrar também os vizinhos do filtro de nitidez (VideoLook).
         private const val VERTEX_SHADER_EXTERNAL = """
             attribute vec4 aPosition;
             attribute vec4 aTexCoord;
-            uniform mat4 uTextureMatrix;
-            varying vec2 vTexCoord;
+            varying vec2 vUv;
             void main() {
                 gl_Position = aPosition;
-                vTexCoord = (uTextureMatrix * aTexCoord).xy;
+                vUv = aTexCoord.xy;
             }
         """
 
@@ -1176,39 +1266,36 @@ class RealTimeCfrSurfaceBridge(
             #else
             precision mediump float;
             #endif
-            varying vec2 vTexCoord;
+            varying vec2 vUv;
             uniform samplerExternalOES sTexture;
             uniform mat4 uTextureMatrix;
+            uniform float uRotationDegrees;
             uniform float uLook;
             LOOK_GLSL
+            vec2 rotateUv(vec2 uv) {
+                // Rotação horária (mesma convenção de MediaMuxer.setOrientationHint).
+                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);        // 270°
+                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);  // 180°
+                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);         // 90°
+                return uv;
+            }
+            vec3 fetchColor(vec2 uv) {
+                return texture2D(sTexture, (uTextureMatrix * vec4(rotateUv(uv), 0.0, 1.0)).xy).rgb;
+            }
             void main() {
-                vec3 c = texture2D(sTexture, vTexCoord).rgb;
+                vec3 c = fetchColor(vUv);
                 if (uLook > 0.5) {
-                    // Offsets em coordenadas de textura: parte linear da matriz (w = 0).
-                    vec2 dx = (uTextureMatrix * vec4(uLookTexel.x, 0.0, 0.0, 0.0)).xy;
-                    vec2 dy = (uTextureMatrix * vec4(0.0, uLookTexel.y, 0.0, 0.0)).xy;
-                    vec3 blur = 0.25 * (texture2D(sTexture, vTexCoord + dx).rgb +
-                                        texture2D(sTexture, vTexCoord - dx).rgb +
-                                        texture2D(sTexture, vTexCoord + dy).rgb +
-                                        texture2D(sTexture, vTexCoord - dy).rgb);
+                    vec2 dx = vec2(uLookTexel.x, 0.0);
+                    vec2 dy = vec2(0.0, uLookTexel.y);
+                    vec3 blur = 0.25 * (fetchColor(vUv + dx) + fetchColor(vUv - dx) +
+                                        fetchColor(vUv + dy) + fetchColor(vUv - dy));
                     c = lookGrade(c, blur);
                 }
                 gl_FragColor = vec4(c, 1.0);
             }
         """
 
-        private const val VERTEX_SHADER_BLEND = """
-            attribute vec4 aPosition;
-            attribute vec4 aTexCoord;
-            uniform mat4 uTextureMatrix;
-            varying vec2 vPreviousCoord;
-            varying vec2 vCurrentCoord;
-            void main() {
-                gl_Position = aPosition;
-                vPreviousCoord = aTexCoord.xy;
-                vCurrentCoord = (uTextureMatrix * aTexCoord).xy;
-            }
-        """
+        private const val VERTEX_SHADER_BLEND = VERTEX_SHADER_EXTERNAL
 
         private val IDENTITY_MATRIX = floatArrayOf(
             1f, 0f, 0f, 0f,
@@ -1217,7 +1304,7 @@ class RealTimeCfrSurfaceBridge(
             0f, 0f, 0f, 1f
         )
 
-        // Rede de segurança (sem movimento): crossfade temporal + look.
+        // O frame anterior já está no espaço de saída (cru); o atual é rotacionado aqui.
         private const val FRAGMENT_SHADER_BLEND = """
             #extension GL_OES_EGL_image_external : require
             #ifdef GL_FRAGMENT_PRECISION_HIGH
@@ -1225,27 +1312,30 @@ class RealTimeCfrSurfaceBridge(
             #else
             precision mediump float;
             #endif
-            varying vec2 vPreviousCoord;
-            varying vec2 vCurrentCoord;
+            varying vec2 vUv;
             uniform sampler2D sPrevious;
             uniform samplerExternalOES sCurrent;
             uniform mat4 uTextureMatrix;
+            uniform float uRotationDegrees;
             uniform float uAlpha;
             LOOK_GLSL
-            vec3 composite(vec2 previousUv, vec2 currentUv) {
-                return mix(texture2D(sPrevious, previousUv).rgb, texture2D(sCurrent, currentUv).rgb, uAlpha);
+            vec2 rotateUv(vec2 uv) {
+                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
+                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
+                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);
+                return uv;
+            }
+            vec3 composite(vec2 uv) {
+                vec3 previousColor = texture2D(sPrevious, uv).rgb;
+                vec3 currentColor = texture2D(sCurrent, (uTextureMatrix * vec4(rotateUv(uv), 0.0, 1.0)).xy).rgb;
+                return mix(previousColor, currentColor, uAlpha);
             }
             void main() {
                 vec2 dx = vec2(uLookTexel.x, 0.0);
                 vec2 dy = vec2(0.0, uLookTexel.y);
-                vec2 tx = (uTextureMatrix * vec4(uLookTexel.x, 0.0, 0.0, 0.0)).xy;
-                vec2 ty = (uTextureMatrix * vec4(0.0, uLookTexel.y, 0.0, 0.0)).xy;
-                vec3 c = composite(vPreviousCoord, vCurrentCoord);
-                vec3 blur = 0.25 * (composite(vPreviousCoord + dx, vCurrentCoord + tx) +
-                                    composite(vPreviousCoord - dx, vCurrentCoord - tx) +
-                                    composite(vPreviousCoord + dy, vCurrentCoord + ty) +
-                                    composite(vPreviousCoord - dy, vCurrentCoord - ty));
-                gl_FragColor = vec4(lookGrade(c, blur), 1.0);
+                vec3 blur = 0.25 * (composite(vUv + dx) + composite(vUv - dx) +
+                                    composite(vUv + dy) + composite(vUv - dy));
+                gl_FragColor = vec4(lookGrade(composite(vUv), blur), 1.0);
             }
         """
 
@@ -1254,12 +1344,22 @@ class RealTimeCfrSurfaceBridge(
         private const val FRAGMENT_SHADER_GPU_MOTION_ESTIMATE = """
             #extension GL_OES_EGL_image_external : require
             precision highp float;
-            varying vec2 vPreviousCoord;
-            varying vec2 vCurrentCoord;
+            varying vec2 vUv;
             uniform sampler2D sPrevious;
             uniform samplerExternalOES sCurrent;
             uniform vec2 uMotionTexel;
             uniform float uSearchRadius;
+            uniform mat4 uTextureMatrix;
+            uniform float uRotationDegrees;
+            vec2 rotateUv(vec2 uv) {
+                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
+                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
+                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);
+                return uv;
+            }
+            vec3 fetchCurrent(vec2 uv) {
+                return texture2D(sCurrent, (uTextureMatrix * vec4(rotateUv(uv), 0.0, 1.0)).xy).rgb;
+            }
 
             float luma(vec3 c) {
                 return dot(c, vec3(0.299, 0.587, 0.114));
@@ -1270,20 +1370,20 @@ class RealTimeCfrSurfaceBridge(
                 vec2 ty = vec2(0.0, uMotionTexel.y);
                 float e = 0.0;
                 e += abs(luma(texture2D(sPrevious, clamp(prevUv,0.0,1.0)).rgb) -
-                         luma(texture2D(sCurrent, clamp(currUv+offset,0.0,1.0)).rgb));
+                         luma(fetchCurrent(clamp(currUv+offset,0.0,1.0))));
                 e += 0.55*abs(luma(texture2D(sPrevious, clamp(prevUv+tx,0.0,1.0)).rgb) -
-                              luma(texture2D(sCurrent, clamp(currUv+offset+tx,0.0,1.0)).rgb));
+                              luma(fetchCurrent(clamp(currUv+offset+tx,0.0,1.0))));
                 e += 0.55*abs(luma(texture2D(sPrevious, clamp(prevUv-tx,0.0,1.0)).rgb) -
-                              luma(texture2D(sCurrent, clamp(currUv+offset-tx,0.0,1.0)).rgb));
+                              luma(fetchCurrent(clamp(currUv+offset-tx,0.0,1.0))));
                 e += 0.55*abs(luma(texture2D(sPrevious, clamp(prevUv+ty,0.0,1.0)).rgb) -
-                              luma(texture2D(sCurrent, clamp(currUv+offset+ty,0.0,1.0)).rgb));
+                              luma(fetchCurrent(clamp(currUv+offset+ty,0.0,1.0))));
                 e += 0.55*abs(luma(texture2D(sPrevious, clamp(prevUv-ty,0.0,1.0)).rgb) -
-                              luma(texture2D(sCurrent, clamp(currUv+offset-ty,0.0,1.0)).rgb));
+                              luma(fetchCurrent(clamp(currUv+offset-ty,0.0,1.0))));
                 return e / 3.2;
             }
 
             void consider(inout float bestError, inout vec2 bestOffset, vec2 candidate) {
-                float e = patchError(vPreviousCoord, vCurrentCoord, candidate);
+                float e = patchError(vUv, vUv, candidate);
                 if (e < bestError) {
                     bestError = e;
                     bestOffset = candidate;
@@ -1318,16 +1418,26 @@ class RealTimeCfrSurfaceBridge(
         private const val FRAGMENT_SHADER_SUPER_STABILIZE = """
             #extension GL_OES_EGL_image_external : require
             precision highp float;
-            varying vec2 vPreviousCoord;
-            varying vec2 vCurrentCoord;
+            varying vec2 vUv;
             uniform samplerExternalOES sCurrent;
             uniform sampler2D sMotion;
             uniform vec2 uMotionTexel;
             uniform float uSearchRadius;
             uniform float uStrength;
             uniform float uCropScale;
-            uniform mat4 uTextureMatrix;
             uniform float uLook;
+            uniform mat4 uTextureMatrix;
+            uniform float uRotationDegrees;
+            vec2 rotateUv(vec2 uv) {
+                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
+                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
+                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);
+                return uv;
+            }
+            vec3 fetchCurrent(vec2 uv) {
+                return texture2D(sCurrent, (uTextureMatrix * vec4(rotateUv(uv), 0.0, 1.0)).xy).rgb;
+            }
+
             LOOK_GLSL
 
             vec2 decodeMotion(vec2 uv) {
@@ -1348,16 +1458,16 @@ class RealTimeCfrSurfaceBridge(
                 m += decodeMotion(vec2(0.75,0.75));
                 m /= 10.0;
 
-                vec2 cropped = vec2(0.5) + (vCurrentCoord - vec2(0.5)) * uCropScale;
+                vec2 cropped = vec2(0.5) + (vUv - vec2(0.5)) * uCropScale;
                 vec2 stabilizedUv = clamp(cropped + m * uStrength, 0.001, 0.999);
-                vec3 c = texture2D(sCurrent, stabilizedUv).rgb;
+                vec3 c = fetchCurrent(stabilizedUv);
                 if (uLook > 0.5) {
-                    vec2 dx = (uTextureMatrix * vec4(uLookTexel.x, 0.0, 0.0, 0.0)).xy * uCropScale;
-                    vec2 dy = (uTextureMatrix * vec4(0.0, uLookTexel.y, 0.0, 0.0)).xy * uCropScale;
-                    vec3 blur = 0.25 * (texture2D(sCurrent, clamp(stabilizedUv + dx, 0.001, 0.999)).rgb +
-                                        texture2D(sCurrent, clamp(stabilizedUv - dx, 0.001, 0.999)).rgb +
-                                        texture2D(sCurrent, clamp(stabilizedUv + dy, 0.001, 0.999)).rgb +
-                                        texture2D(sCurrent, clamp(stabilizedUv - dy, 0.001, 0.999)).rgb);
+                    vec2 dx = vec2(uLookTexel.x, 0.0) * uCropScale;
+                    vec2 dy = vec2(0.0, uLookTexel.y) * uCropScale;
+                    vec3 blur = 0.25 * (fetchCurrent(clamp(stabilizedUv + dx, 0.001, 0.999)) +
+                                        fetchCurrent(clamp(stabilizedUv - dx, 0.001, 0.999)) +
+                                        fetchCurrent(clamp(stabilizedUv + dy, 0.001, 0.999)) +
+                                        fetchCurrent(clamp(stabilizedUv - dy, 0.001, 0.999)));
                     c = lookGrade(c, blur);
                 }
                 gl_FragColor = vec4(c, 1.0);

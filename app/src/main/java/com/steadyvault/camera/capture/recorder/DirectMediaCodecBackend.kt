@@ -54,8 +54,15 @@ class DirectMediaCodecBackend(
     override val videoBitrateBps: Long get() = videoBitrate.toLong()
     override val audioBitrateBps: Long get() = if (integratedAudio) audioBitrate.toLong() else 0L
 
+    // Retrato: o arquivo já sai girado pela GPU (dimensões trocadas, hint 0). Girar só pelo
+    // hint do muxer deixa players/galerias exibindo o vídeo de lado.
+    private val physicallyRotatePortrait = orientationHint == 90 || orientationHint == 270
+    private val encoderWidth = if (physicallyRotatePortrait) height else width
+    private val encoderHeight = if (physicallyRotatePortrait) width else height
+    private val encoderOrientationHint = if (physicallyRotatePortrait) 0 else orientationHint
+
     val profileDescription: String
-        get() = "${width}x${height} ${targetFps} FPS " +
+        get() = "${encoderWidth}x${encoderHeight} ${targetFps} FPS " +
             "${videoMime.substringAfter('/').uppercase()} ${videoBitrate / 1_000_000} Mbps • CFR GPU-only"
 
     private val drainExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -105,7 +112,7 @@ class DirectMediaCodecBackend(
 
         val codecInfo = selectEncoder()
             ?: throw IllegalStateException(
-                "nenhum encoder de hardware suporta ${width}x${height} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
+                "nenhum encoder de hardware suporta ${encoderWidth}x${encoderHeight} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
             )
         try {
             activeCodecName = codecInfo.name
@@ -119,7 +126,7 @@ class DirectMediaCodecBackend(
                 outputFile.absolutePath,
                 MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
             )
-            mediaMuxer.setOrientationHint(orientationHint)
+            mediaMuxer.setOrientationHint(encoderOrientationHint)
             muxer = mediaMuxer
 
             if (integratedAudio) {
@@ -149,8 +156,11 @@ class DirectMediaCodecBackend(
 
             val bridge = RealTimeCfrSurfaceBridge(
                 encoderSurface = encoderSurface,
-                width = width,
-                height = height,
+                sourceWidth = width,
+                sourceHeight = height,
+                outputWidth = encoderWidth,
+                outputHeight = encoderHeight,
+                physicalRotationDegrees = if (physicallyRotatePortrait) orientationHint else 0,
                 fps = targetFps,
                 superStabilizationEnabled = superStabilizationEnabled,
                 analysisEnabled = analysisEnabled,
@@ -395,7 +405,7 @@ class DirectMediaCodecBackend(
                 MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
             )
             mergedMuxer = localMuxer
-            localMuxer.setOrientationHint(orientationHint)
+            localMuxer.setOrientationHint(encoderOrientationHint)
 
             val videoTargetTrack =
                 localMuxer.addTrack(videoExtractor.getTrackFormat(videoSourceTrack))
@@ -495,7 +505,7 @@ class DirectMediaCodecBackend(
      *  - LATENCY=1 e MAX_B_FRAMES=0: sem fila de reordenação, saída na ordem de entrada.
      */
     private fun buildVideoFormat(realtimeTuning: Boolean): MediaFormat =
-        MediaFormat.createVideoFormat(videoMime, width, height).apply {
+        MediaFormat.createVideoFormat(videoMime, encoderWidth, encoderHeight).apply {
             setInteger(
                 MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
@@ -590,10 +600,10 @@ class DirectMediaCodecBackend(
                     val caps = info.getCapabilitiesForType(videoMime)
                     val videoCaps = caps.videoCapabilities
                     videoCaps != null &&
-                        videoCaps.isSizeSupported(width, height) &&
+                        videoCaps.isSizeSupported(encoderWidth, encoderHeight) &&
                         videoCaps.areSizeAndRateSupported(
-                            width,
-                            height,
+                            encoderWidth,
+                            encoderHeight,
                             targetFps.toDouble()
                         )
                 }.getOrDefault(false)
