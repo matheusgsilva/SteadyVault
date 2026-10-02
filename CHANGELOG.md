@@ -1,3 +1,11 @@
+## main3 — preenchimento de lacunas por movimento, em tempo real
+
+- **Causa real dos travamentos:** os logs mostram o encoder limpo (0 buracos de PTS) e os intervalos do sensor bimodais (16,7 ms ou exatamente 33 ms): a câmera/HAL entrega ~5-6% de frames a menos em 4K60, com ou sem "Priorizar qualidade em pouca luz". Nenhum ajuste de tempo recupera um frame que nunca chegou, então o app agora o recria.
+- **Interpolação com compensação de movimento na GPU** (`MotionInterpolator`, `MotionShaders`): só nos frames perdidos (até 4 saídas seguidas), usa luma em 1/8, 1/16 e 1/32, block matching hierárquico (SAD, último passe com meio texel) e warp bidirecional no instante exato do slot. Onde o fluxo não é confiável (custo SAD alto ou os dois lados discordam, por exemplo oclusão) volta ao crossfade naquele pixel. Em teste sintético (pan + objeto independente) o PSNR do frame central sobe de ~20 dB (crossfade) para 28-35 dB.
+- **Segurança:** se a GPU não tiver textura half-float renderizável, ou qualquer passo gerar erro GL, o caminho é desligado e a ponte volta ao crossfade anterior (comportamento idêntico ao da versão anterior). O frame anterior agora é guardado já no espaço de saída (rotação aplicada uma vez).
+- **Telemetria:** nova linha `movimento: estado=ativo|indisponivel|desligadoPorErro compensados=N voltaramAoCrossfade=N` no logcat (tag `SteadyVaultCfr`).
+- **Teste dos shaders:** `tools/motion_test/run.py` (Chromium headless/WebGL1) compila os shaders de `MotionShaders.kt` e compara crossfade x movimento contra o frame verdadeiro.
+
 ## main3 — gravação lisa: orientação, tempo exato e encoder sem frame-drop
 
 - **Orientação:** a ponte GPU grava o arquivo já em retrato (metadata 0°) e gira no shader. Os ramos de 90°/270° estavam trocados e o vídeo saía de cabeça para baixo; além disso a rotação assumia que a matriz do `SurfaceTexture` era só um flip vertical, e em aparelhos que a entregam com a rotação embutida a imagem saía esticada. O shader agora escolhe a rotação (0/90/180/270) a partir da matriz real de cada frame; o primeiro frame registra a matriz e a rotação escolhida no logcat.

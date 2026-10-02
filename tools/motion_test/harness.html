@@ -1,0 +1,105 @@
+<!doctype html><canvas id=c width=960 height=544></canvas><script>
+const W=960,H=544;
+function scene(t,sx,sy,ox,oy){ // t em frames; pan global + objeto
+  const d=new Uint8Array(W*H*4);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    let u=x-sx*t, v=y-sy*t, val=tex(u,v);
+    const cx=480+ox*t-sx*0, cy=272+oy*t, dx=x-cx, dy=y-cy;
+    if(dx*dx+dy*dy<70*70) val=tex(x-ox*t+300,y-oy*t+90)*0.8+40;
+    val=Math.max(0,Math.min(255,val));
+    const i=(y*W+x)*4;d[i]=d[i+1]=d[i+2]=val;d[i+3]=255;}
+  return d;}
+function tex(u,v){let s=0;const f=[[0.021,0.017,60],[0.047,0.055,40],[0.11,0.09,30],[0.23,0.19,20],[0.41,0.37,12]];
+  for(const [a,b,w] of f)s+=w*Math.sin(a*u+1.3*Math.sin(b*v)+b*v*0.7);return 128+s*0.9;}
+function psnr(a,b){let e=0,n=0;for(let i=0;i<a.length;i+=4){for(let k=0;k<3;k++){const q=a[i+k]-b[i+k];e+=q*q;n++}}
+  return 10*Math.log10(255*255/(e/n+1e-9));}
+window.runTests=function(S){
+  const cv=document.getElementById('c');
+  const gl=cv.getContext('webgl',{preserveDrawingBuffer:true,antialias:false});
+  const out={};
+  out.halfFloat=!!gl.getExtension('OES_texture_half_float');
+  out.halfFloatLinear=!!gl.getExtension('OES_texture_half_float_linear');
+  out.cbhf=!!gl.getExtension('EXT_color_buffer_half_float');
+  const HF=gl.getExtension('OES_texture_half_float');
+  function prog(vs,fs,defs){
+    const mk=(t,s)=>{const sh=gl.createShader(t);gl.shaderSource(sh,s);gl.compileShader(sh);
+      if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(sh));return sh};
+    const p=gl.createProgram();gl.attachShader(p,mk(gl.VERTEX_SHADER,vs));gl.attachShader(p,mk(gl.FRAGMENT_SHADER,defs+fs));
+    gl.bindAttribLocation(p,0,'aPosition');gl.bindAttribLocation(p,1,'aTexCoord');gl.linkProgram(p);
+    if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));return p;}
+  const quad=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,quad);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,0,0, 1,-1,1,0, -1,1,0,1, 1,1,1,1]),gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(0,2,gl.FLOAT,false,16,0);gl.vertexAttribPointer(1,2,gl.FLOAT,false,16,8);
+  function tex2d(w,h,type,data,filter){const t=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,t);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,filter);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,filter);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,type,data);
+    const f=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,f);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,t,0);
+    out['fbo'+w+'x'+h+'_'+type]=gl.checkFramebufferStatus(gl.FRAMEBUFFER)===gl.FRAMEBUFFER_COMPLETE;
+    return {t,f,w,h};}
+  const LIN=gl.LINEAR, NEAR=gl.NEAREST;
+  const HFT=HF.HALF_FLOAT_OES;
+  function pass(p,target,uni,texs){
+    gl.bindFramebuffer(gl.FRAMEBUFFER,target?target.f:null);
+    gl.viewport(0,0,target?target.w:W,target?target.h:H);
+    gl.useProgram(p);
+    texs.forEach(([name,tx],i)=>{gl.activeTexture(gl.TEXTURE0+i);gl.bindTexture(gl.TEXTURE_2D,tx.t||tx);gl.uniform1i(gl.getUniformLocation(p,name),i)});
+    for(const k in uni){const v=uni[k],l=gl.getUniformLocation(p,k);if(Array.isArray(v))gl.uniform2f(l,v[0],v[1]);else gl.uniform1f(l,v)}
+    gl.drawArrays(gl.TRIANGLE_STRIP,0,4);}
+  function readPng(){const px=new Uint8Array(W*H*4);gl.readPixels(0,0,W,H,gl.RGBA,gl.UNSIGNED_BYTE,px);return px;}
+  function toPng(px){const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');
+    const id=x.createImageData(W,H);for(let y=0;y<H;y++)for(let xx=0;xx<W;xx++){const a=(y*W+xx)*4,b=(y*W+xx)*4;
+      for(let k=0;k<4;k++)id.data[b+k]=px[a+k];}x.putImageData(id,0,0);return c.toDataURL('image/png');}
+  // parâmetros (espelham o que o Kotlin usa)
+  const P=window.PARAMS||{};
+  const cfg=Object.assign({L2:{R:3,STEP:1,WIN:2,LAMBDA:0.002},L1:{R:1,STEP:1,WIN:2,LAMBDA:0.002},L0:{R:1,STEP:1,WIN:2,LAMBDA:0.002},L0b:{R:1,STEP:0.5,WIN:2,LAMBDA:0.001},
+     costLow:0.03,costHigh:0.10,diffLow:0.08,diffHigh:0.25},P);
+  const defs=c=>`#define R ${c.R}\n#define STEP ${c.STEP.toFixed(2)}\n#define WIN ${c.WIN}\n#define NORM ${((2*c.WIN+1)**2).toFixed(1)}\n#define LAMBDA ${c.LAMBDA.toFixed(5)}\n`;
+  const pDown=prog(S.VERTEX,S.DOWN_FRAGMENT,''), pPyr=prog(S.VERTEX,S.PYRAMID_FRAGMENT,'');
+  const pEst={};for(const k of ['L2','L1','L0','L0b'])pEst[k]=prog(S.VERTEX,S.ESTIMATE_FRAGMENT,defs(cfg[k]));
+  const pWarp=prog(S.VERTEX,S.WARP_FRAGMENT,'');
+  function run(name,sx,sy,ox,oy,t){
+    const A=scene(0,sx,sy,ox,oy),B=scene(1,sx,sy,ox,oy),G=scene(t,sx,sy,ox,oy);
+    const tA=tex2d(W,H,gl.UNSIGNED_BYTE,A,LIN),tB=tex2d(W,H,gl.UNSIGNED_BYTE,B,LIN);
+    const sz=[[W/8,H/8],[W/16,H/16],[W/32,H/32]].map(([w,h])=>[Math.floor(w),Math.floor(h)]);
+    const lv=['P','C'].map(()=>sz.map(([w,h])=>tex2d(w,h,gl.UNSIGNED_BYTE,null,LIN)));
+    const fl=sz.map(([w,h])=>tex2d(w,h,HFT,null,out.halfFloatLinear?LIN:NEAR));
+    const fl0b=tex2d(sz[0][0],sz[0][1],HFT,null,out.halfFloatLinear?LIN:NEAR);
+    const tex8=(w)=>[1/w[0],1/w[1]];
+    [[0,tA],[1,tB]].forEach(([i,src])=>{
+      pass(pDown,lv[i][0],{uTexel:[1/sz[0][0],1/sz[0][1]]},[['sSrc',src]]);
+      // texel de origem: passo do tap = 2*uTexel (uTexel é do ALVO 1/8 -> 8x8 = 4 taps*2 de 1/8?) ver abaixo
+    });
+    return {tA,tB,G,lv,fl,fl0b,sz};}
+  // down: uTexel deve ser o texel da FONTE (1/W,1/H)
+  function interp(name,sx,sy,ox,oy,t){
+    const A=scene(0,sx,sy,ox,oy),B=scene(1,sx,sy,ox,oy),G=scene(t,sx,sy,ox,oy);
+    const tA=tex2d(W,H,gl.UNSIGNED_BYTE,A,LIN),tB=tex2d(W,H,gl.UNSIGNED_BYTE,B,LIN);
+    const sz=[[W/8,H/8],[W/16,H/16],[W/32,H/32]].map(([w,h])=>[Math.floor(w),Math.floor(h)]);
+    const lv=[0,1].map(()=>sz.map(([w,h])=>tex2d(w,h,gl.UNSIGNED_BYTE,null,LIN)));
+    const mkF=([w,h])=>tex2d(w,h,HFT,null,out.halfFloatLinear?LIN:NEAR);
+    const fl2=mkF(sz[2]),fl1=mkF(sz[1]),fl0=mkF(sz[0]),flb=mkF(sz[0]);
+    [tA,tB].forEach((src,i)=>{
+      pass(pDown,lv[i][0],{uTexel:[1/W,1/H]},[['sSrc',src]]);
+      pass(pPyr,lv[i][1],{uSrcTexel:[1/sz[0][0],1/sz[0][1]]},[['sSrc',lv[i][0]]]);
+      pass(pPyr,lv[i][2],{uSrcTexel:[1/sz[1][0],1/sz[1][1]]},[['sSrc',lv[i][1]]]);});
+    const est=(k,lvl,target,prior)=>pass(pEst[k],target,{uTexel:[1/sz[lvl][0],1/sz[lvl][1]],uHasPrior:prior?1:0},
+        [['sP',lv[0][lvl]],['sC',lv[1][lvl]],['sFlow',prior||lv[0][lvl]]]);
+    est('L2',2,fl2,null);est('L1',1,fl1,fl2);est('L0',0,fl0,fl1);est('L0b',0,flb,fl0);
+    const warp=(a,flow)=>{pass(pWarp,null,{uAlpha:a,uCostLow:cfg.costLow,uCostHigh:cfg.costHigh,uDiffLow:cfg.diffLow,uDiffHigh:cfg.diffHigh},
+        [['sP',tA],['sFlow',flow],['sC',tB]]);return readPng();};
+    const mo=warp(t,flb);
+    // crossfade: fluxo zero -> custo alto força confiança 0
+    const cross=(()=>{const z=mkF(sz[0]);gl.bindFramebuffer(gl.FRAMEBUFFER,z.f);gl.clearColor(0,0,1,1);gl.clear(gl.COLOR_BUFFER_BIT);return warp(t,z)})();
+    // ground truth em PNG-ordem: scene() usa y de cima; readPixels de baixo -> inverter
+    const gt=G;
+    out[name+'_crossfade']=+psnr(cross,gt).toFixed(2);out[name+'_motion']=+psnr(mo,gt).toFixed(2);
+    out[name+'_motion_png']=toPng(mo);out[name+'_cross_png']=toPng(cross);out[name+'_truth_png']=toPng(gt);}
+  interp('pan',14,6,0,0,0.5);
+  interp('pan_obj',14,6,-22,12,0.5);
+  interp('pan_big',40,-18,0,0,0.5);
+  interp('pan_obj_t33',14,6,-22,12,0.33);
+  return out;}
+</script>

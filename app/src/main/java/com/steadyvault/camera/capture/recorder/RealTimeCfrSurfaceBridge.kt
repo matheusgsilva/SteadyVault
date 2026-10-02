@@ -62,6 +62,9 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var droppedFrames = 0L
     @Volatile private var timingBlends = 0L
     @Volatile private var gapFilledFrames = 0L
+    @Volatile private var motionFrames = 0L
+    @Volatile private var motionFallbacks = 0L
+    @Volatile private var motionState = "desligado"
     @Volatile private var maxIntervalNs = 0L
     private val intervalBuckets = LongArray(5)
     @Volatile private var largestFillSlots = 0
@@ -108,7 +111,9 @@ class RealTimeCfrSurfaceBridge(
         worstFrameMs = worstFrameNs / 1_000_000L,
         maxBacklogSignals = maxBacklogSignals,
         timingBlends = timingBlends,
-        gapFilledFrames = gapFilledFrames
+        gapFilledFrames = gapFilledFrames,
+        motionFrames = motionFrames,
+        motionFallbacks = motionFallbacks
     )
 
     private fun logSummary() {
@@ -120,6 +125,11 @@ class RealTimeCfrSurfaceBridge(
                 "gapsPreenchidos=${stats.gapFilledFrames} descartados=${stats.droppedFrames} " +
                 "maiorGap=${stats.largestFillSlots}slots piorFrame=${stats.worstFrameMs}ms " +
                 "filaMax=${stats.maxBacklogSignals} fps=$fps saida=${outputWidth}x$outputHeight"
+        )
+        Log.i(
+            TAG,
+            "movimento: estado=$motionState compensados=${stats.motionFrames} " +
+                "voltaramAoCrossfade=${stats.motionFallbacks}"
         )
         val total = intervalBuckets.sum().coerceAtLeast(1L)
         fun pct(index: Int) = 100L * intervalBuckets[index] / total
@@ -168,7 +178,11 @@ class RealTimeCfrSurfaceBridge(
         /** Saídas misturadas só para corrigir o TEMPO de um frame (jitter), sem gap real. */
         val timingBlends: Long = 0L,
         /** Saídas sintetizadas para preencher frames que a câmera realmente perdeu. */
-        val gapFilledFrames: Long = 0L
+        val gapFilledFrames: Long = 0L,
+        /** Saídas sintetizadas com compensação de movimento (sem ghosting). */
+        val motionFrames: Long = 0L,
+        /** Saídas que voltaram ao crossfade por erro/indisponibilidade do caminho de movimento. */
+        val motionFallbacks: Long = 0L
     )
 
     private fun renderLoop() {
@@ -183,6 +197,7 @@ class RealTimeCfrSurfaceBridge(
         var previousFramebuffer = 0
         var externalProgram = 0
         var blendProgram = 0
+        var motion: MotionInterpolator? = null
         var st: SurfaceTexture? = null
         var camera: Surface? = null
 
@@ -258,10 +273,15 @@ class RealTimeCfrSurfaceBridge(
             camera = Surface(st)
             cameraSurface = camera
 
-            previousTexture = createStorageTexture(sourceWidth, sourceHeight)
+            previousTexture = createStorageTexture(outputWidth, outputHeight)
             previousFramebuffer = createFramebuffer(previousTexture)
             externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_EXTERNAL)
             blendProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_BLEND)
+
+            val interpolator = MotionInterpolator(outputWidth, outputHeight)
+            motion = interpolator
+            motionState = if (interpolator.initialize()) "ativo" else "indisponivel"
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
 
             val vertices = floatBuffer(VERTICES)
             val texCoords = floatBuffer(TEX_COORDS)
@@ -276,6 +296,7 @@ class RealTimeCfrSurfaceBridge(
             var previousSourceTimestampNs = 0L
             var copiedTimestampNs = Long.MIN_VALUE
             var outputPtsNs = 0L
+            var flowReady = false
 
             while (!released.get()) {
                 if (!outputEnabled.get()) {
@@ -364,6 +385,7 @@ class RealTimeCfrSurfaceBridge(
                     )
                     copiedTimestampNs = previousSourceTimestampNs
                 }
+                flowReady = false
 
                 st.updateTexImage()
                 val currentSourceTimestampNs = st.timestamp
@@ -390,10 +412,9 @@ class RealTimeCfrSurfaceBridge(
                     continue
                 }
 
-                // main3 fix: preserve geometric integrity.
-                // Frames sintetizados usam somente mistura temporal entre os dois frames reais
-                // vizinhos. Nenhum warp por fluxo óptico é aplicado, então um frame de reparo
-                // não dobra linhas retas nem cria clarões locais.
+                // Frames reais passam direto. Saída sem frame real naquele instante: tenta a
+                // interpolação com compensação de movimento (sem ghosting); se a GPU não
+                // suporta ou algo falha, cai para o crossfade temporal de sempre.
                 var outputIndex = 0
                 while (outputIndex < outputs) {
                     val alpha = resampler.alphaAt(outputIndex)
@@ -411,7 +432,16 @@ class RealTimeCfrSurfaceBridge(
                         )
                         realFrames++
                     } else {
-                        renderBlendToEncoder(
+                        var done = false
+                        val mi = motion
+                        if (mi != null && mi.available && outputs <= MAX_MOTION_OUTPUTS) {
+                            done = renderMotionToEncoder(
+                                mi, st, textureMatrix, previousTexture, externalTexture,
+                                alpha, flowReady, vertices, texCoords, display, window, outputPtsNs
+                            )
+                            if (done) flowReady = true else motionFallbacks++
+                        }
+                        if (!done) renderBlendToEncoder(
                             st = st,
                             textureMatrix = textureMatrix,
                             program = blendProgram,
@@ -448,6 +478,7 @@ class RealTimeCfrSurfaceBridge(
             if (display != EGL14.EGL_NO_DISPLAY) {
                 if (externalProgram != 0) runCatching { GLES20.glDeleteProgram(externalProgram) }
                 if (blendProgram != 0) runCatching { GLES20.glDeleteProgram(blendProgram) }
+                runCatching { motion?.release() }
                 if (previousFramebuffer != 0) {
                     runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(previousFramebuffer), 0) }
                 }
@@ -493,9 +524,9 @@ class RealTimeCfrSurfaceBridge(
             externalTexture = externalTexture,
             vertices = vertices,
             texCoords = texCoords,
-            viewportWidth = sourceWidth,
-            viewportHeight = sourceHeight,
-            rotationDegrees = 0
+            viewportWidth = outputWidth,
+            viewportHeight = outputHeight,
+            rotationDegrees = physicalRotationDegrees
         )
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
     }
@@ -669,6 +700,48 @@ class RealTimeCfrSurfaceBridge(
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers interpolado falhou" }
     }
 
+    /**
+     * Gera a saída [alpha] por compensação de movimento. Retorna false (sem ter trocado
+     * buffers) se algo falhou; o chamador desenha o crossfade no lugar e o caminho de
+     * movimento é desligado de vez para não repetir o erro a 60 vezes por segundo.
+     */
+    private fun renderMotionToEncoder(
+        mi: MotionInterpolator,
+        st: SurfaceTexture,
+        textureMatrix: FloatArray,
+        previousTexture: Int,
+        externalTexture: Int,
+        alpha: Float,
+        flowReady: Boolean,
+        vertices: FloatBuffer,
+        texCoords: FloatBuffer,
+        display: android.opengl.EGLDisplay,
+        window: android.opengl.EGLSurface,
+        presentationTimeNs: Long
+    ): Boolean {
+        try {
+            GLES20.glGetError() // limpa erro pendente de outro passo
+            st.getTransformMatrix(textureMatrix)
+            val rotation = if (physicalRotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, physicalRotationDegrees)
+            if (!flowReady) {
+                mi.estimate(previousTexture, externalTexture, textureMatrix, rotation, vertices, texCoords)
+                if (!mi.healthy()) throw IllegalStateException("erro GL na estimativa")
+            }
+            mi.warp(alpha, previousTexture, externalTexture, textureMatrix, rotation, vertices, texCoords)
+            if (!mi.healthy()) throw IllegalStateException("erro GL no warp")
+        } catch (t: Throwable) {
+            Log.w(TAG, "interpolação com movimento falhou, voltando ao crossfade: ${t.message}")
+            motionState = "desligadoPorErro"
+            mi.release()
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            return false
+        }
+        EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
+        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers com movimento falhou" }
+        motionFrames++
+        return true
+    }
+
     private fun createExternalTexture(): Int {
         val textures = IntArray(1)
         GLES20.glGenTextures(1, textures, 0)
@@ -769,6 +842,9 @@ class RealTimeCfrSurfaceBridge(
         private const val RELEASE_TIMEOUT_MS = 1_000L
         private const val IDLE_POLL_NS = 1_000_000L
         private const val MAX_PENDING_SIGNAL_COUNT = 8
+
+        /** Acima disso (lacuna longa) o movimento entre os frames reais já não é estimável: crossfade. */
+        private const val MAX_MOTION_OUTPUTS = 4
         private const val TAG = "SteadyVaultCfr"
 
         // Rotações de UV horárias como matriz row-major [00,01,10,11].
@@ -844,7 +920,7 @@ class RealTimeCfrSurfaceBridge(
             void main() {
                 gl_Position = aPosition;
                 vec2 rotated = rotateUv(aTexCoord.xy);
-                vPreviousCoord = rotated;
+                vPreviousCoord = aTexCoord.xy; // anterior já está no espaço de saída
                 vCurrentCoord = (uTextureMatrix * vec4(rotated, 0.0, 1.0)).xy;
             }
         """
