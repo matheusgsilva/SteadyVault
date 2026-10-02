@@ -555,13 +555,13 @@ class RealTimeCfrSurfaceBridge(
                             )
                             if (done) flowReady = true else motionFallbacks++
                         }
-                        // Sem movimento compensado (limitador/erro) a mistura de dois frames em
-                        // movimento vira fantasma/borrão: usa o frame real mais próximo, nítido.
+                        // Reserva (só se o movimento compensado falhar ou o anel estiver quase
+                        // cheio): mistura temporal. Nunca repete frame.
                         if (!done) renderBlendToEncoder(
                             program = blendProgram,
                             previousTexture = previous.texture,
                             currentTexture = current.texture,
-                            alpha = if (alpha < 0.5f) 0f else 1f,
+                            alpha = alpha,
                             vertices = vertices,
                             texCoords = texCoords,
                             display = display,
@@ -1381,8 +1381,8 @@ class RealTimeCfrSurfaceBridge(
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
         private const val TIMING_DIAGNOSTICS = false
         // Limitador do preenchimento com movimento (ver o laço de renderização).
-        private const val MOTION_MAX_BACKLOG = 5
-        private const val MOTION_BUDGET_NS = 120_000_000L
+        private const val MOTION_MAX_BACKLOG = 7
+        private const val MOTION_BUDGET_NS = 250_000_000L
         private const val MOTION_COOLDOWN_NS = 150_000_000L
 
         private const val EGL_RECORDABLE_ANDROID = 0x3142
