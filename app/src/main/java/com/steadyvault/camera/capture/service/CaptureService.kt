@@ -1680,6 +1680,15 @@ class CaptureService : Service() {
         runCatching {
             armRecorderForFirstFrame(token)
             val manualSensor = supportsManualSensor(profile)
+            Log.i(
+                "SteadyVaultCfr",
+                "modo de exposição: " + if (
+                    !recordingSettings.autoFpsLowLight && profile.targetFps == CaptureModeStore.FPS_60 &&
+                    !profile.hdrHlg10 && manualSensor
+                ) "CADÊNCIA FIXA (exposição limitada a 1/120 s, menos borrão)"
+                else "AE AUTOMÁTICO (exposição até 1/60 s; desligue 'Auto FPS em pouca luz' para limitar a 1/120 s) " +
+                    "autoFpsLowLight=${recordingSettings.autoFpsLowLight} fps=${profile.targetFps} hdr=${profile.hdrHlg10} manual=$manualSensor"
+            )
             if (
                 !recordingSettings.autoFpsLowLight &&
                 profile.targetFps == CaptureModeStore.FPS_60 &&
