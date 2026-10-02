@@ -63,6 +63,10 @@ class RealTimeCfrSurfaceBridge(
         /** Framebuffer do contexto de RECEPÇÃO (framebuffers não são compartilhados). */
         var framebuffer = 0
         @Volatile var timestampNs = 0L
+        /** Ordem de chegada (para detectar frames fora de ordem entre as threads). */
+        @Volatile var sequence = 0L
+        /** Cerca EGL: a cópia da recepção terminou (a saída espera antes de ler). */
+        @Volatile var fence: android.opengl.EGLSync? = null
     }
 
     private val released = AtomicBoolean(false)
@@ -164,6 +168,8 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var ingestStallMaxNs = 0L
     @Volatile private var lastIngestStartNs = 0L
     @Volatile private var motionThrottled = 0L
+    @Volatile private var orderViolations = 0L
+    @Volatile private var fenceFallbacks = 0L
 
     private fun swapBuffers(display: android.opengl.EGLDisplay, window: android.opengl.EGLSurface, message: String) {
         val start = System.nanoTime()
@@ -190,7 +196,7 @@ class RealTimeCfrSurfaceBridge(
             "movimento: estado=$motionState compensados=${stats.motionFrames} " +
                 "voltaramAoCrossfade=${stats.motionFallbacks} " +
                 "duplicadosDaCamera=${stats.duplicatesSkipped} repeticoesDaGrade=${stats.repeatedOutputs} " +
-                "limitadosPorCusto=$motionThrottled"
+                "limitadosPorCusto=$motionThrottled foraDeOrdem=$orderViolations semCerca=$fenceFallbacks"
         )
         fun ms(ns: Long) = ns / 1_000_000L
         Log.i(
@@ -412,6 +418,7 @@ class RealTimeCfrSurfaceBridge(
             var timelineStarted = false
             var motionLightUntilNs = 0L
             var outputPtsNs = 0L
+            var lastSequence = 0L
             var seenGeneration = generation.get()
 
             // A GPU precisa ter terminado de ler o slot antes de a thread de recepção reescrevê-lo.
@@ -423,11 +430,14 @@ class RealTimeCfrSurfaceBridge(
             fun resetOutput() {
                 while (true) {
                     val stale = frameQueue.poll() ?: break
+                    stale.fence?.let { runCatching { EGLExt.eglDestroySyncKHR(display, it) } }
+                    stale.fence = null
                     freeSlots.add(stale)
                 }
                 previousSlot?.let { giveBack(it) }
                 previousSlot = null
                 timelineStarted = false
+                lastSequence = 0L
             }
 
             while (!released.get() && !pipelineStopped) {
@@ -443,6 +453,17 @@ class RealTimeCfrSurfaceBridge(
                 }
 
                 val current = frameQueue.poll(2, TimeUnit.MILLISECONDS) ?: continue
+                current.fence?.let { fence ->
+                    runCatching {
+                        EGLExt.eglClientWaitSyncKHR(
+                            display, fence, EGLExt.EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, FENCE_TIMEOUT_NS
+                        )
+                    }
+                    runCatching { EGLExt.eglDestroySyncKHR(display, fence) }
+                    current.fence = null
+                }
+                if (current.sequence <= lastSequence) orderViolations++
+                lastSequence = current.sequence
                 val backlog = frameQueue.size + 1
                 if (backlog > maxBacklogSignals) maxBacklogSignals = backlog
                 val frameStartNs = System.nanoTime()
@@ -769,6 +790,7 @@ class RealTimeCfrSurfaceBridge(
             // temporal. Nunca é escolhido como destino enquanto for o histórico.
             var lastIngested: Slot? = null
             var lastAnalysisSampleMs = 0L
+            var ingestSequence = 0L
             var seenGeneration = generation.get()
 
             fun drainPending() {
@@ -833,7 +855,20 @@ class RealTimeCfrSurfaceBridge(
                 )
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
                 // O slot vai ser lido pelo contexto de saída: a cópia precisa ter terminado.
-                GLES20.glFinish()
+                // Cerca EGL (padrão para compartilhar texturas entre contextos); se a cerca não
+                // existir, glFinish.
+                val fence = runCatching {
+                    EGLExt.eglCreateSyncKHR(display, EGLExt.EGL_SYNC_FENCE_KHR, null, 0)
+                }.getOrNull()
+                if (fence != null) {
+                    GLES20.glFlush()
+                    destination.fence = fence
+                } else {
+                    fenceFallbacks++
+                    GLES20.glFinish()
+                    destination.fence = null
+                }
+                destination.sequence = ++ingestSequence
                 lastIngested = destination
                 frameQueue.add(destination)
                 val ingestNs = System.nanoTime() - ingestStartNs
@@ -1381,6 +1416,7 @@ class RealTimeCfrSurfaceBridge(
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
         private const val TIMING_DIAGNOSTICS = false
         // Limitador do preenchimento com movimento (ver o laço de renderização).
+        private const val FENCE_TIMEOUT_NS = 100_000_000L
         private const val MOTION_MAX_BACKLOG = 7
         private const val MOTION_BUDGET_NS = 250_000_000L
         private const val MOTION_COOLDOWN_NS = 150_000_000L
