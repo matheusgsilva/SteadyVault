@@ -239,6 +239,8 @@ internal class MotionInterpolator(
             GLES20.glUniform1f(loc(p, "uCostHigh"), COST_HIGH)
             GLES20.glUniform1f(loc(p, "uDiffLow"), DIFF_LOW)
             GLES20.glUniform1f(loc(p, "uDiffHigh"), DIFF_HIGH)
+            GLES20.glUniform1f(loc(p, "uSpreadLow"), SPREAD_LOW)
+            GLES20.glUniform1f(loc(p, "uSpreadHigh"), SPREAD_HIGH)
             GLES20.glUniform2f(loc(p, "uFlowTexel"), 1f / quarterSize[0], 1f / quarterSize[1])
             GLES20.glUniform1f(loc(p, "uLook"), 1f)
             GLES20.glUniform2f(loc(p, "uLookTexel"), VideoLook.RADIUS_PX / width, VideoLook.RADIUS_PX / height)
@@ -384,5 +386,9 @@ internal class MotionInterpolator(
         const val COST_HIGH = 0.08f
         const val DIFF_LOW = 0.04f
         const val DIFF_HIGH = 0.12f
+
+        // Discordância entre vetores vizinhos (em texels 1/4) a partir da qual o fluxo não é confiável.
+        const val SPREAD_LOW = 0.75f
+        const val SPREAD_HIGH = 2.0f
     }
 }

@@ -180,6 +180,8 @@ uniform float uCostLow;
 uniform float uCostHigh;
 uniform float uDiffLow;
 uniform float uDiffHigh;
+uniform float uSpreadLow;
+uniform float uSpreadHigh;
 uniform float uLook;
 uniform vec2 uFlowTexel;
 uniform float uCropScale;
@@ -236,6 +238,8 @@ void main() {
     vec3 bestP = vec3(0.0);
     vec3 bestC = vec3(0.0);
     float bestDiff = 1.0e9;
+    vec2 flow0 = vec2(0.0);
+    float spread = 0.0;
     for (int i = 0; i < 5; i++) {
         vec2 o = vec2(0.0);
         if (i == 1) o = vec2(1.0, 0.0);
@@ -243,6 +247,8 @@ void main() {
         if (i == 3) o = vec2(0.0, 1.0);
         if (i == 4) o = vec2(0.0, -1.0);
         vec4 f = texture2D(sFlow, base + o * uFlowTexel);
+        if (i == 0) flow0 = f.rg;
+        spread = max(spread, length((f.rg - flow0) / uFlowTexel));
         vec3 p = previousColor(uv0 - t * f.rg);
         vec3 c = currentColor(uv0 + (1.0 - t) * f.rg);
         float d = length(p - c) + (i == 0 ? 0.0 : 0.08);
@@ -254,7 +260,10 @@ void main() {
         }
     }
     gFlow = bestFlow.rg;
-    gCostConf = 1.0 - smoothstep(uCostLow, uCostHigh, bestFlow.b);
+    // Vetores vizinhos discordando (ex.: listras de texto borrado, onde o movimento ao longo
+    // da linha é ambíguo) deixam o fluxo aleatório e rasgam a imagem em blocos: frame mais próximo.
+    gCostConf = (1.0 - smoothstep(uCostLow, uCostHigh, bestFlow.b)) *
+                (1.0 - smoothstep(uSpreadLow, uSpreadHigh, spread));
     gDiffConf = 1.0 - smoothstep(uDiffLow, uDiffHigh, length(bestP - bestC));
     vec3 result = composite(uv0);
     if (uLook > 0.5) {

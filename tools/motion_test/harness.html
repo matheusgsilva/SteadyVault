@@ -80,7 +80,7 @@ window.runTests=function(S){
   // parâmetros (espelham o que o Kotlin usa)
   const P=window.PARAMS||{};
   const cfg=Object.assign({L2:{R:3,STEP:1,WIN:2,LAMBDA:0.02},L1:{R:1,STEP:1,WIN:2,LAMBDA:0.02},L0:{R:1,STEP:1,WIN:2,LAMBDA:0.02},L0b:{R:1,STEP:0.5,WIN:2,LAMBDA:0.001},
-     costLow:0.025,costHigh:0.08,diffLow:0.04,diffHigh:0.12},P);
+     costLow:0.025,costHigh:0.08,diffLow:0.04,diffHigh:0.12,spreadLow:0.75,spreadHigh:2.0},P);
   const defs=c=>`#define R ${c.R}\n#define STEP ${c.STEP.toFixed(2)}\n#define WIN ${c.WIN}\n#define NORM ${((2*c.WIN+1)**2).toFixed(1)}\n#define LAMBDA ${c.LAMBDA.toFixed(5)}\n`;
   const pDown=prog(S.VERTEX,S.DOWN_FRAGMENT,''), pPyr=prog(S.VERTEX,S.PYRAMID_FRAGMENT,'');
   const pEst={};for(const k of ['L2','L1','L0','L0b'])pEst[k]=prog(S.VERTEX,S.ESTIMATE_FRAGMENT,defs(cfg[k]));
@@ -140,7 +140,7 @@ window.runTests=function(S){
       estq(pQ1,fq1,flb);
       estq(pQ2,fq2,fq1);flowOut=fq2;flowSz=qs;
       for(const ps of sub){const nx=mkF(qs);estq(ps,nx,flowOut);flowOut=nx;}}
-    const warp=(a,flow)=>{pass(pWarp,null,{uAlpha:a,uFlowTexel:[1/flowSz[0],1/flowSz[1]],uLook:cfg.look?1:0,uCropScale:1,uLookTexel:[2/W,2/H],uCostLow:cfg.costLow,uCostHigh:cfg.costHigh,uDiffLow:cfg.diffLow,uDiffHigh:cfg.diffHigh},
+    const warp=(a,flow)=>{pass(pWarp,null,{uAlpha:a,uFlowTexel:[1/flowSz[0],1/flowSz[1]],uLook:cfg.look?1:0,uCropScale:1,uLookTexel:[2/W,2/H],uCostLow:cfg.costLow,uCostHigh:cfg.costHigh,uDiffLow:cfg.diffLow,uDiffHigh:cfg.diffHigh,uSpreadLow:cfg.spreadLow,uSpreadHigh:cfg.spreadHigh},
         [['sP',tA],['sFlow',flow],['sC',tB]]);return readPng();};
     if(cfg.oracle){gl.bindFramebuffer(gl.FRAMEBUFFER,flb.f);gl.clearColor(cfg.oracle[0]/W,cfg.oracle[1]/H,0,1);gl.clear(gl.COLOR_BUFFER_BIT);}
     const mo=warp(t,cfg.oracle?flb:flowOut);
