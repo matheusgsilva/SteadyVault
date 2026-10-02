@@ -211,6 +211,12 @@ vec3 previousColor(vec2 uv) {
 vec2 gFlow;
 float gCostConf;
 float gDiffConf;
+// Hash por pixel (0..1) para escolher qual dos dois frames fornece cada pixel.
+float pixelHash(vec2 uv) {
+    vec3 p3 = fract(vec3(floor(uv * 8192.0).xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
 vec3 composite(vec2 uv) {
     float t = uAlpha;
     vec3 p = previousColor(uv - t * gFlow);
@@ -221,9 +227,12 @@ vec3 composite(vec2 uv) {
         plainNear = currentColor(uv);
         near = c;
     }
-    // Os dois lados concordam: media (reduz ruido). Discordam: usa so o mais proximo no
-    // tempo, nitido, em vez de uma mistura borrada. Fluxo nao confiavel: frame mais proximo.
-    vec3 warped = mix(near, mix(p, c, t), gDiffConf);
+    // Os dois lados concordam: cada pixel vem de UM dos dois frames (sorteio com probabilidade
+    // t). A media suavizava o grao ~25% so nos frames recriados e o ruido pulsava a cada lacuna
+    // (piscada); escolher mantem o mesmo grao dos frames reais. Discordam: usa so o mais proximo
+    // no tempo, nitido, em vez de uma mistura borrada. Fluxo nao confiavel: frame mais proximo.
+    vec3 agreed = mix(p, c, step(pixelHash(uv), t));
+    vec3 warped = mix(near, agreed, gDiffConf);
     return mix(plainNear, warped, gCostConf);
 }
 void main() {
