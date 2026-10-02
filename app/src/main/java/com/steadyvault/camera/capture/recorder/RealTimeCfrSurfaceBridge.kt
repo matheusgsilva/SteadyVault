@@ -156,6 +156,7 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var lateIngests = 0L
     @Volatile private var ingestStallMaxNs = 0L
     @Volatile private var lastIngestStartNs = 0L
+    @Volatile private var motionThrottled = 0L
 
     private fun swapBuffers(display: android.opengl.EGLDisplay, window: android.opengl.EGLSurface, message: String) {
         val start = System.nanoTime()
@@ -181,7 +182,8 @@ class RealTimeCfrSurfaceBridge(
             TAG,
             "movimento: estado=$motionState compensados=${stats.motionFrames} " +
                 "voltaramAoCrossfade=${stats.motionFallbacks} " +
-                "duplicadosDaCamera=${stats.duplicatesSkipped} repeticoesDaGrade=${stats.repeatedOutputs}"
+                "duplicadosDaCamera=${stats.duplicatesSkipped} repeticoesDaGrade=${stats.repeatedOutputs} " +
+                "limitadosPorCusto=$motionThrottled"
         )
         fun ms(ns: Long) = ns / 1_000_000L
         Log.i(
@@ -441,6 +443,7 @@ class RealTimeCfrSurfaceBridge(
             // Último frame trazido para o anel (já com a redução de ruído): histórico do filtro temporal.
             var lastIngested: Slot? = null
             var timelineStarted = false
+            var motionLightUntilNs = 0L
             var outputPtsNs = 0L
             var lastAnalysisSampleMs = 0L
 
@@ -593,6 +596,14 @@ class RealTimeCfrSurfaceBridge(
                     )
                 }
 
+                // Limitador de custo: preencher lacuna com fluxo óptico em 4K custa ~15–80 ms de GPU.
+                // Se o laço já está atrasado (frames esperando) ou a lacuna anterior estourou o
+                // orçamento, usa a mistura barata. Sem isso, cada lacuna parava o laço, a câmera
+                // ficava sem buffer e perdia outro frame (reação em cadeia).
+                val nowGapNs = System.nanoTime()
+                val motionAllowed = nowGapNs >= motionLightUntilNs &&
+                    (pendingFrames.get() + queue.size) < MOTION_MAX_BACKLOG
+                var usedMotionThisFrame = false
                 var flowReady = false
                 var outputIndex = 0
                 while (outputIndex < outputs) {
@@ -627,7 +638,11 @@ class RealTimeCfrSurfaceBridge(
                     } else {
                         var done = false
                         val mi = motion
-                        if (mi != null && mi.available && outputs <= MAX_MOTION_OUTPUTS) {
+                        if (mi != null && mi.available && outputs <= MAX_MOTION_OUTPUTS && !motionAllowed) {
+                            motionThrottled++
+                        }
+                        if (mi != null && mi.available && outputs <= MAX_MOTION_OUTPUTS && motionAllowed) {
+                            usedMotionThisFrame = true
                             done = renderMotionToEncoder(
                                 mi, previous.texture, current.texture,
                                 alpha, flowReady, vertices, texCoords, display, window, outputPtsNs
@@ -660,6 +675,9 @@ class RealTimeCfrSurfaceBridge(
                 if (outputs - 1 > largestFillSlots) largestFillSlots = outputs - 1
                 val frameNs = System.nanoTime() - frameStartNs
                 if (frameNs > worstFrameNs) worstFrameNs = frameNs
+                if (usedMotionThisFrame && frameNs > MOTION_BUDGET_NS) {
+                    motionLightUntilNs = System.nanoTime() + MOTION_COOLDOWN_NS
+                }
             }
         } catch (t: Throwable) {
             initError = t
@@ -1197,6 +1215,10 @@ class RealTimeCfrSurfaceBridge(
 
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
         private const val TIMING_DIAGNOSTICS = false
+        // Limitador do preenchimento com movimento (ver o laço de renderização).
+        private const val MOTION_MAX_BACKLOG = 2
+        private const val MOTION_BUDGET_NS = 40_000_000L
+        private const val MOTION_COOLDOWN_NS = 400_000_000L
 
         private const val EGL_RECORDABLE_ANDROID = 0x3142
         private const val PREPARE_TIMEOUT_SECONDS = 5L
