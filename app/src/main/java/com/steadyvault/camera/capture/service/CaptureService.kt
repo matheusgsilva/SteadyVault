@@ -315,6 +315,7 @@ class CaptureService : Service() {
         // perfil histórico da câmera no instante em que o usuário toca em Gravar.
         CameraProfileStore.setActiveMode(this, CameraProfileStore.FunctionMode.VIDEO)
         recordingSettings = currentSettings.copy(selectedCameraId = profileCameraId, zoomRatio = profileZoomRatio)
+        com.steadyvault.camera.capture.recorder.SensorNoiseHint.zoom = profileZoomRatio
 
         if (recordingSettings.thermalProtection && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val thermalStatus = getSystemService(PowerManager::class.java).currentThermalStatus

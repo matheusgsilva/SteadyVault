@@ -2093,7 +2093,7 @@ class PrimaryVaultActivity : FragmentActivity() {
                                     if (!released && loadingEnabled && generation == loadingGeneration) {
                                         val bitmap = loadThumbnail(item)
                                         if (!released && loadingEnabled && generation == loadingGeneration) {
-                                            thumbnails.put(cacheKey, bitmap)
+                                            if (!MediaThumbnailRepository.isPlaceholder(bitmap)) thumbnails.put(cacheKey, bitmap)
                                             holder.image.post {
                                                 if (!released && loadingEnabled && generation == loadingGeneration &&
                                                     holder.image.tag == cacheKey && !bitmap.isRecycled

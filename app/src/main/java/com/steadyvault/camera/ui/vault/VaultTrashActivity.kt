@@ -409,7 +409,7 @@ class VaultTrashActivity : ComponentActivity() {
                     executor.execute {
                         try {
                             val bitmap = MediaThumbnailRepository.load(appContext, item.file, item.media.video, THUMB_SIZE)
-                            cache.put(key, bitmap)
+                            if (!MediaThumbnailRepository.isPlaceholder(bitmap)) cache.put(key, bitmap)
                             holder.image.post {
                                 if (holder.image.tag == key && !bitmap.isRecycled) holder.image.setImageBitmap(bitmap)
                             }

@@ -1096,7 +1096,7 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
                                 if (!released && loadingEnabled && generation == loadingGeneration) {
                                     val bitmap = MediaThumbnailRepository.load(this@PrivateVaultGalleryActivity, item.file, item.video, THUMB_SIZE)
                                     if (!released && loadingEnabled && generation == loadingGeneration) {
-                                        cache.put(key, bitmap)
+                                        if (!MediaThumbnailRepository.isPlaceholder(bitmap)) cache.put(key, bitmap)
                                         holder.image.post {
                                             if (!released && loadingEnabled && generation == loadingGeneration && holder.image.tag == key && !bitmap.isRecycled) {
                                                 holder.image.setImageBitmap(bitmap)

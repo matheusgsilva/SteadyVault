@@ -49,12 +49,22 @@ object MediaThumbnailRepository {
     private const val CACHE_DIRECTORY = "SteadyVaultThumbnails"
     private const val CACHE_INDEX_PREFS = "steadyvault_thumbnail_index"
     private const val DEFAULT_MAX_SIDE = 512
+    private const val SHARPEST_OF_FRAMES = 3
     private val warmupExecutor = Executors.newSingleThreadExecutor { task ->
         Thread(task, "SteadyVault-ThumbnailWarmup").apply { priority = Thread.MIN_PRIORITY }
     }
     private val warming = Collections.synchronizedSet(mutableSetOf<String>())
     private val cacheGeneration = AtomicLong(0L)
     private val memoryCaches = Collections.synchronizedMap(WeakHashMap<MemoryCacheHandle, Unit>())
+    // Bitmaps de "carregando/falhou": quem chama não pode guardá-los no cache de memória, senão a
+    // miniatura ficava presa no ícone até fechar a tela.
+    private val placeholders = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap<Bitmap, Boolean>()))
+    private const val CACHE_VERSION = 2
+    private const val KEY_CACHE_VERSION = "thumbnail_cache_version"
+    @Volatile private var versionChecked = false
+
+    /** true se [bitmap] é só o ícone provisório (miniatura real ainda não disponível). */
+    fun isPlaceholder(bitmap: Bitmap): Boolean = placeholders.contains(bitmap)
 
     fun load(
         context: Context,
@@ -77,12 +87,22 @@ object MediaThumbnailRepository {
         // disputar CPU/memória com Camera2/MediaCodec. A grade recebe placeholder e volta
         // a carregar normalmente assim que a captura termina.
         if (VaultStartupCoordinator.isCapturePriorityActive(context)) return placeholder(side, video)
+        purgeOldCacheOnce(context)
         val cache = cacheFile(context, file, side)
         decodeCached(cache, video)?.let { return it }
 
-        val generated = runCatching {
+        var generated = runCatching {
             if (video) videoThumbnail(file, side) else imageThumbnail(file, side)
         }.getOrNull()
+        if (generated == null || generated.isRecycled) {
+            // Falha passageira (decodificador ocupado, arquivo ainda sendo fechado): tenta de novo.
+            runCatching { Thread.sleep(350L) }
+            if (expectedGeneration == cacheGeneration.get() && !VaultStartupCoordinator.isCapturePriorityActive(context)) {
+                generated = runCatching {
+                    if (video) videoThumbnail(file, side) else imageThumbnail(file, side)
+                }.getOrNull()
+            }
+        }
 
         if (generated != null && !generated.isRecycled) {
             if (expectedGeneration == cacheGeneration.get()) {
@@ -181,6 +201,16 @@ object MediaThumbnailRepository {
         return CacheCleanupResult(files, bytes, memoryBytes)
     }
 
+    /** Miniaturas antigas (versões borradas) são descartadas uma vez; ficam só as novas. */
+    private fun purgeOldCacheOnce(context: Context) {
+        if (versionChecked) return
+        versionChecked = true
+        val preferences = context.getSharedPreferences(CACHE_INDEX_PREFS, Context.MODE_PRIVATE)
+        if (preferences.getInt(KEY_CACHE_VERSION, 0) >= CACHE_VERSION) return
+        cacheDirectory(context).listFiles().orEmpty().forEach { runCatching { it.delete() } }
+        preferences.edit().clear().putInt(KEY_CACHE_VERSION, CACHE_VERSION).apply()
+    }
+
     private fun memoryCacheHandles(): List<MemoryCacheHandle> =
         synchronized(memoryCaches) { memoryCaches.keys.toList() }
 
@@ -188,7 +218,7 @@ object MediaThumbnailRepository {
         File(context.filesDir, CACHE_DIRECTORY).apply { mkdirs() }
 
     private fun cacheFile(context: Context, file: File, maximumSide: Int): File =
-        File(cacheDirectory(context), "${fingerprint(file)}_${maximumSide}.jpg")
+        File(cacheDirectory(context), "${fingerprint(file)}_${maximumSide}_v$CACHE_VERSION.jpg")
 
     private fun fingerprint(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -258,21 +288,42 @@ object MediaThumbnailRepository {
     }
 
     private fun videoThumbnail(file: File, maximumSide: Int): Bitmap? {
-        // Em Android/Samsung recentes o ThumbnailUtils usa caminho nativo/cache do sistema
-        // e costuma ser mais rápido que abrir MediaMetadataRetriever para cada item.
-        val platformFrame = videoThumbnailFromPlatform(file, maximumSide)
-        if (platformFrame != null && !platformFrame.isRecycled) {
-            if (!isLikelyBlackFrame(platformFrame)) return centerCropSquare(platformFrame, maximumSide)
-            runCatching { platformFrame.recycle() }
-        }
-
+        // O ThumbnailUtils devolve o frame ENCAIXADO em side x side (ex.: 288x512 num vídeo
+        // vertical) e o recorte quadrado ampliava isso ~1,8x: miniatura borrada. O retriever abaixo
+        // pede o tamanho de COBERTURA e escolhe o quadro mais nítido entre vários instantes.
         val retrieverFrame = videoThumbnailFromRetriever(file, maximumSide)
         if (retrieverFrame != null && !retrieverFrame.isRecycled) {
             if (!isLikelyBlackFrame(retrieverFrame)) return retrieverFrame
             runCatching { retrieverFrame.recycle() }
         }
 
+        val platformFrame = videoThumbnailFromPlatform(file, maximumSide)
+        if (platformFrame != null && !platformFrame.isRecycled) {
+            if (!isLikelyBlackFrame(platformFrame)) return centerCropSquare(platformFrame, maximumSide)
+            runCatching { platformFrame.recycle() }
+        }
+
         return null
+    }
+
+    /** Energia de gradiente da luma no centro do quadro: maior = mais nítido (menos borrão). */
+    private fun sharpnessScore(bitmap: Bitmap): Double {
+        if (bitmap.isRecycled || bitmap.width < 8 || bitmap.height < 8) return 0.0
+        val w = minOf(bitmap.width, 256)
+        val h = minOf(bitmap.height, 256)
+        val left = (bitmap.width - w) / 2
+        val top = (bitmap.height - h) / 2
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, left, top, w, h)
+        fun luma(p: Int) = 0.299 * Color.red(p) + 0.587 * Color.green(p) + 0.114 * Color.blue(p)
+        var sum = 0.0
+        for (y in 0 until h - 1) {
+            for (x in 0 until w - 1) {
+                val c = luma(pixels[y * w + x])
+                sum += kotlin.math.abs(c - luma(pixels[y * w + x + 1])) + kotlin.math.abs(c - luma(pixels[(y + 1) * w + x]))
+            }
+        }
+        return sum
     }
 
     private fun videoThumbnailFromRetriever(file: File, maximumSide: Int): Bitmap? {
@@ -304,9 +355,14 @@ object MediaThumbnailRepository {
                 MediaMetadataRetriever.OPTION_CLOSEST
             )
             var frame: Bitmap? = null
+            var bestScore = -1.0
+            var tried = 0
             for (timeUs in candidateTimes) {
+                // Até 3 quadros válidos; fica o mais nítido (evita pegar um quadro em movimento).
+                if (tried >= SHARPEST_OF_FRAMES && frame != null) break
+                var candidate: Bitmap? = null
                 for (option in options) {
-                    frame = runCatching {
+                    candidate = runCatching {
                         if (timeUs >= 0L) {
                             retriever.getScaledFrameAtTime(
                                 timeUs,
@@ -318,9 +374,22 @@ object MediaThumbnailRepository {
                             retriever.getFrameAtTime(-1L, option)
                         }
                     }.getOrNull()
-                    if (frame != null && !frame!!.isRecycled) break
+                    if (candidate != null && !candidate!!.isRecycled) break
                 }
-                if (frame != null && !frame!!.isRecycled) break
+                val usable = candidate?.takeIf { !it.isRecycled && !isLikelyBlackFrame(it) }
+                if (usable == null) {
+                    candidate?.takeIf { !it.isRecycled }?.recycle()
+                    continue
+                }
+                tried++
+                val score = sharpnessScore(usable)
+                if (score > bestScore) {
+                    frame?.takeIf { !it.isRecycled }?.recycle()
+                    frame = usable
+                    bestScore = score
+                } else {
+                    usable.recycle()
+                }
             }
             frame?.let { orientAndCrop(it, encodedWidth, encodedHeight, rotation, maximumSide) }
         } finally {
@@ -357,7 +426,7 @@ object MediaThumbnailRepository {
             runCatching {
                 ThumbnailUtils.createVideoThumbnail(
                     file,
-                    Size(maximumSide.coerceAtLeast(128), maximumSide.coerceAtLeast(128)),
+                    Size(maximumSide.coerceAtLeast(128) * 2, maximumSide.coerceAtLeast(128) * 2),
                     null
                 )
             }.getOrNull()
@@ -437,6 +506,7 @@ object MediaThumbnailRepository {
     private fun placeholder(size: Int, video: Boolean): Bitmap {
         val side = size.coerceIn(192, 1024)
         return Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888).also { bitmap ->
+            placeholders.add(bitmap)
             val canvas = Canvas(bitmap)
             canvas.drawColor(Color.rgb(22, 29, 39))
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
