@@ -1,3 +1,9 @@
+## main3 — fim das repetições de frame da grade de tempo
+
+- **Causa confirmada pelo log:** `duplicadosDaCamera=0` e `repeticoesDaGrade=2`. A câmera não reentregava frames; o app repetia o frame anterior por causa do `CfrTimeResampler`. A âncora de fase em ±meio intervalo re-ancorava a grade (repetindo ou pulando um tick) e a fase voltava colada no limite oposto, então o jitter a fazia pular de volta: pares repetição + descarte, vistos como travadas de 1 frame (reproduzido em simulação com deriva de clock de 0,03%).
+- **Histerese:** a âncora passou para ±1 intervalo (`anchorFraction`), e a fase volta com meio intervalo de folga. O desvio de conteúdo contra o PTS fica em no máximo ~16,7 ms.
+- **Sem repetição:** quando a re-ancoragem ainda é necessária (câmera um pouco mais lenta ou rápida que o relógio), o tick colado no frame anterior entrega um quadro intermediário (alpha 0,5) em vez de repeti-lo. Simulação (`tools/cfr_sim`): repetições 0 em todos os cenários testados (antes até 14 por minuto); os 9 testes do reamostrador continuam passando.
+
 ## main3 — frames duplicados da câmera e fluxo mais firme
 
 - **Travadas (análise do clipe gravado com OIS):** em 364 frames, 2 pares eram idênticos entre si (diferença de 0,06-0,1 contra ~3-8 nos demais), com timestamps normais. A câmera/HAL às vezes reentrega o mesmo frame com outro timestamp, e isso aparece como uma trava de 1 frame. Agora cada frame novo tem a luma 1/8 comparada com a do anterior na GPU (leitura de poucos KB); um duplicado isolado é descartado e o próximo frame real passa a cobrir os dois instantes (um deles interpolado por movimento). No máximo 2 descartes seguidos, e só se o timestamp estiver a menos de 1,5 frame do anterior, para uma cena parada nunca virar rajada de interpolação.

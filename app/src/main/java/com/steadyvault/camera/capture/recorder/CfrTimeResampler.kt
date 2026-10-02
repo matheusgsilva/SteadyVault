@@ -32,7 +32,8 @@ class CfrTimeResampler(
     private val frameIntervalNs: Long,
     private val snapFraction: Double = DEFAULT_SNAP_FRACTION,
     private val phaseGain: Double = DEFAULT_PHASE_GAIN,
-    private val maxPhaseStepFraction: Double = DEFAULT_MAX_PHASE_STEP_FRACTION
+    private val maxPhaseStepFraction: Double = DEFAULT_MAX_PHASE_STEP_FRACTION,
+    private val anchorFraction: Double = DEFAULT_ANCHOR_FRACTION
 ) {
     private var originNs = 0L
     private var nextTick = 1L
@@ -83,7 +84,10 @@ class CfrTimeResampler(
             if (tick > current + snap) break
             val alpha = when {
                 current - tick <= snap -> 1f
-                tick - previous <= snap -> 0f
+                // Tick colado no frame anterior, que já foi enviado: repetir seria uma trava de
+                // 1 frame. Só acontece quando a grade é re-ancorada (câmera mais lenta ou mais
+                // rápida que o relógio); entrega um quadro intermediário em vez de repetir.
+                tick - previous <= snap -> 0.5f
                 else -> ((tick - previous) / span).toFloat().coerceIn(0f, 1f)
             }
             push(alpha)
@@ -101,11 +105,15 @@ class CfrTimeResampler(
         val limit = interval * maxPhaseStepFraction
         phaseNs += (phaseGain * error).coerceIn(-limit, limit)
 
-        // Âncora ao relógio: meia janela de fase = no máximo um tick repetido/pulado.
-        val half = interval / 2.0
-        if (phaseNs > half) {
+        // Âncora ao relógio: a fase é o desvio entre o conteúdo de cada saída e o relógio
+        // (o PTS). Passando de +-anchorFraction intervalos a grade repete ou pula UM tick e
+        // a fase volta para o lado oposto. Com 0,5 a fase reaparecia colada no limite
+        // contrário e o jitter a fazia pular de volta: pares repetição + descarte, vistos
+        // como travadas. Com 1,0 ela volta com meio intervalo de folga (histerese).
+        val limit2 = interval * anchorFraction
+        if (phaseNs > limit2) {
             phaseNs -= interval
-        } else if (phaseNs < -half) {
+        } else if (phaseNs < -limit2) {
             phaseNs += interval
         }
         return count
@@ -126,6 +134,7 @@ class CfrTimeResampler(
         const val DEFAULT_SNAP_FRACTION = 0.25
         const val DEFAULT_PHASE_GAIN = 0.08
         const val DEFAULT_MAX_PHASE_STEP_FRACTION = 0.03
+        const val DEFAULT_ANCHOR_FRACTION = 1.0
         private const val INITIAL_CAPACITY = 16
         private const val MAX_TICKS_PER_FRAME = 1200
     }
