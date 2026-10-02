@@ -1546,3 +1546,5 @@ As alterações anteriores à versão 1.8.46 não foram reconstruídas por falta
 - Ordem de parada, request Camera2 e processamento 60 FPS voltam ao comportamento da versão de melhor fluidez.
 - Mantidas somente as correções visuais de widgets: previews alinhados ao estilo do lock screen e cantos conforme o tema.
 - MediaRecorder direto, sem pós-processamento do vídeo.
+
+- **Vídeo escuro com "pouca luz" desligado:** a cadência fixa congelava exposição/ISO nos 3 primeiros resultados, antes de o AE convergir (ele começa escuro), e o vídeo todo saía subexposto. Agora espera `AE_STATE` convergido (máx. 45 resultados) antes de congelar. `TIMING_DIAGNOSTICS` (glFinish) desligado.

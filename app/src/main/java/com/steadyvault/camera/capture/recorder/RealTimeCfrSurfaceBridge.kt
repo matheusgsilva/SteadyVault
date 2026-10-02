@@ -1162,7 +1162,7 @@ class RealTimeCfrSurfaceBridge(
         private const val TEMPORAL_DENOISE_WEIGHT = 0.5f
 
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
-        private const val TIMING_DIAGNOSTICS = true
+        private const val TIMING_DIAGNOSTICS = false
 
         private const val EGL_RECORDABLE_ANDROID = 0x3142
         private const val PREPARE_TIMEOUT_SECONDS = 5L

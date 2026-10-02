@@ -2279,7 +2279,16 @@ class CaptureService : Service() {
                 request: CaptureRequest,
                 result: TotalCaptureResult
             ) {
-                if (!isAttemptValid(token) || locked.get() || completed.incrementAndGet() < 3) return
+                if (!isAttemptValid(token) || locked.get()) return
+                val seen = completed.incrementAndGet()
+                // Congelar o AE nos 3 primeiros resultados fixava uma exposição ainda não
+                // convergida (o AE começa escuro) e o vídeo inteiro ficava subexposto.
+                // Espera o AE convergir; se não convergir, congela após FIXED_CADENCE_MAX_WAIT_FRAMES.
+                val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+                val converged = aeState == CaptureResult.CONTROL_AE_STATE_CONVERGED ||
+                    aeState == CaptureResult.CONTROL_AE_STATE_LOCKED
+                if (seen < 3) return
+                if (!converged && seen < FIXED_CADENCE_MAX_WAIT_FRAMES) return
                 if (!locked.compareAndSet(false, true)) return
 
                 val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
@@ -3725,6 +3734,7 @@ class CaptureService : Service() {
         private const val BACKGROUND_SMART_FOCUS_MIN_MOVE = 0.055
         private const val BACKGROUND_SMART_FOCUS_FORCE_MS = 3_000L
         private const val FOCUS_LOCK_MAX_WARMUP_FRAMES = 8
+        private const val FIXED_CADENCE_MAX_WAIT_FRAMES = 45
         private const val FOCUS_LOCK_MAX_WARMUP_MS = 250L
         private const val THREE_A_LOCK_MIN_WARMUP_FRAMES = 4
         private const val THREE_A_LOCK_MAX_WARMUP_FRAMES = 10
