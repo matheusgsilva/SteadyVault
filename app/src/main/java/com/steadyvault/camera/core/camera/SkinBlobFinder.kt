@@ -146,6 +146,41 @@ internal class SkinBlobFinder {
             r > g * 1.4f && g > b && saturation > 0.42f
     }
 
+    /**
+     * Fração de pixels "tom de rosto" numa caixa em volta de um ponto (espaço "em pé" 0..1).
+     * Usada para validar rosto/boca da pose: o modelo inventa rosto onde só há mão ou parede.
+     * Critério intermediário: mais largo que a mão estrita (rosto com luz fraca), mas ainda
+     * excluindo a parede bege (R/G 1,15–1,23, Cr 140–144).
+     */
+    fun faceSkinFraction(bitmap: Bitmap, uprightX: Float, uprightY: Float, rotationDegrees: Int, halfBox: Float = 0.08f): Float {
+        val (bx, by) = when (((rotationDegrees % 360) + 360) % 360) {
+            90 -> uprightY to (1f - uprightX)
+            180 -> (1f - uprightX) to (1f - uprightY)
+            270 -> (1f - uprightY) to uprightX
+            else -> uprightX to uprightY
+        }
+        val w = bitmap.width
+        val h = bitmap.height
+        val x0 = ((bx - halfBox) * w).toInt().coerceIn(0, w - 1)
+        val x1 = ((bx + halfBox) * w).toInt().coerceIn(x0 + 1, w)
+        val y0 = ((by - halfBox) * h).toInt().coerceIn(0, h - 1)
+        val y1 = ((by + halfBox) * h).toInt().coerceIn(y0 + 1, h)
+        var skin = 0
+        var total = 0
+        for (y in y0 until y1) for (x in x0 until x1) {
+            val argb = bitmap.getPixel(x, y)
+            val r = ((argb shr 16) and 0xFF).toFloat()
+            val g = ((argb shr 8) and 0xFF).toFloat()
+            val b = (argb and 0xFF).toFloat()
+            val cr = 128f + 0.5f * r - 0.418688f * g - 0.081312f * b
+            val cb = 128f - 0.168736f * r - 0.331264f * g + 0.5f * b
+            val y2 = 0.299f * r + 0.587f * g + 0.114f * b
+            if (y2 > 25f && cr >= 146f && cr < 180f && cb > 70f && cb < 130f && r > g * 1.22f && g >= b * 0.95f) skin++
+            total++
+        }
+        return if (total == 0) 0f else skin.toFloat() / total
+    }
+
     /** Converte o centro (espaço do bitmap) para o espaço "em pé" usado pelo detector de pose. */
     fun toUpright(blob: Blob, rotationDegrees: Int): PointF = when (((rotationDegrees % 360) + 360) % 360) {
         90 -> PointF(1f - blob.y, blob.x)
@@ -157,6 +192,7 @@ internal class SkinBlobFinder {
     private companion object {
         const val LEARNING_UPDATES = 2
         const val MIN_AREA = 0.03f
-        const val MAX_AREA = 0.5f
+        // Rosto/pele em close pode ocupar a maior parte do quadro; antes >50% era descartado.
+        const val MAX_AREA = 0.85f
     }
 }

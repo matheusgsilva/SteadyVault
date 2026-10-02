@@ -2714,18 +2714,32 @@ class CaptureService : Service() {
                 }
                 if (!serviceActive.get() || stopping.get()) return@analyze
                 Log.i("SteadyVaultCfr", "foco inteligente: identificou ${target.kind} em x=%.2f y=%.2f".format(target.x, target.y))
-                SmartFocusTargetStore.update(target)
-                val now = SystemClock.elapsedRealtime()
-                val moved = kotlin.math.hypot(
+                // Suaviza o alvo: mão em movimento não pode fazer o AF recomeçar a busca a cada
+                // análise. Salto grande (outro objeto) ou troca de tipo vale na hora.
+                val prevKind = backgroundSmartFocusLastKind
+                val jump = kotlin.math.hypot(
                     (target.x - backgroundSmartFocusLastX).toDouble(),
                     (target.y - backgroundSmartFocusLastY).toDouble()
+                )
+                val smooth = prevKind == target.kind && jump < BACKGROUND_SMART_FOCUS_JUMP
+                val steady = if (smooth) {
+                    target.copy(
+                        x = backgroundSmartFocusLastX + (target.x - backgroundSmartFocusLastX) * 0.5f,
+                        y = backgroundSmartFocusLastY + (target.y - backgroundSmartFocusLastY) * 0.5f
+                    )
+                } else target
+                SmartFocusTargetStore.update(steady)
+                val now = SystemClock.elapsedRealtime()
+                val moved = kotlin.math.hypot(
+                    (steady.x - backgroundSmartFocusLastX).toDouble(),
+                    (steady.y - backgroundSmartFocusLastY).toDouble()
                 ) >= BACKGROUND_SMART_FOCUS_MIN_MOVE
                 val kindChanged = backgroundSmartFocusLastKind != target.kind
                 val stale = now - backgroundSmartFocusLastAppliedMs >= BACKGROUND_SMART_FOCUS_FORCE_MS
                 if (!moved && !kindChanged && !stale) return@analyze
 
-                backgroundSmartFocusLastX = target.x
-                backgroundSmartFocusLastY = target.y
+                backgroundSmartFocusLastX = steady.x
+                backgroundSmartFocusLastY = steady.y
                 backgroundSmartFocusLastKind = target.kind
                 backgroundSmartFocusLastAppliedMs = now
                 cameraExecutor.execute { refreshBackgroundSmartFocusRequest() }
@@ -2801,7 +2815,7 @@ class CaptureService : Service() {
             SmartPoseFocusAnalyzer.Kind.HANDS -> 0.16f
             SmartPoseFocusAnalyzer.Kind.FEET -> 0.18f
             SmartPoseFocusAnalyzer.Kind.BODY -> 0.24f
-            SmartPoseFocusAnalyzer.Kind.SKIN -> 0.2f
+            SmartPoseFocusAnalyzer.Kind.SKIN -> 0.3f
         }
 
         val regionWidth = (activeArray.width() * fraction).toInt()
@@ -3776,7 +3790,8 @@ class CaptureService : Service() {
         "${CaptureSettings.resolutionLabel(recordingSettings.resolution)} ${requestedTargetFps} FPS"
 
     companion object {
-        private const val BACKGROUND_SMART_FOCUS_MIN_MOVE = 0.055
+        private const val BACKGROUND_SMART_FOCUS_MIN_MOVE = 0.09
+        private const val BACKGROUND_SMART_FOCUS_JUMP = 0.35
         private const val BACKGROUND_SMART_FOCUS_FORCE_MS = 3_000L
         private const val FOCUS_LOCK_MAX_WARMUP_FRAMES = 8
         private const val FIXED_CADENCE_MAX_WAIT_FRAMES = 90

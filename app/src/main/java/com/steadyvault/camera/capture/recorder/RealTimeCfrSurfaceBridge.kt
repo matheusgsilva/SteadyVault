@@ -99,6 +99,7 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var maxIntervalNs = 0L
     private val intervalBuckets = LongArray(5)
     @Volatile private var largestFillSlots = 0
+    private var fillLogCount = 0
     @Volatile private var worstFrameNs = 0L
     @Volatile private var maxBacklogSignals = 0
     private val summaryLogged = AtomicBoolean(false)
@@ -547,7 +548,15 @@ class RealTimeCfrSurfaceBridge(
                 var flowReady = false
                 var outputIndex = 0
                 while (outputIndex < outputs) {
-                    val alpha = resampler.alphaAt(outputIndex)
+                    // Lacuna (2+ saídas para um frame real): as saídas intermediárias ficam
+                    // igualmente espaçadas entre o frame anterior e o atual. Deixar a fase da
+                    // grade decidir colava a intermediária no frame anterior (alfa ~0): uma
+                    // repetição seguida de salto duplo, visível em panorâmica (medido no mp4).
+                    val alpha = if (outputs >= 2 && outputIndex < outputs - 1) {
+                        (outputIndex + 1).toFloat() / outputs
+                    } else {
+                        resampler.alphaAt(outputIndex)
+                    }
                     if (alpha <= 0.001f) repeatedOutputs++
                     if (alpha >= 1f) {
                         if (superStabilizationEnabled) {
@@ -607,6 +616,16 @@ class RealTimeCfrSurfaceBridge(
                     }
                     outputPtsNs += frameIntervalNs
                     outputIndex++
+                }
+                if (outputs >= 2 && fillLogCount < FILL_LOG_LIMIT) {
+                    fillLogCount++
+                    Log.i(
+                        TAG,
+                        "lacuna: saídas=$outputs intervaloSensor=" +
+                            "${(current.timestampNs - previous.timestampNs) / 1_000_000.0}ms " +
+                            "movimento=$usedMotionThisFrame custo=${(System.nanoTime() - frameStartNs) / 1_000_000}ms " +
+                            "fila=${frameQueue.size}"
+                    )
                 }
 
 
@@ -1490,6 +1509,7 @@ class RealTimeCfrSurfaceBridge(
         // Limitador do preenchimento com movimento (ver o laço de renderização).
         private const val FENCE_TIMEOUT_NS = 100_000_000L
         private const val MOTION_MAX_BACKLOG = 7
+        private const val FILL_LOG_LIMIT = 40
         private const val MOTION_BUDGET_NS = 250_000_000L
         private const val MOTION_COOLDOWN_NS = 150_000_000L
 

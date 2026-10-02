@@ -38,5 +38,5 @@ object SmartFocusTargetStore {
         latest = null
     }
 
-    private const val DEFAULT_MAX_AGE_MS = 5_000L
+    private const val DEFAULT_MAX_AGE_MS = 8_000L
 }
