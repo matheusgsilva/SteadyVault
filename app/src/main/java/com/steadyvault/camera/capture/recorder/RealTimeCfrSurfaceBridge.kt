@@ -15,6 +15,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -58,8 +59,10 @@ class RealTimeCfrSurfaceBridge(
     private val onError: (Throwable) -> Unit
 ) {
     /** Frame real já no espaço de saída, guardado numa textura 2D do anel. */
-    private class Slot(val texture: Int, val framebuffer: Int) {
-        var timestampNs = 0L
+    private class Slot(val texture: Int) {
+        /** Framebuffer do contexto de RECEPÇÃO (framebuffers não são compartilhados). */
+        var framebuffer = 0
+        @Volatile var timestampNs = 0L
     }
 
     private val released = AtomicBoolean(false)
@@ -94,7 +97,11 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var maxBacklogSignals = 0
     private val summaryLogged = AtomicBoolean(false)
     @Volatile private var renderThreadRef: Thread? = null
-    private val flushRequested = AtomicBoolean(false)
+    // Cada startOutput() abre uma nova "geração": as duas threads descartam o que sobrou.
+    private val generation = AtomicInteger(0)
+    @Volatile private var pipelineStopped = false
+    private val frameQueue = LinkedBlockingQueue<Slot>()
+    private val freeSlots = LinkedBlockingQueue<Slot>()
 
     private val renderThread = Thread(
         { renderLoop() },
@@ -114,7 +121,7 @@ class RealTimeCfrSurfaceBridge(
 
     fun startOutput() {
         check(!released.get()) { "ponte CFR já liberada" }
-        flushRequested.set(true)
+        generation.incrementAndGet()
         outputEnabled.set(true)
     }
 
@@ -230,6 +237,7 @@ class RealTimeCfrSurfaceBridge(
         outputEnabled.set(false)
         logSummary()
         renderThread.interrupt()
+        LockSupport.unpark(renderThreadRef)
         runCatching { stopped.await(RELEASE_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
         runCatching { frameSignalThread.quitSafely() }
         runCatching { frameSignalThread.join(RELEASE_TIMEOUT_MS) }
@@ -260,28 +268,31 @@ class RealTimeCfrSurfaceBridge(
         val repeatedOutputs: Long = 0L
     )
 
+    /** Devolve um slot ao anel depois que a GPU terminou de ler dele. */
+    private fun releaseSlot(slot: Slot) {
+        freeSlots.add(slot)
+    }
+
+    /**
+     * Thread GL de SAÍDA: consome a fila de frames já prontos, preenche lacunas e entrega ao
+     * encoder. Pode bloquear em eglSwapBuffers (encoder cheio) sem afetar a câmera, porque a
+     * recepção dos frames é feita por [ingestLoop] em outra thread/contexto.
+     */
     private fun renderLoop() {
-        renderThreadRef = Thread.currentThread()
         runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY) }
 
         var display = EGL14.EGL_NO_DISPLAY
         var context = EGL14.EGL_NO_CONTEXT
         var window = EGL14.EGL_NO_SURFACE
-        var externalTexture = 0
         val ring = ArrayList<Slot>()
-        var externalProgram = 0
         var textureProgram = 0
-        var ingestProgram = 0
         var blendProgram = 0
         var motionEstimateProgram = 0
         var motion: MotionInterpolator? = null
         var stabilizationProgram = 0
         val motionTextures = IntArray(1)
         var motionFramebuffer = 0
-        val analysisTexture = IntArray(1)
-        val analysisFramebuffer = IntArray(1)
-        var st: SurfaceTexture? = null
-        var camera: Surface? = null
+        var ingestThread: Thread? = null
 
         try {
             display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
@@ -337,41 +348,12 @@ class RealTimeCfrSurfaceBridge(
                 "falha ativando contexto EGL"
             }
 
-            externalTexture = createExternalTexture()
-            st = SurfaceTexture(externalTexture).apply {
-                setDefaultBufferSize(sourceWidth, sourceHeight)
-                setOnFrameAvailableListener(
-                    {
-                        val nowSignalNs = System.nanoTime()
-                        cameraSignals++
-                        if (lastSignalNs != 0L) {
-                            val signalGap = nowSignalNs - lastSignalNs
-                            if (signalGap > signalMaxGapNs) signalMaxGapNs = signalGap
-                            if (signalGap > 25_000_000L) signalLongGaps++
-                        }
-                        lastSignalNs = nowSignalNs
-                        pendingFrames.updateAndGet { current ->
-                            if (current >= MAX_PENDING_SIGNAL_COUNT) current else current + 1
-                        }
-                        LockSupport.unpark(renderThreadRef)
-                    },
-                    frameSignalHandler
-                )
-            }
-            surfaceTexture = st
-            camera = Surface(st)
-            cameraSurface = camera
-
-            // Anel de frames já no espaço de saída (retrato, cru). Cada frame da câmera é copiado
-            // para cá assim que chega, liberando o buffer dela na hora; o processamento pesado
-            // (lacunas) consome dessa fila sem fazer a câmera esperar.
-            repeat(RING_SIZE) {
-                val texture = createStorageTexture(outputWidth, outputHeight)
-                ring += Slot(texture, createFramebuffer(texture))
-            }
-            externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_EXTERNAL))
+            // Anel de frames já no espaço de saída (retrato, cru), compartilhado com a thread de
+            // recepção. Cada frame da câmera é copiado para cá assim que chega, liberando o
+            // buffer dela na hora.
+            repeat(RING_SIZE) { ring += Slot(createStorageTexture(outputWidth, outputHeight)) }
+            GLES20.glFinish()
             textureProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_TEXTURE))
-            ingestProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_INGEST)
             blendProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_BLEND))
             motionEstimateProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_GPU_MOTION_ESTIMATE)
             stabilizationProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_SUPER_STABILIZE))
@@ -380,13 +362,7 @@ class RealTimeCfrSurfaceBridge(
             val motionWidth = (outputWidth / 16).coerceIn(90, 320)
             val motionHeight = ((motionWidth.toLong() * outputHeight.toLong()) / outputWidth.coerceAtLeast(1).toLong())
                 .toInt().coerceIn(90, 320)
-            // Frame de análise do foco inteligente: orientação do SENSOR (o consumidor rotaciona).
-            val analysisWidth = (sourceWidth / 16).coerceIn(160, 320)
-            val analysisHeight = ((analysisWidth.toLong() * sourceHeight.toLong()) / sourceWidth.coerceAtLeast(1).toLong())
-                .toInt().coerceIn(90, 240)
-            val motionReadback = ByteBuffer.allocateDirect(analysisWidth * analysisHeight * 4)
-                .order(ByteOrder.nativeOrder())
-            val currentMotionPixels = ByteArray(analysisWidth * analysisHeight * 4)
+
 
             GLES20.glGenTextures(1, motionTextures, 0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTextures[0])
@@ -400,143 +376,75 @@ class RealTimeCfrSurfaceBridge(
                 GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
             )
             motionFramebuffer = createFramebuffer(motionTextures[0])
-            GLES20.glGenTextures(1, analysisTexture, 0)
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, analysisTexture[0])
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-            GLES20.glTexImage2D(
-                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
-                analysisWidth, analysisHeight, 0,
-                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
-            )
-            GLES20.glGenFramebuffers(1, analysisFramebuffer, 0)
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysisFramebuffer[0])
-            GLES20.glFramebufferTexture2D(
-                GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
-                GLES20.GL_TEXTURE_2D, analysisTexture[0], 0
-            )
-            check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE) {
-                "framebuffer de análise CFR incompleto"
-            }
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+
 
             val interpolator = MotionInterpolator(outputWidth, outputHeight)
             motion = interpolator
             motionState = if (interpolator.initialize()) "ativo" else "indisponivel"
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            GLES20.glFinish()
 
             val vertices = floatBuffer(VERTICES)
             val texCoords = floatBuffer(TEX_COORDS)
-            val textureMatrix = FloatArray(16)
 
+            // Thread de recepção: SurfaceTexture, cópia câmera -> anel e foco inteligente.
+            ring.forEach { freeSlots.add(it) }
+            val ingestReady = CountDownLatch(1)
+            val shareContext = context
+            val shareConfig = config
+            val shareDisplay = display
+            ingestThread = Thread(
+                { ingestLoop(shareDisplay, shareConfig, shareContext, ring, ingestReady) },
+                "SteadyVault-CfrIngest"
+            ).apply {
+                priority = Thread.MAX_PRIORITY
+                start()
+            }
+            check(ingestReady.await(PREPARE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                "timeout preparando thread de recepção CFR"
+            }
+            initError?.let { throw it }
             ready.countDown()
 
-            val source = requireNotNull(st)
             val frameIntervalNs = 1_000_000_000L / fps.coerceAtLeast(1)
             val resampler = CfrTimeResampler(frameIntervalNs)
-            val free = ArrayDeque<Slot>()
-            ring.forEach { free.addLast(it) }
-            val queue = ArrayDeque<Slot>()
             var previousSlot: Slot? = null
-            // Último frame trazido para o anel (já com a redução de ruído): histórico do filtro temporal.
-            var lastIngested: Slot? = null
             var timelineStarted = false
             var motionLightUntilNs = 0L
             var outputPtsNs = 0L
-            var lastAnalysisSampleMs = 0L
+            var seenGeneration = generation.get()
 
-            // Traz para o anel todo frame que a câmera já entregou. Chamada com frequência
-            // (inclusive entre as saídas de uma lacuna) para a câmera nunca ficar sem buffer.
-            fun ingest() {
-                while (pendingFrames.get() > 0 && free.isNotEmpty()) {
-                    val ingestStartNs = System.nanoTime()
-                    if (lastIngestStartNs != 0L) {
-                        val stall = ingestStartNs - lastIngestStartNs
-                        if (stall > ingestStallMaxNs) ingestStallMaxNs = stall
-                        if (stall > 25_000_000L) lateIngests++
-                    }
-                    lastIngestStartNs = ingestStartNs
-                    pendingFrames.decrementAndGet()
-                    source.updateTexImage()
-                    val slot = free.removeFirst()
-                    slot.timestampNs = source.timestamp
-                    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, slot.framebuffer)
-                    renderIngest(
-                        st = source,
-                        textureMatrix = textureMatrix,
-                        program = ingestProgram,
-                        externalTexture = externalTexture,
-                        historyTexture = lastIngested?.texture ?: 0,
-                        vertices = vertices,
-                        texCoords = texCoords
-                    )
-                    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-                    lastIngested = slot
-                    queue.addLast(slot)
-                    if (queue.size > maxBacklogSignals) maxBacklogSignals = queue.size
-                    val ingestNs = System.nanoTime() - ingestStartNs
-                    ingestTotalNs += ingestNs
-                    ingestCount++
-                    if (ingestNs > ingestMaxNs) ingestMaxNs = ingestNs
-
-                    if (analysisEnabled && onAnalysisFrame != null) {
-                        val nowMs = SystemClock.elapsedRealtime()
-                        if (nowMs - lastAnalysisSampleMs >= BACKGROUND_ANALYSIS_INTERVAL_MS) {
-                            lastAnalysisSampleMs = nowMs
-                            readCurrentAnalysisFrame(
-                                st = source,
-                                externalTexture = externalTexture,
-                                framebuffer = analysisFramebuffer[0],
-                                width = analysisWidth,
-                                height = analysisHeight,
-                                target = currentMotionPixels,
-                                readback = motionReadback,
-                                program = externalProgram,
-                                vertices = vertices,
-                                texCoords = texCoords,
-                                textureMatrix = textureMatrix
-                            )
-                            runCatching {
-                                onAnalysisFrame?.invoke(currentMotionPixels.copyOf(), analysisWidth, analysisHeight)
-                            }
-                        }
-                    }
-                }
+            // A GPU precisa ter terminado de ler o slot antes de a thread de recepção reescrevê-lo.
+            fun giveBack(slot: Slot) {
+                GLES20.glFinish()
+                releaseSlot(slot)
             }
 
-            // Descarta tudo o que está pendente (fora da gravação ou ao iniciá-la), para a fila
-            // não chegar ao início do arquivo com frames velhos.
-            fun discardAll() {
-                val stale = pendingFrames.getAndSet(0)
-                var consumed = 0
-                while (consumed < stale) {
-                    runCatching { source.updateTexImage() }
-                    consumed++
+            fun resetOutput() {
+                while (true) {
+                    val stale = frameQueue.poll() ?: break
+                    freeSlots.add(stale)
                 }
-                while (queue.isNotEmpty()) free.addLast(queue.removeFirst())
-                previousSlot?.let { free.addLast(it) }
+                previousSlot?.let { giveBack(it) }
                 previousSlot = null
-                lastIngested = null
                 timelineStarted = false
             }
 
-            while (!released.get()) {
+            while (!released.get() && !pipelineStopped) {
                 if (!outputEnabled.get()) {
-                    discardAll()
+                    resetOutput()
                     LockSupport.parkNanos(IDLE_POLL_NS)
                     continue
                 }
-                if (flushRequested.compareAndSet(true, false)) discardAll()
+                val generationNow = generation.get()
+                if (generationNow != seenGeneration) {
+                    seenGeneration = generationNow
+                    resetOutput()
+                }
 
-                if (pendingFrames.get() > 0 && free.isEmpty()) ringFullWaits++
-                ingest()
-                val current = queue.removeFirstOrNull()
-                if (current == null) {
-                    LockSupport.parkNanos(IDLE_POLL_NS)
-                    continue
-                }
+                val current = frameQueue.poll(2, TimeUnit.MILLISECONDS) ?: continue
+                val backlog = frameQueue.size + 1
+                if (backlog > maxBacklogSignals) maxBacklogSignals = backlog
                 val frameStartNs = System.nanoTime()
                 val previous = previousSlot
 
@@ -554,7 +462,7 @@ class RealTimeCfrSurfaceBridge(
                     )
                     outputPtsNs += frameIntervalNs
                     realFrames++
-                    previous?.let { free.addLast(it) }
+                    previous?.let { giveBack(it) }
                     previousSlot = current
                     timelineStarted = true
                     continue
@@ -562,9 +470,7 @@ class RealTimeCfrSurfaceBridge(
 
                 // O mesmo timestamp nunca pode virar um segundo frame no arquivo.
                 if (current.timestampNs <= previous.timestampNs) {
-                    // O slot volta para a lista livre: não pode ficar como histórico do filtro.
-                    if (lastIngested === current) lastIngested = previous
-                    free.addLast(current)
+                    releaseSlot(current)
                     continue
                 }
 
@@ -577,7 +483,7 @@ class RealTimeCfrSurfaceBridge(
                 if (outputs == 0) {
                     // Câmera acima do FPS nominal: nenhum instante de saída cai neste frame.
                     droppedFrames++
-                    free.addLast(previous)
+                    giveBack(previous)
                     previousSlot = current
                     continue
                 }
@@ -602,7 +508,7 @@ class RealTimeCfrSurfaceBridge(
                 // ficava sem buffer e perdia outro frame (reação em cadeia).
                 val nowGapNs = System.nanoTime()
                 val motionAllowed = nowGapNs >= motionLightUntilNs &&
-                    (pendingFrames.get() + queue.size) < MOTION_MAX_BACKLOG
+                    (pendingFrames.get() + frameQueue.size) < MOTION_MAX_BACKLOG
                 var usedMotionThisFrame = false
                 var flowReady = false
                 var outputIndex = 0
@@ -665,12 +571,10 @@ class RealTimeCfrSurfaceBridge(
                     }
                     outputPtsNs += frameIntervalNs
                     outputIndex++
-                    // Durante lacunas longas a GPU fica ocupada; recolhe os frames novos da
-                    // câmera já, para ela não ficar sem buffer e perder mais frames.
-                    if (outputIndex < outputs) ingest()
                 }
 
-                free.addLast(previous)
+
+                giveBack(previous)
                 previousSlot = current
                 if (outputs - 1 > largestFillSlots) largestFillSlots = outputs - 1
                 val frameNs = System.nanoTime() - frameStartNs
@@ -679,35 +583,27 @@ class RealTimeCfrSurfaceBridge(
                     motionLightUntilNs = System.nanoTime() + MOTION_COOLDOWN_NS
                 }
             }
+
         } catch (t: Throwable) {
             initError = t
             if (ready.count > 0L) ready.countDown()
             if (!released.get()) onError(t)
         } finally {
-            runCatching { camera?.release() }
-            cameraSurface = null
-            runCatching { st?.release() }
-            surfaceTexture = null
+            pipelineStopped = true
+            LockSupport.unpark(renderThreadRef)
+            runCatching { ingestThread?.join(RELEASE_TIMEOUT_MS) }
 
             if (display != EGL14.EGL_NO_DISPLAY) {
-                if (externalProgram != 0) runCatching { GLES20.glDeleteProgram(externalProgram) }
                 if (blendProgram != 0) runCatching { GLES20.glDeleteProgram(blendProgram) }
                 if (motionEstimateProgram != 0) runCatching { GLES20.glDeleteProgram(motionEstimateProgram) }
                 runCatching { motion?.release() }
                 if (stabilizationProgram != 0) runCatching { GLES20.glDeleteProgram(stabilizationProgram) }
                 if (motionFramebuffer != 0) runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(motionFramebuffer), 0) }
                 runCatching { GLES20.glDeleteTextures(1, motionTextures, 0) }
-                runCatching { GLES20.glDeleteTextures(1, analysisTexture, 0) }
-                runCatching { GLES20.glDeleteFramebuffers(1, analysisFramebuffer, 0) }
                 for (slot in ring) {
-                    runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(slot.framebuffer), 0) }
                     runCatching { GLES20.glDeleteTextures(1, intArrayOf(slot.texture), 0) }
                 }
                 if (textureProgram != 0) runCatching { GLES20.glDeleteProgram(textureProgram) }
-                if (ingestProgram != 0) runCatching { GLES20.glDeleteProgram(ingestProgram) }
-                if (externalTexture != 0) {
-                    runCatching { GLES20.glDeleteTextures(1, intArrayOf(externalTexture), 0) }
-                }
                 runCatching {
                     EGL14.eglMakeCurrent(
                         display,
@@ -724,6 +620,273 @@ class RealTimeCfrSurfaceBridge(
 
             if (ready.count > 0L) ready.countDown()
             stopped.countDown()
+        }
+    }
+
+    /**
+     * Thread GL de RECEPÇÃO: dona da SurfaceTexture. Copia cada frame da câmera para um slot do
+     * anel (com o filtro temporal) assim que chega e o enfileira para a thread de saída, de modo
+     * que nada que bloqueie a saída (encoder cheio, fluxo óptico) segure os buffers da câmera.
+     */
+    private fun ingestLoop(
+        display: android.opengl.EGLDisplay,
+        sharedConfig: android.opengl.EGLConfig,
+        shareContext: android.opengl.EGLContext,
+        ring: List<Slot>,
+        latch: CountDownLatch
+    ) {
+        renderThreadRef = Thread.currentThread()
+        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_DISPLAY) }
+
+        var ingestContext = EGL14.EGL_NO_CONTEXT
+        var pbuffer = EGL14.EGL_NO_SURFACE
+        var externalTexture = 0
+        var externalProgram = 0
+        var ingestProgram = 0
+        val analysisTexture = IntArray(1)
+        val analysisFramebuffer = IntArray(1)
+        var st: SurfaceTexture? = null
+        var camera: Surface? = null
+
+        try {
+            val contextAttrs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
+            var current = false
+            val extensions = EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS) ?: ""
+            if (extensions.contains("EGL_KHR_surfaceless_context")) {
+                ingestContext = EGL14.eglCreateContext(display, sharedConfig, shareContext, contextAttrs, 0)
+                if (ingestContext != EGL14.EGL_NO_CONTEXT) {
+                    current = EGL14.eglMakeCurrent(
+                        display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, ingestContext
+                    )
+                }
+            }
+            if (!current) {
+                if (ingestContext != EGL14.EGL_NO_CONTEXT) {
+                    runCatching { EGL14.eglDestroyContext(display, ingestContext) }
+                    ingestContext = EGL14.EGL_NO_CONTEXT
+                }
+                val pbufferConfigs = arrayOfNulls<android.opengl.EGLConfig>(1)
+                val pbufferCount = IntArray(1)
+                check(
+                    EGL14.eglChooseConfig(
+                        display,
+                        intArrayOf(
+                            EGL14.EGL_RED_SIZE, 8,
+                            EGL14.EGL_GREEN_SIZE, 8,
+                            EGL14.EGL_BLUE_SIZE, 8,
+                            EGL14.EGL_ALPHA_SIZE, 8,
+                            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
+                            EGL14.EGL_NONE
+                        ),
+                        0, pbufferConfigs, 0, 1, pbufferCount, 0
+                    ) && pbufferCount[0] > 0
+                ) { "configuração EGL pbuffer indisponível" }
+                val pbufferConfig = requireNotNull(pbufferConfigs[0])
+                ingestContext = EGL14.eglCreateContext(display, pbufferConfig, shareContext, contextAttrs, 0)
+                check(ingestContext != EGL14.EGL_NO_CONTEXT) { "falha criando contexto EGL de recepção" }
+                pbuffer = EGL14.eglCreatePbufferSurface(
+                    display, pbufferConfig,
+                    intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE), 0
+                )
+                check(pbuffer != EGL14.EGL_NO_SURFACE) { "falha criando pbuffer de recepção" }
+                check(EGL14.eglMakeCurrent(display, pbuffer, pbuffer, ingestContext)) {
+                    "falha ativando contexto EGL de recepção"
+                }
+            }
+
+            externalTexture = createExternalTexture()
+            st = SurfaceTexture(externalTexture).apply {
+                setDefaultBufferSize(sourceWidth, sourceHeight)
+                setOnFrameAvailableListener(
+                    {
+                        val nowSignalNs = System.nanoTime()
+                        cameraSignals++
+                        if (lastSignalNs != 0L) {
+                            val signalGap = nowSignalNs - lastSignalNs
+                            if (signalGap > signalMaxGapNs) signalMaxGapNs = signalGap
+                            if (signalGap > 25_000_000L) signalLongGaps++
+                        }
+                        lastSignalNs = nowSignalNs
+                        pendingFrames.updateAndGet { pending ->
+                            if (pending >= MAX_PENDING_SIGNAL_COUNT) pending else pending + 1
+                        }
+                        LockSupport.unpark(renderThreadRef)
+                    },
+                    frameSignalHandler
+                )
+            }
+            surfaceTexture = st
+            camera = Surface(st)
+            cameraSurface = camera
+
+            // Framebuffers não são compartilhados entre contextos: esta thread cria os seus.
+            for (slot in ring) slot.framebuffer = createFramebuffer(slot.texture)
+            externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_EXTERNAL))
+            ingestProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_INGEST)
+
+            // Frame de análise do foco inteligente: orientação do SENSOR (o consumidor rotaciona).
+            val analysisWidth = (sourceWidth / 16).coerceIn(160, 320)
+            val analysisHeight = ((analysisWidth.toLong() * sourceHeight.toLong()) / sourceWidth.coerceAtLeast(1).toLong())
+                .toInt().coerceIn(90, 240)
+            val motionReadback = ByteBuffer.allocateDirect(analysisWidth * analysisHeight * 4)
+                .order(ByteOrder.nativeOrder())
+            val currentMotionPixels = ByteArray(analysisWidth * analysisHeight * 4)
+
+
+
+            GLES20.glGenTextures(1, analysisTexture, 0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, analysisTexture[0])
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexImage2D(
+                GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
+                analysisWidth, analysisHeight, 0,
+                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null
+            )
+            GLES20.glGenFramebuffers(1, analysisFramebuffer, 0)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysisFramebuffer[0])
+            GLES20.glFramebufferTexture2D(
+                GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
+                GLES20.GL_TEXTURE_2D, analysisTexture[0], 0
+            )
+            check(GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER) == GLES20.GL_FRAMEBUFFER_COMPLETE) {
+                "framebuffer de análise CFR incompleto"
+            }
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+
+
+
+            val vertices = floatBuffer(VERTICES)
+            val texCoords = floatBuffer(TEX_COORDS)
+            val textureMatrix = FloatArray(16)
+            val source = requireNotNull(st)
+            // Último frame trazido para o anel (já com a redução de ruído): histórico do filtro
+            // temporal. Nunca é escolhido como destino enquanto for o histórico.
+            var lastIngested: Slot? = null
+            var lastAnalysisSampleMs = 0L
+            var seenGeneration = generation.get()
+
+            fun drainPending() {
+                val stale = pendingFrames.getAndSet(0)
+                var consumed = 0
+                while (consumed < stale) {
+                    runCatching { source.updateTexImage() }
+                    consumed++
+                }
+            }
+
+            latch.countDown()
+
+            while (!released.get() && !pipelineStopped) {
+                if (!outputEnabled.get()) {
+                    drainPending()
+                    lastIngested = null
+                    LockSupport.parkNanos(IDLE_POLL_NS)
+                    continue
+                }
+                val generationNow = generation.get()
+                if (generationNow != seenGeneration) {
+                    seenGeneration = generationNow
+                    drainPending()
+                    lastIngested = null
+                }
+                if (pendingFrames.get() <= 0) {
+                    LockSupport.parkNanos(IDLE_POLL_NS)
+                    continue
+                }
+                var destination = freeSlots.poll()
+                if (destination != null && destination === lastIngested) {
+                    val other = freeSlots.poll()
+                    freeSlots.add(destination)
+                    destination = other
+                }
+                if (destination == null) {
+                    ringFullWaits++
+                    LockSupport.parkNanos(IDLE_POLL_NS)
+                    continue
+                }
+
+                val ingestStartNs = System.nanoTime()
+                if (lastIngestStartNs != 0L) {
+                    val stall = ingestStartNs - lastIngestStartNs
+                    if (stall > ingestStallMaxNs) ingestStallMaxNs = stall
+                    if (stall > 25_000_000L) lateIngests++
+                }
+                lastIngestStartNs = ingestStartNs
+                pendingFrames.decrementAndGet()
+                source.updateTexImage()
+                destination.timestampNs = source.timestamp
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, destination.framebuffer)
+                renderIngest(
+                    st = source,
+                    textureMatrix = textureMatrix,
+                    program = ingestProgram,
+                    externalTexture = externalTexture,
+                    historyTexture = lastIngested?.texture ?: 0,
+                    vertices = vertices,
+                    texCoords = texCoords
+                )
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                // O slot vai ser lido pelo contexto de saída: a cópia precisa ter terminado.
+                GLES20.glFinish()
+                lastIngested = destination
+                frameQueue.add(destination)
+                val ingestNs = System.nanoTime() - ingestStartNs
+                ingestTotalNs += ingestNs
+                ingestCount++
+                if (ingestNs > ingestMaxNs) ingestMaxNs = ingestNs
+
+                if (analysisEnabled && onAnalysisFrame != null) {
+                    val nowMs = SystemClock.elapsedRealtime()
+                    if (nowMs - lastAnalysisSampleMs >= BACKGROUND_ANALYSIS_INTERVAL_MS) {
+                        lastAnalysisSampleMs = nowMs
+                        readCurrentAnalysisFrame(
+                            st = source,
+                            externalTexture = externalTexture,
+                            framebuffer = analysisFramebuffer[0],
+                            width = analysisWidth,
+                            height = analysisHeight,
+                            target = currentMotionPixels,
+                            readback = motionReadback,
+                            program = externalProgram,
+                            vertices = vertices,
+                            texCoords = texCoords,
+                            textureMatrix = textureMatrix
+                        )
+                        runCatching {
+                            onAnalysisFrame?.invoke(currentMotionPixels.copyOf(), analysisWidth, analysisHeight)
+                        }
+                    }
+                }
+
+            }
+        } catch (t: Throwable) {
+            initError = t
+            pipelineStopped = true
+            if (!released.get()) onError(t)
+        } finally {
+            if (latch.count > 0L) latch.countDown()
+            runCatching { camera?.release() }
+            cameraSurface = null
+            runCatching { st?.release() }
+            surfaceTexture = null
+            if (externalProgram != 0) runCatching { GLES20.glDeleteProgram(externalProgram) }
+            if (ingestProgram != 0) runCatching { GLES20.glDeleteProgram(ingestProgram) }
+            runCatching { GLES20.glDeleteTextures(1, analysisTexture, 0) }
+            runCatching { GLES20.glDeleteFramebuffers(1, analysisFramebuffer, 0) }
+            for (slot in ring) {
+                if (slot.framebuffer != 0) runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(slot.framebuffer), 0) }
+            }
+            if (externalTexture != 0) runCatching { GLES20.glDeleteTextures(1, intArrayOf(externalTexture), 0) }
+            runCatching {
+                EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+            }
+            if (pbuffer != EGL14.EGL_NO_SURFACE) runCatching { EGL14.eglDestroySurface(display, pbuffer) }
+            if (ingestContext != EGL14.EGL_NO_CONTEXT) runCatching { EGL14.eglDestroyContext(display, ingestContext) }
+            runCatching { EGL14.eglReleaseThread() }
         }
     }
 
@@ -1208,7 +1371,7 @@ class RealTimeCfrSurfaceBridge(
          * Texturas do anel (4K RGBA ~33 MB cada): frame anterior + frame em processamento +
          * fila de frames que chegam enquanto uma lacuna longa é preenchida.
          */
-        private const val RING_SIZE = 6
+        private const val RING_SIZE = 8
 
         /** Peso máximo do frame anterior filtrado no denoise temporal (0 desliga). */
         private const val TEMPORAL_DENOISE_WEIGHT = 0.5f
