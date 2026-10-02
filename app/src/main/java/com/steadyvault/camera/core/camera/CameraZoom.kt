@@ -31,6 +31,23 @@ object CameraZoom {
         return Rect(left, top, left + cropWidth, top + cropHeight)
     }
 
+    /**
+     * Retângulo em que as regiões de medição (AF/AE/AWB) são expressas. Com CONTROL_ZOOM_RATIO
+     * (Android 11+) o sistema de coordenadas é PÓS-zoom: o array ativo inteiro cobre o campo de
+     * visão já com zoom. Usar o recorte físico (sensorRegion) deslocava o foco em direção ao
+     * centro (com 2x, um alvo em x=0,9 virava ~0,7). Só no caminho antigo (SCALER_CROP_REGION)
+     * as regiões ficam dentro do recorte.
+     */
+    fun meteringArray(characteristics: CameraCharacteristics, requested: Float): Rect? {
+        val active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) != null
+        ) {
+            return Rect(active)
+        }
+        return sensorRegion(characteristics, requested)
+    }
+
     fun apply(
         builder: CaptureRequest.Builder,
         characteristics: CameraCharacteristics,

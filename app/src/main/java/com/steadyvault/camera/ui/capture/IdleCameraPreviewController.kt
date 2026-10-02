@@ -856,7 +856,7 @@ class IdleCameraPreviewController(
         normalizedX: Float,
         normalizedY: Float
     ): MeteringRectangle? {
-        val activeArray = CameraZoom.sensorRegion(characteristics, activeSettings?.zoomRatio ?: 1f)
+        val activeArray = CameraZoom.meteringArray(characteristics, activeSettings?.zoomRatio ?: 1f)
             ?: characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
             ?: return null
         val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90

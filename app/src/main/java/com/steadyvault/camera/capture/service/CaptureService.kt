@@ -2792,7 +2792,7 @@ class CaptureService : Service() {
             Log.i("SteadyVaultCfr", "foco inteligente: sem alvo recente, foco normal")
             return
         }
-        val activeArray = CameraZoom.sensorRegion(
+        val activeArray = CameraZoom.meteringArray(
             profile.characteristics,
             recordingSettings.zoomRatio
         ) ?: profile.characteristics.get(
