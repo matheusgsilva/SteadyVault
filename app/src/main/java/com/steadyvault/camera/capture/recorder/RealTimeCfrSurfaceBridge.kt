@@ -1379,9 +1379,9 @@ class RealTimeCfrSurfaceBridge(
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
         private const val TIMING_DIAGNOSTICS = false
         // Limitador do preenchimento com movimento (ver o laço de renderização).
-        private const val MOTION_MAX_BACKLOG = 2
-        private const val MOTION_BUDGET_NS = 40_000_000L
-        private const val MOTION_COOLDOWN_NS = 400_000_000L
+        private const val MOTION_MAX_BACKLOG = 5
+        private const val MOTION_BUDGET_NS = 120_000_000L
+        private const val MOTION_COOLDOWN_NS = 150_000_000L
 
         private const val EGL_RECORDABLE_ANDROID = 0x3142
         private const val PREPARE_TIMEOUT_SECONDS = 5L
