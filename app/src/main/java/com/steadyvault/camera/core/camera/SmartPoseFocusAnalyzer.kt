@@ -61,12 +61,15 @@ class SmartPoseFocusAnalyzer : Closeable {
                 val analysisWidth = if (rotated) bitmap.height else bitmap.width
                 val analysisHeight = if (rotated) bitmap.width else bitmap.height
                 val poseTarget = selectTarget(pose, analysisWidth, analysisHeight)
-                onResult(
-                    poseTarget ?: skin?.let { blob ->
-                        val point = skinFinder.toUpright(blob, normalizedRotation)
-                        Target(point.x.coerceIn(0f, 1f), point.y.coerceIn(0f, 1f), Kind.SKIN, 0.5f)
-                    }
-                )
+                val skinTarget = skin?.let { blob ->
+                    val point = skinFinder.toUpright(blob, normalizedRotation)
+                    Target(point.x.coerceIn(0f, 1f), point.y.coerceIn(0f, 1f), Kind.SKIN, 0.5f)
+                }
+                // Mão/pé novos no quadro valem mais que um corpo/mãos "adivinhados" pela pose; rosto
+                // e mão-na-boca (agora só com rosto confiável) continuam com prioridade.
+                val poseIsSolid = poseTarget != null &&
+                    (poseTarget.kind == Kind.FACE || poseTarget.kind == Kind.HAND_TO_MOUTH)
+                onResult(if (poseIsSolid) poseTarget else (skinTarget ?: poseTarget))
             }
             .addOnFailureListener {
                 onResult(null)
@@ -79,13 +82,24 @@ class SmartPoseFocusAnalyzer : Closeable {
     private fun selectTarget(pose: Pose, width: Int, height: Int): Target? {
         if (width <= 0 || height <= 0) return null
 
-        val mouth = averageVisible(
+        // O modelo "inventa" boca/rosto em volta de uma mão sozinha (mão virava "mão na boca" e o
+        // foco ia para um ponto entre a mão e a boca falsa). Rosto só vale com pelo menos 2
+        // marcos de olhos/nariz/orelhas bem confiáveis; sem isso, nada de rosto nem de boca.
+        val faceIsCredible = listOf(
+            PoseLandmark.NOSE,
+            PoseLandmark.LEFT_EYE,
+            PoseLandmark.RIGHT_EYE,
+            PoseLandmark.LEFT_EAR,
+            PoseLandmark.RIGHT_EAR
+        ).count { type -> (pose.getPoseLandmark(type)?.inFrameLikelihood ?: 0f) >= FACE_LIKELIHOOD } >= 2
+
+        val mouth = if (!faceIsCredible) null else averageVisible(
             pose,
             PoseLandmark.LEFT_MOUTH,
             PoseLandmark.RIGHT_MOUTH,
-            minLikelihood = MIN_LIKELIHOOD
+            minLikelihood = FACE_LIKELIHOOD
         )
-        val face = averageVisible(
+        val face = if (!faceIsCredible) null else averageVisible(
             pose,
             PoseLandmark.NOSE,
             PoseLandmark.LEFT_EYE,
@@ -233,6 +247,7 @@ class SmartPoseFocusAnalyzer : Closeable {
 
     companion object {
         private const val MIN_LIKELIHOOD = 0.4f
+        private const val FACE_LIKELIHOOD = 0.6f
         private const val HAND_TO_MOUTH_DISTANCE = 0.16f
     }
 }
