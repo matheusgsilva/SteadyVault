@@ -1202,6 +1202,7 @@ class CaptureService : Service() {
                     onAnalysisFrame = { rgba, frameWidth, frameHeight ->
                         analyzeBackgroundSmartFocusFrame(rgba, frameWidth, frameHeight)
                     },
+                    lookProfile = com.steadyvault.camera.capture.recorder.VideoLook.profileFor(recordingSettings.colorProfile),
                     onError = { throwable ->
                         if (!stopping.get() && serviceActive.get()) {
                             failAndStop("MediaCodec direto: ${errorText(throwable)}")
@@ -1273,6 +1274,9 @@ class CaptureService : Service() {
                 "MediaCodec direto recusado; usando MediaRecorder como fallback",
                 codecFailure
             )
+            // Não é silencioso: este caminho NÃO tem CFR, interpolação nem look/denoise da GPU.
+            Log.e(LOG_TAG, "FALLBACK: gravando sem ponte CFR/interpolação (MediaRecorder): ${codecFailure.message}")
+            runCatching { updateNotification("Aviso: gravação simplificada (sem interpolação)") }
 
             val fallbackFile = VaultRepository.createRecordingFile(this, profileLabel)
             val integratedAudio = hasAudioPermission() && runCatching {

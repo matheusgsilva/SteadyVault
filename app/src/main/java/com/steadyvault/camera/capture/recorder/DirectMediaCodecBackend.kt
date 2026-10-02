@@ -47,6 +47,7 @@ class DirectMediaCodecBackend(
     private val superStabilizationEnabled: Boolean = false,
     private val analysisEnabled: Boolean = false,
     private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
+    private val lookProfile: Int = VideoLook.PROFILE_NATURAL,
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
 
@@ -165,6 +166,7 @@ class DirectMediaCodecBackend(
                 superStabilizationEnabled = superStabilizationEnabled,
                 analysisEnabled = analysisEnabled,
                 onAnalysisFrame = onAnalysisFrame,
+                lookProfile = lookProfile,
                 onError = onError
             )
             cfrBridge = bridge

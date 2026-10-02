@@ -57,6 +57,7 @@ class RealTimeCfrSurfaceBridge(
     private val superStabilizationEnabled: Boolean = false,
     private val analysisEnabled: Boolean = false,
     private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
+    private val lookProfile: Int = VideoLook.PROFILE_NATURAL,
     private val onError: (Throwable) -> Unit
 ) {
     /** Frame real já no espaço de saída, guardado numa textura 2D do anel. */
@@ -360,10 +361,10 @@ class RealTimeCfrSurfaceBridge(
             // buffer dela na hora.
             repeat(RING_SIZE) { ring += Slot(createStorageTexture(outputWidth, outputHeight)) }
             GLES20.glFinish()
-            textureProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_TEXTURE))
-            blendProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_BLEND))
+            textureProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_TEXTURE, lookProfile))
+            blendProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_BLEND, lookProfile))
             motionEstimateProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_GPU_MOTION_ESTIMATE)
-            stabilizationProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_SUPER_STABILIZE))
+            stabilizationProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_SUPER_STABILIZE, lookProfile))
 
             // Estimativa do Super Estável: no espaço de SAÍDA (retrato).
             val motionWidth = (outputWidth / 16).coerceIn(90, 320)
@@ -385,7 +386,7 @@ class RealTimeCfrSurfaceBridge(
             motionFramebuffer = createFramebuffer(motionTextures[0])
 
 
-            val interpolator = MotionInterpolator(outputWidth, outputHeight)
+            val interpolator = MotionInterpolator(outputWidth, outputHeight, lookProfile)
             motion = interpolator
             motionState = if (interpolator.initialize()) "ativo" else "indisponivel"
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -757,7 +758,7 @@ class RealTimeCfrSurfaceBridge(
 
             // Framebuffers não são compartilhados entre contextos: esta thread cria os seus.
             for (slot in ring) slot.framebuffer = createFramebuffer(slot.texture)
-            externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_EXTERNAL))
+            externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_EXTERNAL, lookProfile))
             ingestProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_INGEST)
 
             // Frame de análise do foco inteligente: orientação do SENSOR (o consumidor rotaciona).
@@ -1067,6 +1068,11 @@ class RealTimeCfrSurfaceBridge(
         // Sem histórico (primeiro frame): peso 0, e uma textura qualquer só para o sampler ficar válido.
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (historyTexture != 0) historyTexture else 0)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sHistory"), 1)
+        GLES20.glUniform2f(
+            GLES20.glGetUniformLocation(program, "uTexel"),
+            SPATIAL_DENOISE_RADIUS_PX / outputWidth,
+            SPATIAL_DENOISE_RADIUS_PX / outputHeight
+        )
         GLES20.glUniform1f(
             GLES20.glGetUniformLocation(program, "uHistoryWeight"),
             if (historyTexture != 0) TEMPORAL_DENOISE_WEIGHT else 0f
@@ -1427,6 +1433,8 @@ class RealTimeCfrSurfaceBridge(
         private const val RING_SIZE = 8
 
         /** Peso máximo do frame anterior filtrado no denoise temporal (0 desliga). */
+        // Raio (px de saída) das 4 amostras diagonais do filtro espacial anti-grão do ingest.
+        private const val SPATIAL_DENOISE_RADIUS_PX = 1f
         private const val TEMPORAL_DENOISE_WEIGHT = 0.5f
 
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
@@ -1546,14 +1554,36 @@ class RealTimeCfrSurfaceBridge(
             uniform mat4 uTextureMatrix;
             uniform float uRotationDegrees;
             uniform float uHistoryWeight;
+            uniform vec2 uTexel;
             vec2 rotateUv(vec2 uv) {
                 if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
                 if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
                 if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);
                 return uv;
             }
+            vec3 fetchColor(vec2 uv) {
+                return texture2D(sTexture, (uTextureMatrix * vec4(rotateUv(uv), 0.0, 1.0)).xy).rgb;
+            }
+            float lumaOf(vec3 v) { return dot(v, vec3(0.299, 0.587, 0.114)); }
             void main() {
-                vec3 c = texture2D(sTexture, (uTextureMatrix * vec4(rotateUv(vUv), 0.0, 1.0)).xy).rgb;
+                vec3 c0 = fetchColor(vUv);
+                // Filtro espacial que preserva bordas (4 diagonais): o croma (colorido do grão) é
+                // suavizado com força; a luma só levemente, para não perder textura fina.
+                float y0 = lumaOf(c0);
+                vec3 accC = c0; float wC = 1.0;
+                vec3 accL = c0; float wL = 1.0;
+                for (int i = 0; i < 4; i++) {
+                    vec2 o = vec2((i < 2) ? -1.0 : 1.0, (i == 0 || i == 2) ? -1.0 : 1.0) * uTexel;
+                    vec3 n = fetchColor(vUv + o);
+                    float dn = abs(lumaOf(n) - y0);
+                    float a = 1.0 - smoothstep(0.03, 0.10, dn);
+                    float b = 0.4 * (1.0 - smoothstep(0.02, 0.06, dn));
+                    accC += n * a; wC += a;
+                    accL += n * b; wL += b;
+                }
+                vec3 cf = accC / wC;
+                vec3 lf = accL / wL;
+                vec3 c = cf + vec3(lumaOf(lf) - lumaOf(cf));
                 vec3 h = texture2D(sHistory, vUv).rgb;
                 float d = abs(dot(c - h, vec3(0.299, 0.587, 0.114)));
                 float w = uHistoryWeight * (1.0 - smoothstep(0.04, 0.10, d));

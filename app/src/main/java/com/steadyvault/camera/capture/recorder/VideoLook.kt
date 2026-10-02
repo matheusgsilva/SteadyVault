@@ -12,10 +12,33 @@ package com.steadyvault.camera.capture.recorder
  * Mesmo texto usado no teste headless de tools/motion_test (sem o caractere de dólar).
  */
 internal object VideoLook {
+    /**
+     * Perfis de cor (Configurações > Perfil de cor). Na câmera, SOFT/FLAT já aplicam uma curva de
+     * tons no sensor; por isso o look da GPU fica mais leve neles, em vez de desfazer a escolha.
+     */
+    const val PROFILE_NATURAL = 0
+    const val PROFILE_SOFT = 1
+    const val PROFILE_FLAT = 2
+
+    fun profileFor(colorProfile: String): Int = when (colorProfile) {
+        "SOFT" -> PROFILE_SOFT
+        "FLAT" -> PROFILE_FLAT
+        else -> PROFILE_NATURAL
+    }
+
+    private fun defines(profile: Int): String {
+        val sharpen: String
+        val saturation: String
+        val curve: String
+        when (profile) {
+            PROFILE_SOFT -> { sharpen = "0.6"; saturation = "1.08"; curve = "0.12" }
+            PROFILE_FLAT -> { sharpen = "0.3"; saturation = "1.0"; curve = "0.0" }
+            else -> { sharpen = "0.9"; saturation = "1.2"; curve = "0.4" }
+        }
+        return "#define LOOK_SHARPEN $sharpen\n#define LOOK_SATURATION $saturation\n#define LOOK_CURVE $curve\n"
+    }
+
     const val GLSL = """
-#define LOOK_SHARPEN 0.9
-#define LOOK_SATURATION 1.2
-#define LOOK_CURVE 0.4
 #define LOOK_CORE_LOW 0.03
 #define LOOK_CORE_HIGH 0.09
 uniform vec2 uLookTexel;
@@ -37,5 +60,6 @@ vec3 lookGrade(vec3 c, vec3 blur) {
 
     const val PLACEHOLDER = "LOOK_GLSL"
 
-    fun insert(source: String): String = source.replace(PLACEHOLDER, GLSL)
+    fun insert(source: String, profile: Int = PROFILE_NATURAL): String =
+        source.replace(PLACEHOLDER, defines(profile) + GLSL)
 }

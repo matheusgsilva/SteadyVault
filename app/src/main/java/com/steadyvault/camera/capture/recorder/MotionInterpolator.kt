@@ -25,7 +25,8 @@ import java.nio.FloatBuffer
  */
 internal class MotionInterpolator(
     private val width: Int,
-    private val height: Int
+    private val height: Int,
+    private val lookProfile: Int = VideoLook.PROFILE_NATURAL
 ) {
     var available = false
         private set
@@ -298,7 +299,7 @@ internal class MotionInterpolator(
 
     private fun program(fragment: String, defines: String): Int {
         val vertexShader = compile(GLES20.GL_VERTEX_SHADER, MotionShaders.VERTEX)
-        val fragmentShader = compile(GLES20.GL_FRAGMENT_SHADER, defines + VideoLook.insert(fragment))
+        val fragmentShader = compile(GLES20.GL_FRAGMENT_SHADER, defines + VideoLook.insert(fragment, lookProfile))
         val program = GLES20.glCreateProgram()
         GLES20.glAttachShader(program, vertexShader)
         GLES20.glAttachShader(program, fragmentShader)
