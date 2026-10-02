@@ -3,7 +3,7 @@ package com.steadyvault.camera.capture.recorder
 /**
  * "Look" aplicado na GPU a TODA saída enviada ao encoder (frame real, mistura e frame
  * interpolado, sempre com o mesmo código, para o resultado não pulsar entre eles):
- *  - nitidez: máscara de desfoque (unsharp) com 4 vizinhos de 1 pixel;
+ *  - nitidez: máscara de desfoque (unsharp) com 4 vizinhos, só na luma e com corte de ruído;
  *  - saturação: devolve cor às imagens lavadas;
  *  - curva em S suave: aprofunda sombras e dá contraste (o "branco pálido").
  *
@@ -16,9 +16,15 @@ internal object VideoLook {
 #define LOOK_SHARPEN 0.9
 #define LOOK_SATURATION 1.2
 #define LOOK_CURVE 0.4
+#define LOOK_CORE_LOW 0.03
+#define LOOK_CORE_HIGH 0.09
 uniform vec2 uLookTexel;
 vec3 lookGrade(vec3 c, vec3 blur) {
-    vec3 s = c + LOOK_SHARPEN * (c - blur);
+    // Nitidez só na luma e com "coring": detalhe fraco (ruído, principalmente em cena escura)
+    // não é realçado; só bordas reais. Sem isso o ruído sai ~2x maior e colorido.
+    float detail = dot(c - blur, vec3(0.299, 0.587, 0.114));
+    float edge = smoothstep(LOOK_CORE_LOW, LOOK_CORE_HIGH, abs(detail));
+    vec3 s = c + vec3(LOOK_SHARPEN * edge * detail);
     float l = dot(s, vec3(0.299, 0.587, 0.114));
     s = clamp(mix(vec3(l), s, LOOK_SATURATION), 0.0, 1.0);
     vec3 curved = s * s * (3.0 - 2.0 * s);

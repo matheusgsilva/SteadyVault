@@ -137,6 +137,26 @@ class RealTimeCfrSurfaceBridge(
         repeatedOutputs = repeatedOutputs
     )
 
+    // Telemetria de tempo (ms) por etapa; aparece em "tempos:" no resumo.
+    @Volatile private var swapMaxNs = 0L
+    @Volatile private var swapTotalNs = 0L
+    @Volatile private var swapCount = 0L
+    @Volatile private var ingestMaxNs = 0L
+    @Volatile private var ingestTotalNs = 0L
+    @Volatile private var ingestCount = 0L
+    @Volatile private var estimateMaxNs = 0L
+    @Volatile private var warpMaxNs = 0L
+    @Volatile private var ringFullWaits = 0L
+
+    private fun swapBuffers(display: android.opengl.EGLDisplay, window: android.opengl.EGLSurface, message: String) {
+        val start = System.nanoTime()
+        check(EGL14.eglSwapBuffers(display, window)) { message }
+        val elapsed = System.nanoTime() - start
+        swapTotalNs += elapsed
+        swapCount++
+        if (elapsed > swapMaxNs) swapMaxNs = elapsed
+    }
+
     private fun logSummary() {
         if (!summaryLogged.compareAndSet(false, true)) return
         val stats = stats()
@@ -152,6 +172,13 @@ class RealTimeCfrSurfaceBridge(
             "movimento: estado=$motionState compensados=${stats.motionFrames} " +
                 "voltaramAoCrossfade=${stats.motionFallbacks} " +
                 "duplicadosDaCamera=${stats.duplicatesSkipped} repeticoesDaGrade=${stats.repeatedOutputs}"
+        )
+        fun ms(ns: Long) = ns / 1_000_000L
+        Log.i(
+            TAG,
+            "tempos(ms): swapMax=${ms(swapMaxNs)} swapMedia=${ms(swapTotalNs / swapCount.coerceAtLeast(1L))} " +
+                "ingestMax=${ms(ingestMaxNs)} ingestMedia=${ms(ingestTotalNs / ingestCount.coerceAtLeast(1L))} " +
+                "fluxoMax=${ms(estimateMaxNs)} warpMax=${ms(warpMaxNs)} anelCheio=$ringFullWaits"
         )
         val total = intervalBuckets.sum().coerceAtLeast(1L)
         fun pct(index: Int) = 100L * intervalBuckets[index] / total
@@ -389,6 +416,7 @@ class RealTimeCfrSurfaceBridge(
             // (inclusive entre as saídas de uma lacuna) para a câmera nunca ficar sem buffer.
             fun ingest() {
                 while (pendingFrames.get() > 0 && free.isNotEmpty()) {
+                    val ingestStartNs = System.nanoTime()
                     pendingFrames.decrementAndGet()
                     source.updateTexImage()
                     val slot = free.removeFirst()
@@ -405,6 +433,10 @@ class RealTimeCfrSurfaceBridge(
                     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
                     queue.addLast(slot)
                     if (queue.size > maxBacklogSignals) maxBacklogSignals = queue.size
+                    val ingestNs = System.nanoTime() - ingestStartNs
+                    ingestTotalNs += ingestNs
+                    ingestCount++
+                    if (ingestNs > ingestMaxNs) ingestMaxNs = ingestNs
 
                     if (analysisEnabled && onAnalysisFrame != null) {
                         val nowMs = SystemClock.elapsedRealtime()
@@ -454,6 +486,7 @@ class RealTimeCfrSurfaceBridge(
                 }
                 if (flushRequested.compareAndSet(true, false)) discardAll()
 
+                if (pendingFrames.get() > 0 && free.isEmpty()) ringFullWaits++
                 ingest()
                 val current = queue.removeFirstOrNull()
                 if (current == null) {
@@ -752,7 +785,7 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sTexture"), 0)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
-        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers falhou" }
+        swapBuffers(display, window, "eglSwapBuffers falhou")
     }
 
     private fun bindQuad(program: Int, vertices: FloatBuffer, texCoords: FloatBuffer) {
@@ -799,7 +832,7 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uAlpha"), alpha.coerceIn(0.001f, 0.999f))
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
-        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers interpolado falhou" }
+        swapBuffers(display, window, "eglSwapBuffers interpolado falhou")
     }
 
     private fun readCurrentAnalysisFrame(
@@ -899,10 +932,17 @@ class RealTimeCfrSurfaceBridge(
         try {
             GLES20.glGetError() // limpa erro pendente de outro passo
             if (!flowReady) {
+                val flowStartNs = System.nanoTime()
                 mi.prepare(previousTexture, currentTexture, vertices, texCoords)
                 mi.estimate(vertices, texCoords)
                 if (!mi.healthy()) throw IllegalStateException("erro GL na estimativa")
+                if (TIMING_DIAGNOSTICS) {
+                    GLES20.glFinish() // só em lacunas: mede o tempo real de GPU do fluxo
+                    val flowNs = System.nanoTime() - flowStartNs
+                    if (flowNs > estimateMaxNs) estimateMaxNs = flowNs
+                }
             }
+            val warpStartNs = System.nanoTime()
             // Com o Super Estável, os frames reais saem recortados; o frame recriado usa o
             // mesmo recorte para não "pulsar" de zoom a cada lacuna.
             val crop = if (superStabilizationEnabled) SUPER_STABLE_CROP_SCALE else 1f
@@ -910,6 +950,11 @@ class RealTimeCfrSurfaceBridge(
             GLES20.glViewport(0, 0, outputWidth, outputHeight)
             mi.warp(alpha, previousTexture, currentTexture, vertices, texCoords, crop)
             if (!mi.healthy()) throw IllegalStateException("erro GL no warp")
+            if (TIMING_DIAGNOSTICS) {
+                GLES20.glFinish()
+                val warpNs = System.nanoTime() - warpStartNs
+                if (warpNs > warpMaxNs) warpMaxNs = warpNs
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "interpolação com movimento falhou, voltando ao crossfade: ${t.message}")
             motionState = "desligadoPorErro"
@@ -918,7 +963,7 @@ class RealTimeCfrSurfaceBridge(
             return false
         }
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
-        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers com movimento falhou" }
+        swapBuffers(display, window, "eglSwapBuffers com movimento falhou")
         motionFrames++
         return true
     }
@@ -961,7 +1006,7 @@ class RealTimeCfrSurfaceBridge(
         )
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
-        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers Super Estável falhou" }
+        swapBuffers(display, window, "eglSwapBuffers Super Estável falhou")
     }
 
     private fun createExternalTexture(): Int {
@@ -1066,6 +1111,9 @@ class RealTimeCfrSurfaceBridge(
          * fila de frames que chegam enquanto uma lacuna longa é preenchida.
          */
         private const val RING_SIZE = 6
+
+        /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
+        private const val TIMING_DIAGNOSTICS = true
 
         private const val EGL_RECORDABLE_ANDROID = 0x3142
         private const val PREPARE_TIMEOUT_SECONDS = 5L
