@@ -61,6 +61,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
+import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
@@ -2297,9 +2298,15 @@ class CaptureService : Service() {
                     fixedCadencePlan(profile, exposureNs, sensitivityIso)
                 } else null
 
+                Log.i(
+                    "SteadyVaultCfr",
+                    "cadência fixa: resultados=$seen aeState=$aeState convergiu=$converged " +
+                        "observado exp=${(exposureNs ?: 0L) / 1_000L}us iso=${sensitivityIso ?: 0} -> " +
+                        (plan?.let { "exp=${it.exposureTimeNs / 1_000L}us iso=${it.sensitivityIso} dur=${it.frameDurationNs / 1_000L}us" } ?: "sem plano (AE automático)")
+                )
                 val fixedRequest = plan?.let { buildFixedCadenceRequest(profile, it) }
                 runCatching {
-                    captureSession.setRepeatingRequest(fixedRequest ?: autoRequest, null, mainHandler)
+                    captureSession.setRepeatingRequest(fixedRequest ?: autoRequest, recordingProbe, mainHandler)
                 }
             }
         }
@@ -3838,20 +3845,36 @@ class CaptureService : Service() {
 }
 
 /**
- * Diagnóstico: resume a cada 60 resultados da câmera o que a HAL realmente fez (exposição,
- * ISO e duração do frame). Mostra se a perda de frames vem do AE alongando a exposição ou da
- * câmera descartando frames por outro motivo. Aparece no logcat como "câmera(60 frames)".
+ * Diagnóstico da câmera durante a gravação (tag SteadyVaultCfr):
+ *  - "câmera(60 frames)": exposição/ISO/duração médias, "luz" (exposição x ISO, cai se escurecer),
+ *    estados de AF/AE, quantos intervalos longos e frame numbers pulados.
+ *  - "câmera: intervalo longo": uma linha por buraco do sensor (>25 ms) com o que a HAL estava
+ *    fazendo (AF, AE, foco, OIS, exposição, ISO) neste e no resultado anterior.
+ *  - "câmera: falha/buffer perdido": a HAL declarando que descartou um frame (e o motivo).
  */
 private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
     private var count = 0
     private var exposureSumNs = 0L
     private var exposureMaxNs = 0L
     private var isoMax = 0
+    private var isoSum = 0L
     private var durationMaxNs = 0L
     private var durationSumNs = 0L
     private var lastFrameNumber = -1L
     private var skippedFrameNumbers = 0L
     private var aeState = -1
+    private var lastTimestampNs = 0L
+    private var longIntervals = 0
+    private var maxIntervalNs = 0L
+    private var longWithAfActive = 0
+    private var afScanning = 0
+    private var failures = 0
+    private var bufferLost = 0
+    private var prevAf = -1
+    private var prevAe = -1
+    private var prevFocus = 0f
+    private var prevExposure = 0L
+    private var prevIso = 0
 
     override fun onCaptureCompleted(
         session: CameraCaptureSession,
@@ -3861,31 +3884,96 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
         val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
         val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
         val duration = result.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L
+        val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L
+        val af = result.get(CaptureResult.CONTROL_AF_STATE) ?: -1
+        val focus = result.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: 0f
+        val lensState = result.get(CaptureResult.LENS_STATE) ?: -1
+        val ois = result.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE) ?: -1
         aeState = result.get(CaptureResult.CONTROL_AE_STATE) ?: -1
         if (lastFrameNumber >= 0 && result.frameNumber > lastFrameNumber + 1) {
             skippedFrameNumbers += result.frameNumber - lastFrameNumber - 1
         }
         lastFrameNumber = result.frameNumber
+        if (af == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN || af == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN) afScanning++
+
+        if (lastTimestampNs > 0L && timestamp > 0L) {
+            val interval = timestamp - lastTimestampNs
+            if (interval > maxIntervalNs) maxIntervalNs = interval
+            if (interval > 25_000_000L) {
+                longIntervals++
+                val scanning = af == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN ||
+                    af == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN ||
+                    prevAf == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN ||
+                    prevAf == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN
+                if (scanning) longWithAfActive++
+                Log.i(
+                    "SteadyVaultCfr",
+                    "câmera: intervalo longo=${interval / 1_000_000L}ms frame#${result.frameNumber} " +
+                        "exp=${exposure / 1_000L}us(ant ${prevExposure / 1_000L}us) iso=$iso(ant $prevIso) " +
+                        "dur=${duration / 1_000L}us af=$af(ant $prevAf) ae=$aeState(ant $prevAe) " +
+                        "foco=${"%.2f".format(focus)}(ant ${"%.2f".format(prevFocus)}) lente=$lensState ois=$ois"
+                )
+            }
+        }
+        lastTimestampNs = timestamp
+        prevAf = af
+        prevAe = aeState
+        prevFocus = focus
+        prevExposure = exposure
+        prevIso = iso
+
         count++
         exposureSumNs += exposure
+        isoSum += iso
         durationSumNs += duration
         if (exposure > exposureMaxNs) exposureMaxNs = exposure
         if (iso > isoMax) isoMax = iso
         if (duration > durationMaxNs) durationMaxNs = duration
         if (count >= 60) {
+            val expMean = exposureSumNs / count
+            val isoMean = isoSum / count
             Log.i(
                 "SteadyVaultCfr",
-                "câmera(60 frames): exposicaoMedia=${exposureSumNs / count / 1_000L}us " +
-                    "exposicaoMax=${exposureMaxNs / 1_000L}us isoMax=$isoMax " +
+                "câmera(60 frames): exposicaoMedia=${expMean / 1_000L}us exposicaoMax=${exposureMaxNs / 1_000L}us " +
+                    "isoMedia=$isoMean isoMax=$isoMax luz(exp*iso)=${expMean * isoMean / 1_000_000L} " +
                     "duracaoMedia=${durationSumNs / count / 1_000L}us duracaoMax=${durationMaxNs / 1_000L}us " +
-                    "aeState=$aeState frameNumbersPulados=$skippedFrameNumbers"
+                    "intervaloMax=${maxIntervalNs / 1_000_000L}ms longos=$longIntervals longosComAF=$longWithAfActive " +
+                    "afVarrendo=$afScanning aeState=$aeState frameNumbersPulados=$skippedFrameNumbers " +
+                    "falhas=$failures buffersPerdidos=$bufferLost"
             )
             count = 0
             exposureSumNs = 0L
             exposureMaxNs = 0L
             isoMax = 0
+            isoSum = 0L
             durationMaxNs = 0L
             durationSumNs = 0L
+            maxIntervalNs = 0L
+            longIntervals = 0
+            longWithAfActive = 0
+            afScanning = 0
         }
+    }
+
+    override fun onCaptureFailed(
+        session: CameraCaptureSession,
+        request: CaptureRequest,
+        failure: CaptureFailure
+    ) {
+        failures++
+        Log.w(
+            "SteadyVaultCfr",
+            "câmera: falha frame#${failure.frameNumber} motivo=${failure.reason} imagemCapturada=${failure.wasImageCaptured()}"
+        )
+    }
+
+    override fun onCaptureBufferLost(
+        session: CameraCaptureSession,
+        request: CaptureRequest,
+        target: Surface,
+        frameNumber: Long
+    ) {
+        bufferLost++
+        Log.w("SteadyVaultCfr", "câmera: buffer perdido frame#$frameNumber")
     }
 }

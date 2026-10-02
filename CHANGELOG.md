@@ -1548,3 +1548,4 @@ As alterações anteriores à versão 1.8.46 não foram reconstruídas por falta
 - MediaRecorder direto, sem pós-processamento do vídeo.
 
 - **Vídeo escuro com "pouca luz" desligado:** a cadência fixa congelava exposição/ISO nos 3 primeiros resultados, antes de o AE convergir (ele começa escuro), e o vídeo todo saía subexposto. Agora espera `AE_STATE` convergido (máx. 45 resultados) antes de congelar. `TIMING_DIAGNOSTICS` (glFinish) desligado.
+- **Diagnóstico da câmera (`SteadyVaultCfr`):** a sonda agora também está no caminho de cadência fixa (antes ficava de fora, por isso `câmera(60 frames)` nunca aparecia). Novas linhas: `cadência fixa:` (resultados esperados, AE convergiu, exposição/ISO observados → aplicados), `câmera: intervalo longo=…` (um por buraco >25 ms, com AF/AE/foco/OIS/exposição/ISO atual e anterior), `câmera: falha/buffer perdido` e, no resumo de 60 frames, `luz(exp*iso)`, `longosComAF`, `afVarrendo`, `falhas`, `buffersPerdidos`.
