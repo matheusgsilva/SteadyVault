@@ -2689,11 +2689,11 @@ class CaptureService : Service() {
             backgroundSmartFocusAnalyzer.analyze(bitmap, sensorRotation) { target ->
                 runCatching { bitmap.recycle() }
                 if (target == null) {
-                    Log.i(LOG_TAG, "foco inteligente: nada identificado neste quadro")
+                    Log.i("SteadyVaultCfr", "foco inteligente: nada identificado neste quadro")
                     return@analyze
                 }
                 if (!serviceActive.get() || stopping.get()) return@analyze
-                Log.i(LOG_TAG, "foco inteligente: identificou ${target.kind} em x=%.2f y=%.2f".format(target.x, target.y))
+                Log.i("SteadyVaultCfr", "foco inteligente: identificou ${target.kind} em x=%.2f y=%.2f".format(target.x, target.y))
                 SmartFocusTargetStore.update(target)
                 val now = SystemClock.elapsedRealtime()
                 val moved = kotlin.math.hypot(
@@ -2755,7 +2755,7 @@ class CaptureService : Service() {
     ) {
         if (!SmartFocusSettings.enabled(this)) return
         val target = SmartFocusTargetStore.fresh() ?: run {
-            Log.i(LOG_TAG, "foco inteligente: sem alvo recente, foco normal")
+            Log.i("SteadyVaultCfr", "foco inteligente: sem alvo recente, foco normal")
             return
         }
         val activeArray = CameraZoom.sensorRegion(
@@ -2803,7 +2803,7 @@ class CaptureService : Service() {
         )
 
         Log.i(
-            LOG_TAG,
+            "SteadyVaultCfr",
             "foco inteligente: focando ${target.kind} região sensor=[${region.x},${region.y} ${region.width}x${region.height}] " +
                 "AF=${recordingSettings.focusMode != CaptureSettings.FOCUS_OFF}"
         )
