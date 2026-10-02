@@ -3875,6 +3875,8 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
     private var prevFocus = 0f
     private var prevExposure = 0L
     private var prevIso = 0
+    private var totalResults = 0L
+    private var totalLong = 0L
 
     override fun onCaptureCompleted(
         session: CameraCaptureSession,
@@ -3901,6 +3903,7 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
             if (interval > maxIntervalNs) maxIntervalNs = interval
             if (interval > 25_000_000L) {
                 longIntervals++
+                totalLong++
                 val scanning = af == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN ||
                     af == CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN ||
                     prevAf == CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN ||
@@ -3923,6 +3926,7 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
         prevIso = iso
 
         count++
+        totalResults++
         exposureSumNs += exposure
         isoSum += iso
         durationSumNs += duration
@@ -3939,7 +3943,7 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
                     "duracaoMedia=${durationSumNs / count / 1_000L}us duracaoMax=${durationMaxNs / 1_000L}us " +
                     "intervaloMax=${maxIntervalNs / 1_000_000L}ms longos=$longIntervals longosComAF=$longWithAfActive " +
                     "afVarrendo=$afScanning aeState=$aeState frameNumbersPulados=$skippedFrameNumbers " +
-                    "falhas=$failures buffersPerdidos=$bufferLost"
+                    "falhas=$failures buffersPerdidos=$bufferLost totalResultados=$totalResults totalLongos=$totalLong"
             )
             count = 0
             exposureSumNs = 0L

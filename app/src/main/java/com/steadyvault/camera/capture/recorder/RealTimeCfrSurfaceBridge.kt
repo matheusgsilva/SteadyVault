@@ -147,6 +147,15 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var estimateMaxNs = 0L
     @Volatile private var warpMaxNs = 0L
     @Volatile private var ringFullWaits = 0L
+    // Onde os frames se perdem: sinais que a câmera entregou à ponte x frames que a ponte consumiu.
+    @Volatile private var cameraSignals = 0L
+    @Volatile private var signalLongGaps = 0L
+    @Volatile private var signalMaxGapNs = 0L
+    @Volatile private var lastSignalNs = 0L
+    @Volatile private var slowSwaps = 0L
+    @Volatile private var lateIngests = 0L
+    @Volatile private var ingestStallMaxNs = 0L
+    @Volatile private var lastIngestStartNs = 0L
 
     private fun swapBuffers(display: android.opengl.EGLDisplay, window: android.opengl.EGLSurface, message: String) {
         val start = System.nanoTime()
@@ -155,6 +164,7 @@ class RealTimeCfrSurfaceBridge(
         swapTotalNs += elapsed
         swapCount++
         if (elapsed > swapMaxNs) swapMaxNs = elapsed
+        if (elapsed > 20_000_000L) slowSwaps++
     }
 
     private fun logSummary() {
@@ -178,7 +188,17 @@ class RealTimeCfrSurfaceBridge(
             TAG,
             "tempos(ms): swapMax=${ms(swapMaxNs)} swapMedia=${ms(swapTotalNs / swapCount.coerceAtLeast(1L))} " +
                 "ingestMax=${ms(ingestMaxNs)} ingestMedia=${ms(ingestTotalNs / ingestCount.coerceAtLeast(1L))} " +
-                "fluxoMax=${ms(estimateMaxNs)} warpMax=${ms(warpMaxNs)} anelCheio=$ringFullWaits"
+                "fluxoMax=${ms(estimateMaxNs)} warpMax=${ms(warpMaxNs)} anelCheio=$ringFullWaits " +
+                "swapsLentos(>20ms)=$slowSwaps"
+        )
+        // Se sinaisDaCamera ~ reais+descartados, a perda é ANTES da ponte (câmera/HAL). Se sinais >>
+        // consumidos, a ponte/encoder atrasou. ingestTardios = vezes que o laço ficou >25 ms sem
+        // trazer frame (a câmera fica sem buffer nesse intervalo).
+        Log.i(
+            TAG,
+            "entrega: sinaisDaCamera=$cameraSignals sinaisComBuraco(>25ms)=$signalLongGaps " +
+                "maiorBuracoDeSinal=${ms(signalMaxGapNs)}ms ingeridos=$ingestCount " +
+                "ingestTardios=$lateIngests maiorParadaDoLaco=${ms(ingestStallMaxNs)}ms"
         )
         val total = intervalBuckets.sum().coerceAtLeast(1L)
         fun pct(index: Int) = 100L * intervalBuckets[index] / total
@@ -320,6 +340,14 @@ class RealTimeCfrSurfaceBridge(
                 setDefaultBufferSize(sourceWidth, sourceHeight)
                 setOnFrameAvailableListener(
                     {
+                        val nowSignalNs = System.nanoTime()
+                        cameraSignals++
+                        if (lastSignalNs != 0L) {
+                            val signalGap = nowSignalNs - lastSignalNs
+                            if (signalGap > signalMaxGapNs) signalMaxGapNs = signalGap
+                            if (signalGap > 25_000_000L) signalLongGaps++
+                        }
+                        lastSignalNs = nowSignalNs
                         pendingFrames.updateAndGet { current ->
                             if (current >= MAX_PENDING_SIGNAL_COUNT) current else current + 1
                         }
@@ -421,6 +449,12 @@ class RealTimeCfrSurfaceBridge(
             fun ingest() {
                 while (pendingFrames.get() > 0 && free.isNotEmpty()) {
                     val ingestStartNs = System.nanoTime()
+                    if (lastIngestStartNs != 0L) {
+                        val stall = ingestStartNs - lastIngestStartNs
+                        if (stall > ingestStallMaxNs) ingestStallMaxNs = stall
+                        if (stall > 25_000_000L) lateIngests++
+                    }
+                    lastIngestStartNs = ingestStartNs
                     pendingFrames.decrementAndGet()
                     source.updateTexImage()
                     val slot = free.removeFirst()
