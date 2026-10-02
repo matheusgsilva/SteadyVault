@@ -250,4 +250,33 @@ void main() {
     gl_FragColor = vec4(result, 1.0);
 }
 """
+
+    /**
+     * Detector de frame duplicado. Compara a luma 1/8 (8 bits) de dois frames e, para cada
+     * pixel de saida em 1/32, grava a fração dos 16 texels 1/8 que mudaram (qualquer diferença
+     * de 1 nivel ja conta). Dois frames reais sempre diferem por ruido; um frame que a HAL
+     * reentrega identico da zero em tudo.
+     */
+    const val DIFF_FRAGMENT = """
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying vec2 vUv;
+uniform sampler2D sP;
+uniform sampler2D sC;
+uniform vec2 uTexel;
+void main() {
+    float flags = 0.0;
+    for (int j = 0; j < 4; j++) {
+        for (int i = 0; i < 4; i++) {
+            vec2 o = (vec2(float(i), float(j)) - 1.5) * uTexel;
+            float d = abs(texture2D(sP, vUv + o).r - texture2D(sC, vUv + o).r);
+            flags += step(0.0019, d);
+        }
+    }
+    gl_FragColor = vec4(flags / 16.0, 0.0, 0.0, 1.0);
+}
+"""
 }

@@ -3,6 +3,8 @@ package com.steadyvault.camera.capture.recorder
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.util.Log
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
 /**
@@ -14,9 +16,12 @@ import java.nio.FloatBuffer
  * half-float renderizáveis, ou qualquer passo falhar, [available] vira false e a ponte
  * volta sozinha ao crossfade antigo.
  *
- * Fluxo por frame perdido:
- *  1. [estimate] uma vez por par (anterior, atual): luma 1/8, 1/16, 1/32 dos dois frames e
- *     block matching hierárquico (4 passes, o último com meio texel de passo).
+ * Fluxo:
+ *  0. [analyze] em TODO frame novo: luma 1/8, 1/16 e 1/32 do frame atual e detecção de frame
+ *     duplicado (a HAL às vezes reentrega o mesmo frame com outro timestamp, e isso vira
+ *     uma trava de 1 frame). [commit] promove o frame atual a "anterior" quando ele é aceito.
+ *  1. [estimate] só quando há lacuna: block matching hierárquico entre as lumas guardadas
+ *     do anterior e do atual (4 passes, o último com meio texel de passo).
  *  2. [warp] uma vez por saída: frame no instante alpha, direto no framebuffer atual.
  */
 internal class MotionInterpolator(
@@ -32,12 +37,18 @@ internal class MotionInterpolator(
         val divisor = 8 shl level
         intArrayOf((width / divisor).coerceAtLeast(2), (height / divisor).coerceAtLeast(2))
     }
-    private val lumaPrevious = ArrayList<Target>()
-    private val lumaCurrent = ArrayList<Target>()
+    // Dois conjuntos de lumas (1/8, 1/16, 1/32) que se alternam: um é o frame anterior
+    // aceito, o outro recebe o frame atual. [commit] troca os papéis sem copiar nada.
+    private val lumaSets = arrayOf(ArrayList<Target>(), ArrayList<Target>())
+    private var currentSet = 0
+    private var lumaPrevious: ArrayList<Target> = lumaSets[1]
+    private var lumaCurrent: ArrayList<Target> = lumaSets[0]
+    private var diffTarget: Target? = null
+    private var diffProgram = 0
+    private var readback: ByteBuffer? = null
     private val flowCoarse = ArrayList<Target>() // 1/32, 1/16
     private var flowFine: Target? = null          // 1/8 (resultado de L0)
     private var flowRefined: Target? = null       // 1/8 (resultado final)
-    private var downPrevious = 0
     private var downCurrent = 0
     private var pyramid = 0
     private val estimate = IntArray(4)
@@ -69,21 +80,24 @@ internal class MotionInterpolator(
             GLES20.GL_NEAREST
         }
 
-        for (level in 0 until LEVELS) {
-            lumaPrevious += createTarget(sizes[level][0], sizes[level][1], GLES20.GL_UNSIGNED_BYTE, GLES20.GL_LINEAR)
-            lumaCurrent += createTarget(sizes[level][0], sizes[level][1], GLES20.GL_UNSIGNED_BYTE, GLES20.GL_LINEAR)
+        for (set in lumaSets) {
+            for (level in 0 until LEVELS) {
+                set += createTarget(sizes[level][0], sizes[level][1], GLES20.GL_UNSIGNED_BYTE, GLES20.GL_LINEAR)
+            }
         }
+        diffTarget = createTarget(sizes[2][0], sizes[2][1], GLES20.GL_UNSIGNED_BYTE, GLES20.GL_NEAREST)
+        readback = ByteBuffer.allocateDirect(sizes[2][0] * sizes[2][1] * 4).order(ByteOrder.nativeOrder())
+        diffProgram = program(MotionShaders.DIFF_FRAGMENT, "")
         flowCoarse += createTarget(sizes[2][0], sizes[2][1], HALF_FLOAT_OES, flowFilter)
         flowCoarse += createTarget(sizes[1][0], sizes[1][1], HALF_FLOAT_OES, flowFilter)
         flowFine = createTarget(sizes[0][0], sizes[0][1], HALF_FLOAT_OES, flowFilter)
         flowRefined = createTarget(sizes[0][0], sizes[0][1], HALF_FLOAT_OES, flowFilter)
 
-        downPrevious = program(MotionShaders.DOWN_FRAGMENT, "")
         downCurrent = program(MotionShaders.DOWN_FRAGMENT, "#define SOURCE_OES\n")
         pyramid = program(MotionShaders.PYRAMID_FRAGMENT, "")
-        estimate[0] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(3, 1.0f, 2, 0.002f))
-        estimate[1] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(1, 1.0f, 2, 0.002f))
-        estimate[2] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(1, 1.0f, 2, 0.002f))
+        estimate[0] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(3, 1.0f, 2, 0.02f))
+        estimate[1] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(1, 1.0f, 2, 0.02f))
+        estimate[2] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(1, 1.0f, 2, 0.02f))
         estimate[3] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(1, 0.5f, 2, 0.001f))
         warp = program(MotionShaders.WARP_FRAGMENT, "#define SOURCE_OES\n")
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -91,23 +105,21 @@ internal class MotionInterpolator(
     }
 
     /**
-     * Calcula o fluxo entre [previousTexture] (já no espaço de saída) e o frame atual da
-     * câmera. Chame uma vez por par de frames reais, antes dos [warp].
+     * Analisa o frame atual da câmera (já com [shaderRotation] e matriz aplicados): gera a
+     * pirâmide de luma dele e, se [compare], devolve a fração (0..1) de texels 1/8 que
+     * mudaram em relação ao último frame aceito. Perto de 0 = frame duplicado. Devolve -1
+     * quando não comparou. A leitura é de poucos KB (luma 1/32) e a GPU já está ociosa
+     * entre frames, então o custo é pequeno.
      */
-    fun estimate(
-        previousTexture: Int,
+    fun analyze(
         externalTexture: Int,
         textureMatrix: FloatArray,
         shaderRotation: Int,
         vertices: FloatBuffer,
-        texCoords: FloatBuffer
-    ) {
+        texCoords: FloatBuffer,
+        compare: Boolean
+    ): Float {
         GLES20.glDisable(GLES20.GL_BLEND)
-        // 1) luma 1/8 do anterior (textura 2D) e do atual (OES com matriz e rotação).
-        draw(downPrevious, lumaPrevious[0], vertices, texCoords) { p ->
-            GLES20.glUniform2f(loc(p, "uTexel"), 1f / width, 1f / height)
-            bind2d(0, previousTexture, loc(p, "sSrc"))
-        }
         draw(downCurrent, lumaCurrent[0], vertices, texCoords) { p ->
             GLES20.glUniform2f(loc(p, "uTexel"), 1f / width, 1f / height)
             GLES20.glUniformMatrix4fv(loc(p, "uTextureMatrix"), 1, false, textureMatrix, 0)
@@ -116,17 +128,43 @@ internal class MotionInterpolator(
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
             GLES20.glUniform1i(loc(p, "sSrc"), 0)
         }
-        // 2) pirâmide.
         for (level in 1 until LEVELS) {
-            for (side in 0..1) {
-                val source = if (side == 0) lumaPrevious[level - 1] else lumaCurrent[level - 1]
-                val target = if (side == 0) lumaPrevious[level] else lumaCurrent[level]
-                draw(pyramid, target, vertices, texCoords) { p ->
-                    GLES20.glUniform2f(loc(p, "uSrcTexel"), 1f / source.width, 1f / source.height)
-                    bind2d(0, source.texture, loc(p, "sSrc"))
-                }
+            val source = lumaCurrent[level - 1]
+            draw(pyramid, lumaCurrent[level], vertices, texCoords) { p ->
+                GLES20.glUniform2f(loc(p, "uSrcTexel"), 1f / source.width, 1f / source.height)
+                bind2d(0, source.texture, loc(p, "sSrc"))
             }
         }
+        if (!compare) return -1f
+        val target = requireNotNull(diffTarget)
+        draw(diffProgram, target, vertices, texCoords) { p ->
+            GLES20.glUniform2f(loc(p, "uTexel"), 1f / lumaCurrent[0].width, 1f / lumaCurrent[0].height)
+            bind2d(0, lumaPrevious[0].texture, loc(p, "sP"))
+            bind2d(1, lumaCurrent[0].texture, loc(p, "sC"))
+        }
+        val buffer = requireNotNull(readback)
+        buffer.clear()
+        GLES20.glReadPixels(0, 0, target.width, target.height, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buffer)
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        var sum = 0L
+        val pixels = target.width * target.height
+        for (i in 0 until pixels) sum += (buffer.get(i * 4).toInt() and 0xFF)
+        return sum.toFloat() / (255f * pixels)
+    }
+
+    /** O frame analisado por último virou o frame anterior aceito. */
+    fun commit() {
+        currentSet = 1 - currentSet
+        lumaPrevious = lumaSets[1 - currentSet]
+        lumaCurrent = lumaSets[currentSet]
+    }
+
+    /**
+     * Calcula o fluxo entre o último frame aceito e o frame analisado por último
+     * ([analyze]). Chame uma vez por lacuna, antes dos [warp].
+     */
+    fun estimate(vertices: FloatBuffer, texCoords: FloatBuffer) {
+        GLES20.glDisable(GLES20.GL_BLEND)
         // 3) block matching grosso -> fino.
         search(estimate[0], 2, flowCoarse[0], null, vertices, texCoords)
         search(estimate[1], 1, flowCoarse[1], flowCoarse[0], vertices, texCoords)
@@ -193,20 +231,22 @@ internal class MotionInterpolator(
 
     fun release() {
         available = false
-        val targets = lumaPrevious + lumaCurrent + flowCoarse + listOfNotNull(flowFine, flowRefined)
+        val targets = lumaSets[0] + lumaSets[1] + flowCoarse + listOfNotNull(flowFine, flowRefined, diffTarget)
         for (target in targets) {
             runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(target.framebuffer), 0) }
             runCatching { GLES20.glDeleteTextures(1, intArrayOf(target.texture), 0) }
         }
-        lumaPrevious.clear()
-        lumaCurrent.clear()
+        lumaSets[0].clear()
+        lumaSets[1].clear()
+        diffTarget = null
+        readback = null
         flowCoarse.clear()
         flowFine = null
         flowRefined = null
-        for (p in intArrayOf(downPrevious, downCurrent, pyramid, warp) + estimate) {
+        for (p in intArrayOf(downCurrent, pyramid, warp, diffProgram) + estimate) {
             if (p != 0) runCatching { GLES20.glDeleteProgram(p) }
         }
-        downPrevious = 0; downCurrent = 0; pyramid = 0; warp = 0
+        downCurrent = 0; pyramid = 0; warp = 0; diffProgram = 0
         estimate.fill(0)
     }
 
@@ -307,9 +347,9 @@ internal class MotionInterpolator(
         const val HALF_FLOAT_OES = 0x8D61
 
         // Mesmos valores validados no teste headless (tools/motion_test).
-        const val COST_LOW = 0.03f
-        const val COST_HIGH = 0.10f
-        const val DIFF_LOW = 0.08f
-        const val DIFF_HIGH = 0.25f
+        const val COST_LOW = 0.05f
+        const val COST_HIGH = 0.15f
+        const val DIFF_LOW = 0.12f
+        const val DIFF_HIGH = 0.35f
     }
 }

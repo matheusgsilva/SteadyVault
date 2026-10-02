@@ -23,11 +23,16 @@ with sync_playwright() as p:
     pg = b.new_page()
     pg.on("console", lambda m: print("[js]", m.text))
     pg.set_content(page_html)
+    if len(sys.argv) > 3 and sys.argv[2] == "--real":
+        urls = ["data:image/png;base64," + base64.b64encode(open(x, "rb").read()).decode() for x in sys.argv[3:6]]
+        pg.evaluate("(u) => window.loadReal(u)", urls)
+        if len(sys.argv) > 6:
+            pg.evaluate("(p) => { window.PARAMS = JSON.parse(p); }", sys.argv[6])
     res = pg.evaluate("(s) => window.runTests(s)", shaders)
     for k, v in res.items():
         if k.endswith("_png"):
             (out / (k[:-4] + ".png")).write_bytes(base64.b64decode(v.split(",")[1]))
-    if len(sys.argv) > 2:  # imagem de entrada -> aplica o look e salva
+    if len(sys.argv) > 2 and sys.argv[2] != "--real":  # imagem de entrada -> aplica o look e salva
         import base64 as b64
         data = "data:image/png;base64," + b64.b64encode(open(sys.argv[2], "rb").read()).decode()
         png = pg.evaluate("([s,d]) => window.lookTest(s,d)", [shaders, data])

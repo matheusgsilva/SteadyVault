@@ -1,5 +1,5 @@
 <!doctype html><canvas id=c width=960 height=544></canvas><script>
-const W=960,H=544;
+let W=960,H=544;
 function scene(t,sx,sy,ox,oy){ // t em frames; pan global + objeto
   const d=new Uint8Array(W*H*4);
   for(let y=0;y<H;y++)for(let x=0;x<W;x++){
@@ -13,6 +13,12 @@ function tex(u,v){let s=0;const f=[[0.021,0.017,60],[0.047,0.055,40],[0.11,0.09,
   for(const [a,b,w] of f)s+=w*Math.sin(a*u+1.3*Math.sin(b*v)+b*v*0.7);return 128+s*0.9;}
 function psnr(a,b){let e=0,n=0;for(let i=0;i<a.length;i+=4){for(let k=0;k<3;k++){const q=a[i+k]-b[i+k];e+=q*q;n++}}
   return 10*Math.log10(255*255/(e/n+1e-9));}
+window.loadReal=async function(urls){
+  const ds=[];let w=0,hh=0;
+  for(const u of urls){const im=new Image();im.src=u;await im.decode();w=im.width;hh=im.height;
+    const c=document.createElement('canvas');c.width=w;c.height=hh;const x=c.getContext('2d');x.drawImage(im,0,0);
+    ds.push(new Uint8Array(x.getImageData(0,0,w,hh).data.buffer));}
+  window.REAL={W:w,H:hh,A:ds[0],B:ds[1],G:ds[2]};};
 window.lookTest=async function(S,url){
   const img=new Image();img.src=url;await img.decode();
   const cv=document.createElement('canvas');cv.width=img.width;cv.height=img.height;
@@ -73,8 +79,8 @@ window.runTests=function(S){
       for(let k=0;k<4;k++)id.data[b+k]=px[a+k];}x.putImageData(id,0,0);return c.toDataURL('image/png');}
   // parâmetros (espelham o que o Kotlin usa)
   const P=window.PARAMS||{};
-  const cfg=Object.assign({L2:{R:3,STEP:1,WIN:2,LAMBDA:0.002},L1:{R:1,STEP:1,WIN:2,LAMBDA:0.002},L0:{R:1,STEP:1,WIN:2,LAMBDA:0.002},L0b:{R:1,STEP:0.5,WIN:2,LAMBDA:0.001},
-     costLow:0.03,costHigh:0.10,diffLow:0.08,diffHigh:0.25},P);
+  const cfg=Object.assign({L2:{R:3,STEP:1,WIN:2,LAMBDA:0.02},L1:{R:1,STEP:1,WIN:2,LAMBDA:0.02},L0:{R:1,STEP:1,WIN:2,LAMBDA:0.02},L0b:{R:1,STEP:0.5,WIN:2,LAMBDA:0.001},
+     costLow:0.05,costHigh:0.15,diffLow:0.12,diffHigh:0.35},P);
   const defs=c=>`#define R ${c.R}\n#define STEP ${c.STEP.toFixed(2)}\n#define WIN ${c.WIN}\n#define NORM ${((2*c.WIN+1)**2).toFixed(1)}\n#define LAMBDA ${c.LAMBDA.toFixed(5)}\n`;
   const pDown=prog(S.VERTEX,S.DOWN_FRAGMENT,''), pPyr=prog(S.VERTEX,S.PYRAMID_FRAGMENT,'');
   const pEst={};for(const k of ['L2','L1','L0','L0b'])pEst[k]=prog(S.VERTEX,S.ESTIMATE_FRAGMENT,defs(cfg[k]));
@@ -93,8 +99,8 @@ window.runTests=function(S){
     });
     return {tA,tB,G,lv,fl,fl0b,sz};}
   // down: uTexel deve ser o texel da FONTE (1/W,1/H)
-  function interp(name,sx,sy,ox,oy,t){
-    const A=scene(0,sx,sy,ox,oy),B=scene(1,sx,sy,ox,oy),G=scene(t,sx,sy,ox,oy);
+  function interp(name,sx,sy,ox,oy,t,real){
+    const A=real?real.A:scene(0,sx,sy,ox,oy),B=real?real.B:scene(1,sx,sy,ox,oy),G=real?real.G:scene(t,sx,sy,ox,oy);
     const tA=tex2d(W,H,gl.UNSIGNED_BYTE,A,LIN),tB=tex2d(W,H,gl.UNSIGNED_BYTE,B,LIN);
     const sz=[[W/8,H/8],[W/16,H/16],[W/32,H/32]].map(([w,h])=>[Math.floor(w),Math.floor(h)]);
     const lv=[0,1].map(()=>sz.map(([w,h])=>tex2d(w,h,gl.UNSIGNED_BYTE,null,LIN)));
@@ -104,10 +110,24 @@ window.runTests=function(S){
       pass(pDown,lv[i][0],{uTexel:[1/W,1/H]},[['sSrc',src]]);
       pass(pPyr,lv[i][1],{uSrcTexel:[1/sz[0][0],1/sz[0][1]]},[['sSrc',lv[i][0]]]);
       pass(pPyr,lv[i][2],{uSrcTexel:[1/sz[1][0],1/sz[1][1]]},[['sSrc',lv[i][1]]]);});
+    if(!real){
+      const pDiff=prog(S.VERTEX,S.DIFF_FRAGMENT,'');
+      const dt=tex2d(sz[2][0],sz[2][1],gl.UNSIGNED_BYTE,null,NEAR);
+      // A com ruido de +-1 nivel (cena parada com ruido) -> luma 1/8
+      const An=new Uint8Array(A);for(let i=0;i<An.length;i+=4){const n=(Math.random()*3|0)-1;for(let k=0;k<3;k++)An[i+k]=Math.max(0,Math.min(255,An[i+k]+n));}
+      const tN=tex2d(W,H,gl.UNSIGNED_BYTE,An,LIN);const lN=tex2d(sz[0][0],sz[0][1],gl.UNSIGNED_BYTE,null,LIN);
+      pass(pDown,lN,{uTexel:[1/W,1/H]},[['sSrc',tN]]);
+      const frac=(a,b)=>{pass(pDiff,dt,{uTexel:[1/sz[0][0],1/sz[0][1]]},[['sP',a],['sC',b]]);
+        const px=new Uint8Array(dt.w*dt.h*4);gl.readPixels(0,0,dt.w,dt.h,gl.RGBA,gl.UNSIGNED_BYTE,px);
+        let s=0;for(let i=0;i<px.length;i+=4)s+=px[i];return +(s/(255*dt.w*dt.h)).toFixed(4);};
+      out[name+'_dupFrac_identico']=frac(lv[0][0],lv[0][0]);
+      out[name+'_dupFrac_ruido1nivel']=frac(lv[0][0],lN);
+      out[name+'_dupFrac_movimento']=frac(lv[0][0],lv[1][0]);
+    }
     const est=(k,lvl,target,prior)=>pass(pEst[k],target,{uTexel:[1/sz[lvl][0],1/sz[lvl][1]],uHasPrior:prior?1:0},
         [['sP',lv[0][lvl]],['sC',lv[1][lvl]],['sFlow',prior||lv[0][lvl]]]);
     est('L2',2,fl2,null);est('L1',1,fl1,fl2);est('L0',0,fl0,fl1);est('L0b',0,flb,fl0);
-    const warp=(a,flow)=>{pass(pWarp,null,{uAlpha:a,uFlowTexel:[1/sz[0][0],1/sz[0][1]],uCostLow:cfg.costLow,uCostHigh:cfg.costHigh,uDiffLow:cfg.diffLow,uDiffHigh:cfg.diffHigh},
+    const warp=(a,flow)=>{pass(pWarp,null,{uAlpha:a,uFlowTexel:[1/sz[0][0],1/sz[0][1]],uLook:cfg.look?1:0,uLookTexel:[2/W,2/H],uCostLow:cfg.costLow,uCostHigh:cfg.costHigh,uDiffLow:cfg.diffLow,uDiffHigh:cfg.diffHigh},
         [['sP',tA],['sFlow',flow],['sC',tB]]);return readPng();};
     const mo=warp(t,flb);
     // crossfade: fluxo zero -> custo alto força confiança 0
@@ -116,6 +136,7 @@ window.runTests=function(S){
     const gt=G;
     out[name+'_crossfade']=+psnr(cross,gt).toFixed(2);out[name+'_motion']=+psnr(mo,gt).toFixed(2);
     out[name+'_motion_png']=toPng(mo);out[name+'_cross_png']=toPng(cross);out[name+'_truth_png']=toPng(gt);}
+  if(window.REAL){W=window.REAL.W;H=window.REAL.H;cv.width=W;cv.height=H;interp('real',0,0,0,0,0.5,window.REAL);return out;}
   interp('pan',14,6,0,0,0.5);
   interp('pan_obj',14,6,-22,12,0.5);
   interp('pan_big',40,-18,0,0,0.5);

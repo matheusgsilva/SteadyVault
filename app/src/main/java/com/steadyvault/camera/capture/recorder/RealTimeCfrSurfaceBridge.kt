@@ -64,6 +64,8 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var gapFilledFrames = 0L
     @Volatile private var motionFrames = 0L
     @Volatile private var motionFallbacks = 0L
+    @Volatile private var duplicatesSkipped = 0L
+    @Volatile private var repeatedOutputs = 0L
     @Volatile private var motionState = "desligado"
     @Volatile private var maxIntervalNs = 0L
     private val intervalBuckets = LongArray(5)
@@ -113,7 +115,9 @@ class RealTimeCfrSurfaceBridge(
         timingBlends = timingBlends,
         gapFilledFrames = gapFilledFrames,
         motionFrames = motionFrames,
-        motionFallbacks = motionFallbacks
+        motionFallbacks = motionFallbacks,
+        duplicatesSkipped = duplicatesSkipped,
+        repeatedOutputs = repeatedOutputs
     )
 
     private fun logSummary() {
@@ -129,7 +133,8 @@ class RealTimeCfrSurfaceBridge(
         Log.i(
             TAG,
             "movimento: estado=$motionState compensados=${stats.motionFrames} " +
-                "voltaramAoCrossfade=${stats.motionFallbacks}"
+                "voltaramAoCrossfade=${stats.motionFallbacks} " +
+                "duplicadosDaCamera=${stats.duplicatesSkipped} repeticoesDaGrade=${stats.repeatedOutputs}"
         )
         val total = intervalBuckets.sum().coerceAtLeast(1L)
         fun pct(index: Int) = 100L * intervalBuckets[index] / total
@@ -182,7 +187,11 @@ class RealTimeCfrSurfaceBridge(
         /** Saídas sintetizadas com compensação de movimento (sem ghosting). */
         val motionFrames: Long = 0L,
         /** Saídas que voltaram ao crossfade por erro/indisponibilidade do caminho de movimento. */
-        val motionFallbacks: Long = 0L
+        val motionFallbacks: Long = 0L,
+        /** Frames idênticos ao anterior reentregues pela câmera/HAL e descartados (viravam trava). */
+        val duplicatesSkipped: Long = 0L,
+        /** Saídas que repetiram o frame anterior por causa da grade de tempo (alpha ~ 0). */
+        val repeatedOutputs: Long = 0L
     )
 
     private fun renderLoop() {
@@ -297,6 +306,8 @@ class RealTimeCfrSurfaceBridge(
             var copiedTimestampNs = Long.MIN_VALUE
             var outputPtsNs = 0L
             var flowReady = false
+            var lumaValid = false
+            var consecutiveSkips = 0
 
             while (!released.get()) {
                 if (!outputEnabled.get()) {
@@ -360,6 +371,14 @@ class RealTimeCfrSurfaceBridge(
                     outputPtsNs += frameIntervalNs
                     realFrames++
                     timelineStarted = true
+                    lumaValid = false
+                    consecutiveSkips = 0
+                    motion?.takeIf { it.available }?.let { mi ->
+                        if (analyzeFrame(mi, st, textureMatrix, externalTexture, vertices, texCoords, false) != ANALYSIS_FAILED) {
+                            mi.commit()
+                            lumaValid = true
+                        }
+                    }
                     continue
                 }
 
@@ -367,6 +386,7 @@ class RealTimeCfrSurfaceBridge(
                     st.updateTexImage()
                     haveLatchedFrame = true
                     previousSourceTimestampNs = st.timestamp
+                    lumaValid = false
                     continue
                 }
 
@@ -396,6 +416,28 @@ class RealTimeCfrSurfaceBridge(
                     continue
                 }
 
+                // Luma do frame atual (para o fluxo) e detecção de frame duplicado: a HAL às
+                // vezes reentrega o mesmo frame com outro timestamp, e isso aparece no vídeo
+                // como uma trava de 1 frame. Um duplicado isolado é descartado; o próximo
+                // frame real passa a cobrir os dois instantes (um deles interpolado).
+                var analyzed = false
+                val analysisMotion = motion
+                if (analysisMotion != null && analysisMotion.available) {
+                    val changed = analyzeFrame(
+                        analysisMotion, st, textureMatrix, externalTexture, vertices, texCoords, lumaValid
+                    )
+                    analyzed = changed != ANALYSIS_FAILED
+                    if (analyzed && lumaValid && changed in 0f..DUPLICATE_CHANGED_FRACTION &&
+                        consecutiveSkips < MAX_CONSECUTIVE_SKIPS &&
+                        currentSourceTimestampNs - previousSourceTimestampNs <= frameIntervalNs * 3 / 2
+                    ) {
+                        duplicatesSkipped++
+                        consecutiveSkips++
+                        continue
+                    }
+                    consecutiveSkips = 0
+                }
+
                 // Reamostragem pelo tempo EXATO de captura: cada saída (1/fps) usa o frame que
                 // existiria naquele instante. Frame já alinhado passa direto e nítido; frame
                 // atrasado/adiantado ou perdido vira mistura temporal com peso proporcional
@@ -409,6 +451,10 @@ class RealTimeCfrSurfaceBridge(
                 if (outputs == 0) {
                     // Câmera acima do FPS nominal: nenhum instante de saída cai neste frame.
                     droppedFrames++
+                    if (analyzed) {
+                        motion?.commit()
+                        lumaValid = true
+                    }
                     continue
                 }
 
@@ -418,6 +464,7 @@ class RealTimeCfrSurfaceBridge(
                 var outputIndex = 0
                 while (outputIndex < outputs) {
                     val alpha = resampler.alphaAt(outputIndex)
+                    if (alpha <= 0.001f) repeatedOutputs++
                     if (alpha >= 1f) {
                         renderExternalToEncoder(
                             st = st,
@@ -435,7 +482,7 @@ class RealTimeCfrSurfaceBridge(
                         var done = false
                         val mi = motion
                         if (mi != null && mi.available && outputs <= MAX_MOTION_OUTPUTS) {
-                            done = renderMotionToEncoder(
+                            done = lumaValid && renderMotionToEncoder(
                                 mi, st, textureMatrix, previousTexture, externalTexture,
                                 alpha, flowReady, vertices, texCoords, display, window, outputPtsNs
                             )
@@ -461,6 +508,12 @@ class RealTimeCfrSurfaceBridge(
                     outputIndex++
                 }
 
+                if (analyzed) {
+                    motion?.commit()
+                    lumaValid = true
+                } else {
+                    lumaValid = false
+                }
                 if (outputs - 1 > largestFillSlots) largestFillSlots = outputs - 1
                 val frameNs = System.nanoTime() - frameStartNs
                 if (frameNs > worstFrameNs) worstFrameNs = frameNs
@@ -714,6 +767,36 @@ class RealTimeCfrSurfaceBridge(
     }
 
     /**
+     * Analisa o frame atual na GPU (luma + comparação com o anterior). Devolve a fração de
+     * texels que mudaram (0..1), -1 se não comparou ou [ANALYSIS_FAILED] se algo falhou, e
+     * nesse caso o caminho de movimento é desligado de vez.
+     */
+    private fun analyzeFrame(
+        mi: MotionInterpolator,
+        st: SurfaceTexture,
+        textureMatrix: FloatArray,
+        externalTexture: Int,
+        vertices: FloatBuffer,
+        texCoords: FloatBuffer,
+        compare: Boolean
+    ): Float {
+        return try {
+            GLES20.glGetError()
+            st.getTransformMatrix(textureMatrix)
+            val rotation = if (physicalRotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, physicalRotationDegrees)
+            val changed = mi.analyze(externalTexture, textureMatrix, rotation, vertices, texCoords, compare)
+            if (!mi.healthy()) throw IllegalStateException("erro GL na análise do frame")
+            changed
+        } catch (t: Throwable) {
+            Log.w(TAG, "análise de frame falhou, desligando movimento: ${t.message}")
+            motionState = "desligadoPorErro"
+            mi.release()
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            ANALYSIS_FAILED
+        }
+    }
+
+    /**
      * Gera a saída [alpha] por compensação de movimento. Retorna false (sem ter trocado
      * buffers) se algo falhou; o chamador desenha o crossfade no lugar e o caminho de
      * movimento é desligado de vez para não repetir o erro a 60 vezes por segundo.
@@ -737,7 +820,7 @@ class RealTimeCfrSurfaceBridge(
             st.getTransformMatrix(textureMatrix)
             val rotation = if (physicalRotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, physicalRotationDegrees)
             if (!flowReady) {
-                mi.estimate(previousTexture, externalTexture, textureMatrix, rotation, vertices, texCoords)
+                mi.estimate(vertices, texCoords)
                 if (!mi.healthy()) throw IllegalStateException("erro GL na estimativa")
             }
             mi.warp(alpha, previousTexture, externalTexture, textureMatrix, rotation, vertices, texCoords)
@@ -858,6 +941,12 @@ class RealTimeCfrSurfaceBridge(
 
         /** Acima disso (lacuna longa) o movimento entre os frames reais já não é estimável: crossfade. */
         private const val MAX_MOTION_OUTPUTS = 4
+
+        private const val ANALYSIS_FAILED = -2f
+
+        /** Abaixo disso (fração de texels 1/8 que mudaram) o frame é idêntico ao anterior. */
+        private const val DUPLICATE_CHANGED_FRACTION = 0.002f
+        private const val MAX_CONSECUTIVE_SKIPS = 2
         private const val TAG = "SteadyVaultCfr"
 
         // Rotações de UV horárias como matriz row-major [00,01,10,11].

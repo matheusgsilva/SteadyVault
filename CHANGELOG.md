@@ -1,3 +1,10 @@
+## main3 — frames duplicados da câmera e fluxo mais firme
+
+- **Travadas (análise do clipe gravado com OIS):** em 364 frames, 2 pares eram idênticos entre si (diferença de 0,06-0,1 contra ~3-8 nos demais), com timestamps normais. A câmera/HAL às vezes reentrega o mesmo frame com outro timestamp, e isso aparece como uma trava de 1 frame. Agora cada frame novo tem a luma 1/8 comparada com a do anterior na GPU (leitura de poucos KB); um duplicado isolado é descartado e o próximo frame real passa a cobrir os dois instantes (um deles interpolado por movimento). No máximo 2 descartes seguidos, e só se o timestamp estiver a menos de 1,5 frame do anterior, para uma cena parada nunca virar rajada de interpolação.
+- **Fluxo (medido em frames reais do clipe, interpolando o frame do meio de dois reais):** penalidade de suavidade do block matching 0,002 -> 0,02 e limiares de confiança mais tolerantes. PSNR do frame interpolado +0,8 a +2,7 dB (30,2/27,9 -> 33,0/28,7) e menos manchas nas bordas.
+- Telemetria nova na linha `movimento:`: `duplicadosDaCamera` (frames idênticos descartados) e `repeticoesDaGrade` (saídas que repetiram o frame anterior por causa da grade de tempo). Se `duplicadosDaCamera` for maior que 0, a HAL está reentregando frames.
+- `tools/motion_test/run.py --real A.png B.png G.png`: testa a interpolação com frames reais (A e B reais, G o frame do meio real).
+
 ## main3 — preenchimento mais estável (menos riscos e borrado)
 
 - **Frame recriado nítido onde o fluxo falha:** antes, onde o movimento não era confiável o shader misturava os dois frames (fantasma/borrado). Agora usa só o frame mais próximo no tempo, que é nítido. Onde os dois lados discordam, também fica com o mais próximo; onde concordam, faz a média (reduz ruído).
