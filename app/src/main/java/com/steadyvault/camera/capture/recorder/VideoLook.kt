@@ -17,10 +17,10 @@ internal object VideoLook {
      * tons no sensor; por isso o look da GPU fica mais leve neles, em vez de desfazer a escolha.
      */
     /**
-     * false = vídeo ORIGINAL: nenhuma nitidez/saturação/curva da GPU (a nitidez amplificava o
-     * grão). Os perfis abaixo só voltam a valer com true.
+     * true = só COR (saturação + curva de contraste) pelo perfil escolhido; a NITIDEZ da GPU fica
+     * em 0 em todos os perfis (ela amplificava o grão). false = nenhum ajuste de cor.
      */
-    const val ENABLED = false
+    const val ENABLED = true
 
     const val PROFILE_NATURAL = 0
     const val PROFILE_SOFT = 1
@@ -37,9 +37,9 @@ internal object VideoLook {
         val saturation: String
         val curve: String
         when (profile) {
-            PROFILE_SOFT -> { sharpen = "0.6"; saturation = "1.08"; curve = "0.12" }
-            PROFILE_FLAT -> { sharpen = "0.3"; saturation = "1.0"; curve = "0.0" }
-            else -> { sharpen = "0.9"; saturation = "1.2"; curve = "0.4" }
+            PROFILE_SOFT -> { sharpen = "0.0"; saturation = "1.08"; curve = "0.12" }
+            PROFILE_FLAT -> { sharpen = "0.0"; saturation = "1.0"; curve = "0.0" }
+            else -> { sharpen = "0.0"; saturation = "1.2"; curve = "0.4" }
         }
         return "#define LOOK_SHARPEN $sharpen\n#define LOOK_SATURATION $saturation\n#define LOOK_CURVE $curve\n"
     }
