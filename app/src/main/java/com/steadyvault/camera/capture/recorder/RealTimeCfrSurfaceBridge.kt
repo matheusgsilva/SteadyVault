@@ -2,6 +2,7 @@ package com.steadyvault.camera.capture.recorder
 
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
+import android.opengl.EGL15
 import android.opengl.EGLExt
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
@@ -433,7 +434,7 @@ class RealTimeCfrSurfaceBridge(
                     val staleFence: android.opengl.EGLSync? = stale.fence
                     if (staleFence != null) {
                         try {
-                            EGLExt.eglDestroySyncKHR(display, staleFence)
+                            EGL15.eglDestroySync(display, staleFence)
                         } catch (_: Throwable) {
                         }
                     }
@@ -462,13 +463,13 @@ class RealTimeCfrSurfaceBridge(
                 val currentFence: android.opengl.EGLSync? = current.fence
                 if (currentFence != null) {
                     try {
-                        EGLExt.eglClientWaitSyncKHR(
-                            display, currentFence, EGLExt.EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, FENCE_TIMEOUT_NS
+                        EGL15.eglClientWaitSync(
+                            display, currentFence, EGL15.EGL_SYNC_FLUSH_COMMANDS_BIT, FENCE_TIMEOUT_NS
                         )
                     } catch (_: Throwable) {
                     }
                     try {
-                        EGLExt.eglDestroySyncKHR(display, currentFence)
+                        EGL15.eglDestroySync(display, currentFence)
                     } catch (_: Throwable) {
                     }
                     current.fence = null
@@ -869,8 +870,8 @@ class RealTimeCfrSurfaceBridge(
                 // Cerca EGL (padrão para compartilhar texturas entre contextos); se a cerca não
                 // existir, glFinish.
                 val fence: android.opengl.EGLSync? = try {
-                    EGLExt.eglCreateSyncKHR(
-                        display, EGLExt.EGL_SYNC_FENCE_KHR, longArrayOf(EGL14.EGL_NONE.toLong()), 0
+                    EGL15.eglCreateSync(
+                        display, EGL15.EGL_SYNC_FENCE, longArrayOf(EGL14.EGL_NONE.toLong()), 0
                     )
                 } catch (_: Throwable) {
                     null
