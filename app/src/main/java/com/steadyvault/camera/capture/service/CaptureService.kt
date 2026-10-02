@@ -144,6 +144,7 @@ class CaptureService : Service() {
     private lateinit var cameraExecutor: ExecutorService
     private lateinit var encoderPreparationExecutor: ExecutorService
     private lateinit var smartFocusExecutor: ExecutorService
+    private val recordingProbe = RecordingResultProbe()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val threadCounter = AtomicInteger(0)
     private val serviceActive = AtomicBoolean(false)
@@ -1690,14 +1691,14 @@ class CaptureService : Service() {
                 if (immediatePlan != null) {
                     val fixedRequest = buildFixedCadenceRequest(profile, immediatePlan)
                         ?: throw IllegalStateException("câmera não disponível para request de cadência fixa")
-                    session.setRepeatingRequest(fixedRequest, null, mainHandler)
+                    session.setRepeatingRequest(fixedRequest, recordingProbe, mainHandler)
                     commitRecorderStart(profile, token, highSpeed = false)
                 } else {
                     startWithFixedSensorCadence(session, request, profile, token)
                 }
             } else {
                 // 30 FPS, HDR e Auto FPS continuam com AE contínuo.
-                session.setRepeatingRequest(request, null, mainHandler)
+                session.setRepeatingRequest(request, recordingProbe, mainHandler)
                 commitRecorderStart(profile, token, highSpeed = false)
             }
         }.onFailure {
@@ -1731,7 +1732,7 @@ class CaptureService : Service() {
             val lockedRequest = buildLockedAuto3ARequest(profile) ?: warmupRequest
 
             runCatching {
-                session.setRepeatingRequest(lockedRequest, null, mainHandler)
+                session.setRepeatingRequest(lockedRequest, recordingProbe, mainHandler)
                 armRecorderForFirstFrame(token)
                 commitRecorderStart(profile, token, highSpeed = false)
 
@@ -2718,7 +2719,7 @@ class CaptureService : Service() {
         }.getOrNull() ?: return
 
         runCatching {
-            session.setRepeatingRequest(request, null, mainHandler)
+            session.setRepeatingRequest(request, recordingProbe, mainHandler)
         }.onFailure {
             Log.w(LOG_TAG, "Foco inteligente em segundo plano recusado pela sessão", it)
         }
@@ -3823,5 +3824,58 @@ class CaptureService : Service() {
         private const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
         private const val CAMERA_RECOVERY_DELAY_MS = 450L
 
+    }
+}
+
+/**
+ * Diagnóstico: resume a cada 60 resultados da câmera o que a HAL realmente fez (exposição,
+ * ISO e duração do frame). Mostra se a perda de frames vem do AE alongando a exposição ou da
+ * câmera descartando frames por outro motivo. Aparece no logcat como "câmera(60 frames)".
+ */
+private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
+    private var count = 0
+    private var exposureSumNs = 0L
+    private var exposureMaxNs = 0L
+    private var isoMax = 0
+    private var durationMaxNs = 0L
+    private var durationSumNs = 0L
+    private var lastFrameNumber = -1L
+    private var skippedFrameNumbers = 0L
+    private var aeState = -1
+
+    override fun onCaptureCompleted(
+        session: CameraCaptureSession,
+        request: CaptureRequest,
+        result: TotalCaptureResult
+    ) {
+        val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
+        val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
+        val duration = result.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L
+        aeState = result.get(CaptureResult.CONTROL_AE_STATE) ?: -1
+        if (lastFrameNumber >= 0 && result.frameNumber > lastFrameNumber + 1) {
+            skippedFrameNumbers += result.frameNumber - lastFrameNumber - 1
+        }
+        lastFrameNumber = result.frameNumber
+        count++
+        exposureSumNs += exposure
+        durationSumNs += duration
+        if (exposure > exposureMaxNs) exposureMaxNs = exposure
+        if (iso > isoMax) isoMax = iso
+        if (duration > durationMaxNs) durationMaxNs = duration
+        if (count >= 60) {
+            Log.i(
+                "SteadyVaultCfr",
+                "câmera(60 frames): exposicaoMedia=${exposureSumNs / count / 1_000L}us " +
+                    "exposicaoMax=${exposureMaxNs / 1_000L}us isoMax=$isoMax " +
+                    "duracaoMedia=${durationSumNs / count / 1_000L}us duracaoMax=${durationMaxNs / 1_000L}us " +
+                    "aeState=$aeState frameNumbersPulados=$skippedFrameNumbers"
+            )
+            count = 0
+            exposureSumNs = 0L
+            exposureMaxNs = 0L
+            isoMax = 0
+            durationMaxNs = 0L
+            durationSumNs = 0L
+        }
     }
 }
