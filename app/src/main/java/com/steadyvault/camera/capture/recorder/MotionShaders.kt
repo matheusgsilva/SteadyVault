@@ -61,6 +61,19 @@ vec3 fetchColor(vec2 uv) {
     return texture2D(sSrc, uv).rgb;
 }
 #endif
+#ifdef DOWN_QUARTER
+// 1/4: caixa 4x4 exata via 4 taps bilineares (guarda o traço fino de texto).
+void main() {
+    float acc = 0.0;
+    for (int j = 0; j < 2; j++) {
+        for (int i = 0; i < 2; i++) {
+            vec2 o = (vec2(float(i), float(j)) - 0.5) * 2.0 * uTexel;
+            acc += dot(fetchColor(vUv + o), vec3(0.299, 0.587, 0.114));
+        }
+    }
+    gl_FragColor = vec4(acc / 4.0, 0.0, 0.0, 1.0);
+}
+#else
 void main() {
     float acc = 0.0;
     for (int j = 0; j < 4; j++) {
@@ -71,6 +84,7 @@ void main() {
     }
     gl_FragColor = vec4(acc / 16.0, 0.0, 0.0, 1.0);
 }
+#endif
 """
 
     /** Luma 1/8 -> 1/16 -> 1/32 (caixa 2x2). */

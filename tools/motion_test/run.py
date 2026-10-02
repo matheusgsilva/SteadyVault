@@ -28,6 +28,9 @@ with sync_playwright() as p:
         pg.evaluate("(u) => window.loadReal(u)", urls)
         if len(sys.argv) > 6:
             pg.evaluate("(p) => { window.PARAMS = JSON.parse(p); }", sys.argv[6])
+    import os
+    if os.environ.get("PARAMS"):
+        pg.evaluate("(p) => { window.PARAMS = JSON.parse(p); }", os.environ["PARAMS"])
     res = pg.evaluate("(s) => window.runTests(s)", shaders)
     for k, v in res.items():
         if k.endswith("_png"):

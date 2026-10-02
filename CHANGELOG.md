@@ -11,6 +11,7 @@ Porta para a main5, mantendo o Super Estável e o foco inteligente em background
 - **Telemetria (`SteadyVaultCfr`):** `resumo encoder`, `resumo CFR`, `movimento:` (estado, compensados, voltaram ao crossfade, duplicados, repetições da grade) e `sensor:` (histograma dos intervalos).
 - `CfrInterpolationPlanner` deixa de ser usado pela ponte (continua no projeto com os testes).
 - **Orientação (vídeo de lado):** em retrato o arquivo sai girado fisicamente pela GPU (encoder 2160x3840, hint do muxer 0), com a rotação escolhida compondo a matriz do `SurfaceTexture` (`resolveShaderRotation`, log `SurfaceTexture matrix=… -> shaderRotation=…`). Frame anterior, estimativa/recorte do Super Estável, interpolação e look trabalham no espaço de saída; a amostra do foco inteligente continua na orientação do sensor, então o `CaptureService` não muda.
+- **Texto nos frames recriados:** letras deslocadas ou com sombra nas lacunas. O fluxo de bloco em 1/8 apaga o traço fino de texto, então foi adicionado refino em 1/4 de resolução (luma 4x4, 2 passes de 1 e 0,5 texel) e os limiares de confiança ficaram mais rígidos (custo 0,025–0,08, diferença 0,04–0,12): onde o fluxo é duvidoso sai o frame mais próximo, nítido, sem mistura. Teste sintético com texto: 21,8 → 22,6 dB mas sem letras embaralhadas; cenas naturais sintéticas 35–37 dB → 25–35 dB (−2 dB por mais rigor, sem ghosting). Ferramenta: `tools/motion_test/run.py` (`PARAMS` em JSON, `oracle`, `noQuarter`).
 
 ## 1.8.266 — correção do Looper no início da gravação
 

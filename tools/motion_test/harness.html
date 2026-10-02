@@ -80,11 +80,15 @@ window.runTests=function(S){
   // parâmetros (espelham o que o Kotlin usa)
   const P=window.PARAMS||{};
   const cfg=Object.assign({L2:{R:3,STEP:1,WIN:2,LAMBDA:0.02},L1:{R:1,STEP:1,WIN:2,LAMBDA:0.02},L0:{R:1,STEP:1,WIN:2,LAMBDA:0.02},L0b:{R:1,STEP:0.5,WIN:2,LAMBDA:0.001},
-     costLow:0.05,costHigh:0.15,diffLow:0.12,diffHigh:0.35},P);
+     costLow:0.025,costHigh:0.08,diffLow:0.04,diffHigh:0.12},P);
   const defs=c=>`#define R ${c.R}\n#define STEP ${c.STEP.toFixed(2)}\n#define WIN ${c.WIN}\n#define NORM ${((2*c.WIN+1)**2).toFixed(1)}\n#define LAMBDA ${c.LAMBDA.toFixed(5)}\n`;
   const pDown=prog(S.VERTEX,S.DOWN_FRAGMENT,''), pPyr=prog(S.VERTEX,S.PYRAMID_FRAGMENT,'');
   const pEst={};for(const k of ['L2','L1','L0','L0b'])pEst[k]=prog(S.VERTEX,S.ESTIMATE_FRAGMENT,defs(cfg[k]));
   const pWarp=prog(S.VERTEX,S.WARP_FRAGMENT,'');
+  const pDown4=prog(S.VERTEX,S.DOWN_FRAGMENT,'#define DOWN_QUARTER\n');
+  const cq=Object.assign({Q1:{R:1,STEP:1,WIN:2,LAMBDA:0.001},Q2:{R:1,STEP:0.5,WIN:2,LAMBDA:0.001}},P);
+    const sub=(cq.sub||[]).map(st=>prog(S.VERTEX,S.ESTIMATE_FRAGMENT,defs({R:1,STEP:st,WIN:cq.subWin||2,LAMBDA:0.001})));
+  const pQ1=prog(S.VERTEX,S.ESTIMATE_FRAGMENT,defs(cq.Q1)),pQ2=prog(S.VERTEX,S.ESTIMATE_FRAGMENT,defs(cq.Q2));
   function run(name,sx,sy,ox,oy,t){
     const A=scene(0,sx,sy,ox,oy),B=scene(1,sx,sy,ox,oy),G=scene(t,sx,sy,ox,oy);
     const tA=tex2d(W,H,gl.UNSIGNED_BYTE,A,LIN),tB=tex2d(W,H,gl.UNSIGNED_BYTE,B,LIN);
@@ -104,10 +108,13 @@ window.runTests=function(S){
     const tA=tex2d(W,H,gl.UNSIGNED_BYTE,A,LIN),tB=tex2d(W,H,gl.UNSIGNED_BYTE,B,LIN);
     const sz=[[W/8,H/8],[W/16,H/16],[W/32,H/32]].map(([w,h])=>[Math.floor(w),Math.floor(h)]);
     const lv=[0,1].map(()=>sz.map(([w,h])=>tex2d(w,h,gl.UNSIGNED_BYTE,null,LIN)));
+    const qs=[Math.floor(W/4),Math.floor(H/4)];
+    const lq=[0,1].map(()=>tex2d(qs[0],qs[1],gl.UNSIGNED_BYTE,null,LIN));
     const mkF=([w,h])=>tex2d(w,h,HFT,null,out.halfFloatLinear?LIN:NEAR);
     const fl2=mkF(sz[2]),fl1=mkF(sz[1]),fl0=mkF(sz[0]),flb=mkF(sz[0]);
     [tA,tB].forEach((src,i)=>{
       pass(pDown,lv[i][0],{uTexel:[1/W,1/H]},[['sSrc',src]]);
+      pass(pDown4,lq[i],{uTexel:[1/W,1/H]},[['sSrc',src]]);
       pass(pPyr,lv[i][1],{uSrcTexel:[1/sz[0][0],1/sz[0][1]]},[['sSrc',lv[i][0]]]);
       pass(pPyr,lv[i][2],{uSrcTexel:[1/sz[1][0],1/sz[1][1]]},[['sSrc',lv[i][1]]]);});
     if(!real){
@@ -127,9 +134,18 @@ window.runTests=function(S){
     const est=(k,lvl,target,prior)=>pass(pEst[k],target,{uTexel:[1/sz[lvl][0],1/sz[lvl][1]],uHasPrior:prior?1:0},
         [['sP',lv[0][lvl]],['sC',lv[1][lvl]],['sFlow',prior||lv[0][lvl]]]);
     est('L2',2,fl2,null);est('L1',1,fl1,fl2);est('L0',0,fl0,fl1);est('L0b',0,flb,fl0);
-    const warp=(a,flow)=>{pass(pWarp,null,{uAlpha:a,uFlowTexel:[1/sz[0][0],1/sz[0][1]],uLook:cfg.look?1:0,uCropScale:1,uLookTexel:[2/W,2/H],uCostLow:cfg.costLow,uCostHigh:cfg.costHigh,uDiffLow:cfg.diffLow,uDiffHigh:cfg.diffHigh},
+    let flowOut=flb,flowSz=sz[0];
+    if(!cfg.noQuarter){const fq1=mkF(qs),fq2=mkF(qs);
+      const estq=(pr,target,prior)=>pass(pr,target,{uTexel:[1/qs[0],1/qs[1]],uHasPrior:1},[['sP',lq[0]],['sC',lq[1]],['sFlow',prior]]);
+      estq(pQ1,fq1,flb);
+      estq(pQ2,fq2,fq1);flowOut=fq2;flowSz=qs;
+      for(const ps of sub){const nx=mkF(qs);estq(ps,nx,flowOut);flowOut=nx;}}
+    const warp=(a,flow)=>{pass(pWarp,null,{uAlpha:a,uFlowTexel:[1/flowSz[0],1/flowSz[1]],uLook:cfg.look?1:0,uCropScale:1,uLookTexel:[2/W,2/H],uCostLow:cfg.costLow,uCostHigh:cfg.costHigh,uDiffLow:cfg.diffLow,uDiffHigh:cfg.diffHigh},
         [['sP',tA],['sFlow',flow],['sC',tB]]);return readPng();};
-    const mo=warp(t,flb);
+    if(cfg.oracle){gl.bindFramebuffer(gl.FRAMEBUFFER,flb.f);gl.clearColor(cfg.oracle[0]/W,cfg.oracle[1]/H,0,1);gl.clear(gl.COLOR_BUFFER_BIT);}
+    const mo=warp(t,cfg.oracle?flb:flowOut);
+    {const pd=prog(S.VERTEX,'precision highp float;varying vec2 vUv;uniform sampler2D sFlow;uniform float uScale;void main(){vec4 f=texture2D(sFlow,vUv);gl_FragColor=vec4(0.5+f.r*uScale,0.5+f.g*uScale,f.b*3.0,1.0);}','');
+     pass(pd,null,{uScale:W/40},[['sFlow',flowOut]]);out.flow_png=toPng(readPng());}
     // crossfade: fluxo zero -> custo alto força confiança 0
     const cross=(()=>{const z=mkF(sz[0]);gl.bindFramebuffer(gl.FRAMEBUFFER,z.f);gl.clearColor(0,0,1,1);gl.clear(gl.COLOR_BUFFER_BIT);return warp(t,z)})();
     // ground truth em PNG-ordem: scene() usa y de cima; readPixels de baixo -> inverter

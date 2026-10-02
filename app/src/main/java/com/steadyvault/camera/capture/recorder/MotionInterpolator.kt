@@ -21,7 +21,8 @@ import java.nio.FloatBuffer
  *     duplicado (a HAL às vezes reentrega o mesmo frame com outro timestamp, e isso vira
  *     uma trava de 1 frame). [commit] promove o frame atual a "anterior" quando ele é aceito.
  *  1. [estimate] só quando há lacuna: block matching hierárquico entre as lumas guardadas
- *     do anterior e do atual (4 passes, o último com meio texel de passo).
+ *     do anterior e do atual (1/32 -> 1/16 -> 1/8, 4 passes) e refino em 1/4 (2 passes,
+ *     passo de 1 e de 0,5 texel) para acompanhar o traço fino de texto.
  *  2. [warp] uma vez por saída: frame no instante alpha, direto no framebuffer atual.
  */
 internal class MotionInterpolator(
@@ -37,6 +38,9 @@ internal class MotionInterpolator(
         val divisor = 8 shl level
         intArrayOf((width / divisor).coerceAtLeast(2), (height / divisor).coerceAtLeast(2))
     }
+    // Nível de refino em 1/4: o box 8x8 do 1/8 apaga o traço fino de texto, e o fluxo de bloco
+    // grosso faz letras saírem deslocadas ou com sombra. Fica fora do vetor [sizes].
+    private val quarterSize = intArrayOf((width / 4).coerceAtLeast(2), (height / 4).coerceAtLeast(2))
     // Dois conjuntos de lumas (1/8, 1/16, 1/32) que se alternam: um é o frame anterior
     // aceito, o outro recebe o frame atual. [commit] troca os papéis sem copiar nada.
     private val lumaSets = arrayOf(ArrayList<Target>(), ArrayList<Target>())
@@ -48,10 +52,13 @@ internal class MotionInterpolator(
     private var readback: ByteBuffer? = null
     private val flowCoarse = ArrayList<Target>() // 1/32, 1/16
     private var flowFine: Target? = null          // 1/8 (resultado de L0)
-    private var flowRefined: Target? = null       // 1/8 (resultado final)
+    private var flowRefined: Target? = null       // 1/8 (resultado do bloco grosso)
+    private var flowQuarterA: Target? = null      // 1/4 (passo de 1 texel)
+    private var flowQuarterB: Target? = null      // 1/4 (resultado final, meio texel)
     private var downCurrent = 0
     private var pyramid = 0
-    private val estimate = IntArray(4)
+    private val estimate = IntArray(6)
+    private var downQuarter = 0
     private var warp = 0
 
     /** Cria os recursos. Retorna true se a GPU suporta o caminho; nunca lança. */
@@ -84,6 +91,7 @@ internal class MotionInterpolator(
             for (level in 0 until LEVELS) {
                 set += createTarget(sizes[level][0], sizes[level][1], GLES20.GL_UNSIGNED_BYTE, GLES20.GL_LINEAR)
             }
+            set += createTarget(quarterSize[0], quarterSize[1], GLES20.GL_UNSIGNED_BYTE, GLES20.GL_LINEAR)
         }
         diffTarget = createTarget(sizes[2][0], sizes[2][1], GLES20.GL_UNSIGNED_BYTE, GLES20.GL_NEAREST)
         readback = ByteBuffer.allocateDirect(sizes[2][0] * sizes[2][1] * 4).order(ByteOrder.nativeOrder())
@@ -92,13 +100,18 @@ internal class MotionInterpolator(
         flowCoarse += createTarget(sizes[1][0], sizes[1][1], HALF_FLOAT_OES, flowFilter)
         flowFine = createTarget(sizes[0][0], sizes[0][1], HALF_FLOAT_OES, flowFilter)
         flowRefined = createTarget(sizes[0][0], sizes[0][1], HALF_FLOAT_OES, flowFilter)
+        flowQuarterA = createTarget(quarterSize[0], quarterSize[1], HALF_FLOAT_OES, flowFilter)
+        flowQuarterB = createTarget(quarterSize[0], quarterSize[1], HALF_FLOAT_OES, flowFilter)
 
         downCurrent = program(MotionShaders.DOWN_FRAGMENT, "#define SOURCE_OES\n")
+        downQuarter = program(MotionShaders.DOWN_FRAGMENT, "#define SOURCE_OES\n#define DOWN_QUARTER\n")
         pyramid = program(MotionShaders.PYRAMID_FRAGMENT, "")
         estimate[0] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(3, 1.0f, 2, 0.02f))
         estimate[1] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(1, 1.0f, 2, 0.02f))
         estimate[2] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(1, 1.0f, 2, 0.02f))
         estimate[3] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(1, 0.5f, 2, 0.001f))
+        estimate[4] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(1, 1.0f, 2, 0.001f))
+        estimate[5] = program(MotionShaders.ESTIMATE_FRAGMENT, searchDefines(1, 0.5f, 2, 0.001f))
         warp = program(MotionShaders.WARP_FRAGMENT, "#define SOURCE_OES\n")
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         check(GLES20.glGetError() == GLES20.GL_NO_ERROR) { "erro GL na criação" }
@@ -121,6 +134,14 @@ internal class MotionInterpolator(
     ): Float {
         GLES20.glDisable(GLES20.GL_BLEND)
         draw(downCurrent, lumaCurrent[0], vertices, texCoords) { p ->
+            GLES20.glUniform2f(loc(p, "uTexel"), 1f / width, 1f / height)
+            GLES20.glUniformMatrix4fv(loc(p, "uTextureMatrix"), 1, false, textureMatrix, 0)
+            GLES20.glUniform1f(loc(p, "uRotationDegrees"), shaderRotation.toFloat())
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
+            GLES20.glUniform1i(loc(p, "sSrc"), 0)
+        }
+        draw(downQuarter, lumaCurrent[QUARTER], vertices, texCoords) { p ->
             GLES20.glUniform2f(loc(p, "uTexel"), 1f / width, 1f / height)
             GLES20.glUniformMatrix4fv(loc(p, "uTextureMatrix"), 1, false, textureMatrix, 0)
             GLES20.glUniform1f(loc(p, "uRotationDegrees"), shaderRotation.toFloat())
@@ -170,6 +191,9 @@ internal class MotionInterpolator(
         search(estimate[1], 1, flowCoarse[1], flowCoarse[0], vertices, texCoords)
         search(estimate[2], 0, requireNotNull(flowFine), flowCoarse[1], vertices, texCoords)
         search(estimate[3], 0, requireNotNull(flowRefined), flowFine, vertices, texCoords)
+        // 4) refino em 1/4 (luma com o traço fino): passo de 1 texel e depois de meio texel.
+        search(estimate[4], QUARTER, requireNotNull(flowQuarterA), flowRefined, vertices, texCoords)
+        search(estimate[5], QUARTER, requireNotNull(flowQuarterB), flowQuarterA, vertices, texCoords)
     }
 
     private fun search(
@@ -204,7 +228,7 @@ internal class MotionInterpolator(
         draw(warp, null, vertices, texCoords) { p ->
             GLES20.glUniform1f(loc(p, "uCropScale"), cropScale)
             bind2d(0, previousTexture, loc(p, "sP"))
-            bind2d(1, requireNotNull(flowRefined).texture, loc(p, "sFlow"))
+            bind2d(1, requireNotNull(flowQuarterB).texture, loc(p, "sFlow"))
             GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
             GLES20.glUniform1i(loc(p, "sC"), 2)
@@ -215,7 +239,7 @@ internal class MotionInterpolator(
             GLES20.glUniform1f(loc(p, "uCostHigh"), COST_HIGH)
             GLES20.glUniform1f(loc(p, "uDiffLow"), DIFF_LOW)
             GLES20.glUniform1f(loc(p, "uDiffHigh"), DIFF_HIGH)
-            GLES20.glUniform2f(loc(p, "uFlowTexel"), 1f / sizes[0][0], 1f / sizes[0][1])
+            GLES20.glUniform2f(loc(p, "uFlowTexel"), 1f / quarterSize[0], 1f / quarterSize[1])
             GLES20.glUniform1f(loc(p, "uLook"), 1f)
             GLES20.glUniform2f(loc(p, "uLookTexel"), VideoLook.RADIUS_PX / width, VideoLook.RADIUS_PX / height)
         }
@@ -233,7 +257,7 @@ internal class MotionInterpolator(
 
     fun release() {
         available = false
-        val targets = lumaSets[0] + lumaSets[1] + flowCoarse + listOfNotNull(flowFine, flowRefined, diffTarget)
+        val targets = lumaSets[0] + lumaSets[1] + flowCoarse + listOfNotNull(flowFine, flowRefined, flowQuarterA, flowQuarterB, diffTarget)
         for (target in targets) {
             runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(target.framebuffer), 0) }
             runCatching { GLES20.glDeleteTextures(1, intArrayOf(target.texture), 0) }
@@ -245,10 +269,12 @@ internal class MotionInterpolator(
         flowCoarse.clear()
         flowFine = null
         flowRefined = null
-        for (p in intArrayOf(downCurrent, pyramid, warp, diffProgram) + estimate) {
+        flowQuarterA = null
+        flowQuarterB = null
+        for (p in intArrayOf(downCurrent, downQuarter, pyramid, warp, diffProgram) + estimate) {
             if (p != 0) runCatching { GLES20.glDeleteProgram(p) }
         }
-        downCurrent = 0; pyramid = 0; warp = 0; diffProgram = 0
+        downCurrent = 0; downQuarter = 0; pyramid = 0; warp = 0; diffProgram = 0
         estimate.fill(0)
     }
 
@@ -346,12 +372,17 @@ internal class MotionInterpolator(
     private companion object {
         const val TAG = "SteadyVaultCfr"
         const val LEVELS = 3
+
+        /** Índice do luma 1/4 dentro de cada conjunto de lumas (depois dos [LEVELS] níveis). */
+        const val QUARTER = LEVELS
         const val HALF_FLOAT_OES = 0x8D61
 
         // Mesmos valores validados no teste headless (tools/motion_test).
-        const val COST_LOW = 0.05f
-        const val COST_HIGH = 0.15f
-        const val DIFF_LOW = 0.12f
-        const val DIFF_HIGH = 0.35f
+        // Mais rígidos que antes: texto fino com fluxo duvidoso vira o frame mais próximo,
+        // nítido, em vez de mistura com sombra.
+        const val COST_LOW = 0.025f
+        const val COST_HIGH = 0.08f
+        const val DIFF_LOW = 0.04f
+        const val DIFF_HIGH = 0.12f
     }
 }
