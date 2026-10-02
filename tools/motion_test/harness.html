@@ -80,7 +80,7 @@ window.runTests=function(S){
   // parâmetros (espelham o que o Kotlin usa)
   const P=window.PARAMS||{};
   const cfg=Object.assign({L2:{R:3,STEP:1,WIN:2,LAMBDA:0.02},L1:{R:1,STEP:1,WIN:2,LAMBDA:0.02},L0:{R:1,STEP:1,WIN:2,LAMBDA:0.02},L0b:{R:1,STEP:0.5,WIN:2,LAMBDA:0.001},
-     costLow:0.025,costHigh:0.08,diffLow:0.04,diffHigh:0.12,spreadLow:0.75,spreadHigh:2.0},P);
+     costLow:0.025,costHigh:0.08,diffLow:0.04,diffHigh:0.12,spreadLow:2.5,spreadHigh:6.0},P);
   const defs=c=>`#define R ${c.R}\n#define STEP ${c.STEP.toFixed(2)}\n#define WIN ${c.WIN}\n#define NORM ${((2*c.WIN+1)**2).toFixed(1)}\n#define LAMBDA ${c.LAMBDA.toFixed(5)}\n`;
   const pDown=prog(S.VERTEX,S.DOWN_FRAGMENT,''), pPyr=prog(S.VERTEX,S.PYRAMID_FRAGMENT,'');
   const pEst={};for(const k of ['L2','L1','L0','L0b'])pEst[k]=prog(S.VERTEX,S.ESTIMATE_FRAGMENT,defs(cfg[k]));

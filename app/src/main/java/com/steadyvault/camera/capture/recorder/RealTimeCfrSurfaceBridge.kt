@@ -31,11 +31,15 @@ import kotlin.math.abs
  *
  * Main5: as saídas seguem o TEMPO EXATO de captura ([CfrTimeResampler]). Frame alinhado
  * passa direto; frame perdido pela câmera é recriado por compensação de movimento
- * hierárquica na GPU ([MotionInterpolator]), com crossfade como rede de segurança. O frame
- * anterior fica em textura 2D e o warp é desenhado direto na Surface do encoder. Um frame
- * idêntico ao anterior reentregue pela HAL é detectado e descartado. Todas as saídas passam
- * pelo mesmo look de nitidez/cor ([VideoLook]). Nada disso usa readback/OpenCV no caminho
- * crítico das lacunas (a detecção de duplicado lê poucos KB da luma 1/32).
+ * hierárquica na GPU ([MotionInterpolator]), com crossfade como rede de segurança. Todas as
+ * saídas passam pelo mesmo look de nitidez/cor ([VideoLook]).
+ *
+ * Captura e processamento são DESACOPLADOS: cada frame da câmera é copiado, assim que chega,
+ * para um anel de texturas 2D já no espaço de saída (retrato), o que devolve o buffer à
+ * câmera na hora. O trabalho pesado (lacunas) consome dessa fila, e a fila é reabastecida
+ * entre as saídas de uma lacuna. Antes, uma lacuna de vários frames segurava a thread GL por
+ * dezenas de ms, a câmera ficava sem buffer e perdia ainda mais frames. Luma/fluxo só são
+ * calculados quando há lacuna; nada roda por frame além da cópia e da saída.
  *
  * O único readback restante é opcional e esparso para foco inteligente em background;
  * ele não participa da interpolação CFR.
@@ -53,6 +57,11 @@ class RealTimeCfrSurfaceBridge(
     private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
     private val onError: (Throwable) -> Unit
 ) {
+    /** Frame real já no espaço de saída, guardado numa textura 2D do anel. */
+    private class Slot(val texture: Int, val framebuffer: Int) {
+        var timestampNs = 0L
+    }
+
     private val released = AtomicBoolean(false)
     private val outputEnabled = AtomicBoolean(false)
     private val pendingFrames = AtomicInteger(0)
@@ -210,9 +219,9 @@ class RealTimeCfrSurfaceBridge(
         var context = EGL14.EGL_NO_CONTEXT
         var window = EGL14.EGL_NO_SURFACE
         var externalTexture = 0
-        var previousTexture = 0
-        var previousFramebuffer = 0
+        val ring = ArrayList<Slot>()
         var externalProgram = 0
+        var textureProgram = 0
         var blendProgram = 0
         var motionEstimateProgram = 0
         var motion: MotionInterpolator? = null
@@ -295,9 +304,15 @@ class RealTimeCfrSurfaceBridge(
             camera = Surface(st)
             cameraSurface = camera
 
-            previousTexture = createStorageTexture(outputWidth, outputHeight)
-            previousFramebuffer = createFramebuffer(previousTexture)
+            // Anel de frames já no espaço de saída (retrato, cru). Cada frame da câmera é copiado
+            // para cá assim que chega, liberando o buffer dela na hora; o processamento pesado
+            // (lacunas) consome dessa fila sem fazer a câmera esperar.
+            repeat(RING_SIZE) {
+                val texture = createStorageTexture(outputWidth, outputHeight)
+                ring += Slot(texture, createFramebuffer(texture))
+            }
             externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_EXTERNAL))
+            textureProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_TEXTURE))
             blendProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_BLEND))
             motionEstimateProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_GPU_MOTION_ESTIMATE)
             stabilizationProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_SUPER_STABILIZE))
@@ -359,71 +374,101 @@ class RealTimeCfrSurfaceBridge(
 
             ready.countDown()
 
+            val source = requireNotNull(st)
             val frameIntervalNs = 1_000_000_000L / fps.coerceAtLeast(1)
             val resampler = CfrTimeResampler(frameIntervalNs)
-            var haveLatchedFrame = false
+            val free = ArrayDeque<Slot>()
+            ring.forEach { free.addLast(it) }
+            val queue = ArrayDeque<Slot>()
+            var previousSlot: Slot? = null
             var timelineStarted = false
-            var previousSourceTimestampNs = 0L
-            var copiedTimestampNs = Long.MIN_VALUE
             var outputPtsNs = 0L
             var lastAnalysisSampleMs = 0L
-            var flowReady = false
-            var lumaValid = false
-            var consecutiveSkips = 0
 
-            while (!released.get()) {
-                if (!outputEnabled.get()) {
-                    // Consome TODOS os buffers enfileirados, para a fila do SurfaceTexture não
-                    // chegar ao início da gravação com frames velhos.
-                    val queued = pendingFrames.getAndSet(0)
-                    var consumed = 0
-                    while (consumed < queued) {
-                        runCatching {
-                            st.updateTexImage()
-                            haveLatchedFrame = true
-                        }
-                        consumed++
-                    }
-                    timelineStarted = false
-                    LockSupport.parkNanos(IDLE_POLL_NS)
-                    continue
-                }
-
-                if (flushRequested.compareAndSet(true, false)) {
-                    val stale = pendingFrames.getAndSet(0)
-                    var flushed = 0
-                    while (flushed < stale) {
-                        runCatching {
-                            st.updateTexImage()
-                            haveLatchedFrame = true
-                        }
-                        flushed++
-                    }
-                    timelineStarted = false
-                }
-
-                val backlog = pendingFrames.get()
-                if (backlog <= 0) {
-                    LockSupport.parkNanos(IDLE_POLL_NS)
-                    continue
-                }
-                if (backlog > maxBacklogSignals) maxBacklogSignals = backlog
-
-                pendingFrames.decrementAndGet()
-                val frameStartNs = System.nanoTime()
-
-                if (!timelineStarted) {
-                    st.updateTexImage()
-                    haveLatchedFrame = true
-                    previousSourceTimestampNs = st.timestamp
-                    resampler.start(previousSourceTimestampNs)
-                    copiedTimestampNs = Long.MIN_VALUE
-                    outputPtsNs = System.nanoTime()
-                    renderExternalToEncoder(
-                        st = st,
+            // Traz para o anel todo frame que a câmera já entregou. Chamada com frequência
+            // (inclusive entre as saídas de uma lacuna) para a câmera nunca ficar sem buffer.
+            fun ingest() {
+                while (pendingFrames.get() > 0 && free.isNotEmpty()) {
+                    pendingFrames.decrementAndGet()
+                    source.updateTexImage()
+                    val slot = free.removeFirst()
+                    slot.timestampNs = source.timestamp
+                    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, slot.framebuffer)
+                    renderExternal(
+                        st = source,
                         textureMatrix = textureMatrix,
                         program = externalProgram,
                         externalTexture = externalTexture,
+                        vertices = vertices,
+                        texCoords = texCoords
+                    )
+                    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                    queue.addLast(slot)
+                    if (queue.size > maxBacklogSignals) maxBacklogSignals = queue.size
+
+                    if (analysisEnabled && onAnalysisFrame != null) {
+                        val nowMs = SystemClock.elapsedRealtime()
+                        if (nowMs - lastAnalysisSampleMs >= BACKGROUND_ANALYSIS_INTERVAL_MS) {
+                            lastAnalysisSampleMs = nowMs
+                            readCurrentAnalysisFrame(
+                                st = source,
+                                externalTexture = externalTexture,
+                                framebuffer = analysisFramebuffer[0],
+                                width = analysisWidth,
+                                height = analysisHeight,
+                                target = currentMotionPixels,
+                                readback = motionReadback,
+                                program = externalProgram,
+                                vertices = vertices,
+                                texCoords = texCoords,
+                                textureMatrix = textureMatrix
+                            )
+                            runCatching {
+                                onAnalysisFrame?.invoke(currentMotionPixels.copyOf(), analysisWidth, analysisHeight)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Descarta tudo o que está pendente (fora da gravação ou ao iniciá-la), para a fila
+            // não chegar ao início do arquivo com frames velhos.
+            fun discardAll() {
+                val stale = pendingFrames.getAndSet(0)
+                var consumed = 0
+                while (consumed < stale) {
+                    runCatching { source.updateTexImage() }
+                    consumed++
+                }
+                while (queue.isNotEmpty()) free.addLast(queue.removeFirst())
+                previousSlot?.let { free.addLast(it) }
+                previousSlot = null
+                timelineStarted = false
+            }
+
+            while (!released.get()) {
+                if (!outputEnabled.get()) {
+                    discardAll()
+                    LockSupport.parkNanos(IDLE_POLL_NS)
+                    continue
+                }
+                if (flushRequested.compareAndSet(true, false)) discardAll()
+
+                ingest()
+                val current = queue.removeFirstOrNull()
+                if (current == null) {
+                    LockSupport.parkNanos(IDLE_POLL_NS)
+                    continue
+                }
+                val frameStartNs = System.nanoTime()
+                val previous = previousSlot
+
+                if (!timelineStarted || previous == null) {
+                    resampler.start(current.timestampNs)
+                    outputPtsNs = System.nanoTime()
+                    renderTextureToEncoder(
+                        program = textureProgram,
+                        texture = current.texture,
                         vertices = vertices,
                         texCoords = texCoords,
                         display = display,
@@ -432,122 +477,38 @@ class RealTimeCfrSurfaceBridge(
                     )
                     outputPtsNs += frameIntervalNs
                     realFrames++
+                    previous?.let { free.addLast(it) }
+                    previousSlot = current
                     timelineStarted = true
-                    lumaValid = false
-                    consecutiveSkips = 0
-                    motion?.takeIf { it.available }?.let { mi ->
-                        if (analyzeFrame(mi, st, textureMatrix, externalTexture, vertices, texCoords, false) != ANALYSIS_FAILED) {
-                            mi.commit()
-                            lumaValid = true
-                        }
-                    }
                     continue
                 }
 
-                if (!haveLatchedFrame) {
-                    st.updateTexImage()
-                    haveLatchedFrame = true
-                    previousSourceTimestampNs = st.timestamp
-                    lumaValid = false
-                    continue
-                }
-
-                // Preserva o frame real anterior antes de SurfaceTexture avançar. A cópia só
-                // acontece uma vez por frame latched.
-                if (copiedTimestampNs != previousSourceTimestampNs) {
-                    copyExternalToPreviousTexture(
-                        st = st,
-                        textureMatrix = textureMatrix,
-                        program = externalProgram,
-                        externalTexture = externalTexture,
-                        framebuffer = previousFramebuffer,
-                        vertices = vertices,
-                        texCoords = texCoords
-                    )
-                    copiedTimestampNs = previousSourceTimestampNs
-                }
-                flowReady = false
-
-                st.updateTexImage()
-                val currentSourceTimestampNs = st.timestamp
-
-                if (analysisEnabled && onAnalysisFrame != null) {
-                    val nowMs = SystemClock.elapsedRealtime()
-                    if (nowMs - lastAnalysisSampleMs >= BACKGROUND_ANALYSIS_INTERVAL_MS) {
-                        readCurrentAnalysisFrame(
-                            st = st,
-                            externalTexture = externalTexture,
-                            framebuffer = analysisFramebuffer[0],
-                            width = analysisWidth,
-                            height = analysisHeight,
-                            target = currentMotionPixels,
-                            readback = motionReadback,
-                            program = externalProgram,
-                            vertices = vertices,
-                            texCoords = texCoords,
-                            textureMatrix = textureMatrix
-                        )
-                        lastAnalysisSampleMs = nowMs
-                        runCatching {
-                            onAnalysisFrame?.invoke(currentMotionPixels.copyOf(), analysisWidth, analysisHeight)
-                        }
-                    }
-                }
-
-                // Alguns drivers podem coalescer callbacks da SurfaceTexture.
                 // O mesmo timestamp nunca pode virar um segundo frame no arquivo.
-                if (currentSourceTimestampNs <= previousSourceTimestampNs) {
+                if (current.timestampNs <= previous.timestampNs) {
+                    free.addLast(current)
                     continue
-                }
-
-                // Luma do frame atual (para o fluxo) e detecção de frame duplicado: a HAL às
-                // vezes reentrega o mesmo frame com outro timestamp, e isso aparece no vídeo
-                // como uma trava de 1 frame. Um duplicado isolado é descartado; o próximo
-                // frame real passa a cobrir os dois instantes (um deles interpolado).
-                var analyzed = false
-                val analysisMotion = motion
-                if (analysisMotion != null && analysisMotion.available) {
-                    val changed = analyzeFrame(
-                        analysisMotion, st, textureMatrix, externalTexture, vertices, texCoords, lumaValid
-                    )
-                    analyzed = changed != ANALYSIS_FAILED
-                    if (analyzed && lumaValid && changed in 0f..DUPLICATE_CHANGED_FRACTION &&
-                        consecutiveSkips < MAX_CONSECUTIVE_SKIPS &&
-                        currentSourceTimestampNs - previousSourceTimestampNs <= frameIntervalNs * 3 / 2
-                    ) {
-                        duplicatesSkipped++
-                        consecutiveSkips++
-                        continue
-                    }
-                    consecutiveSkips = 0
                 }
 
                 // Reamostragem pelo tempo EXATO de captura: cada saída (1/fps) usa o frame que
                 // existiria naquele instante. Frame alinhado passa direto e nítido; frame
                 // perdido vira interpolação com compensação de movimento.
-                val sensorIntervalNs = currentSourceTimestampNs - previousSourceTimestampNs
-                recordSensorInterval(sensorIntervalNs, frameIntervalNs)
-                val outputs = resampler.plan(previousSourceTimestampNs, currentSourceTimestampNs)
-                previousSourceTimestampNs = currentSourceTimestampNs
+                recordSensorInterval(current.timestampNs - previous.timestampNs, frameIntervalNs)
+                val outputs = resampler.plan(previous.timestampNs, current.timestampNs)
 
                 if (outputs == 0) {
                     // Câmera acima do FPS nominal: nenhum instante de saída cai neste frame.
                     droppedFrames++
-                    if (analyzed) {
-                        motion?.commit()
-                        lumaValid = true
-                    }
+                    free.addLast(previous)
+                    previousSlot = current
                     continue
                 }
 
                 // O Super Estável estima o deslocamento de cada frame real (leve, 1/16).
                 if (superStabilizationEnabled) {
                     renderGpuMotionEstimate(
-                        st = st,
-                        textureMatrix = textureMatrix,
                         program = motionEstimateProgram,
-                        previousTexture = previousTexture,
-                        externalTexture = externalTexture,
+                        previousTexture = previous.texture,
+                        currentTexture = current.texture,
                         framebuffer = motionFramebuffer,
                         motionWidth = motionWidth,
                         motionHeight = motionHeight,
@@ -556,6 +517,7 @@ class RealTimeCfrSurfaceBridge(
                     )
                 }
 
+                var flowReady = false
                 var outputIndex = 0
                 while (outputIndex < outputs) {
                     val alpha = resampler.alphaAt(outputIndex)
@@ -563,10 +525,8 @@ class RealTimeCfrSurfaceBridge(
                     if (alpha >= 1f) {
                         if (superStabilizationEnabled) {
                             renderSuperStableToEncoder(
-                                st = st,
-                                textureMatrix = textureMatrix,
                                 program = stabilizationProgram,
-                                externalTexture = externalTexture,
+                                currentTexture = current.texture,
                                 motionTexture = motionTextures[0],
                                 motionWidth = motionWidth,
                                 motionHeight = motionHeight,
@@ -577,11 +537,9 @@ class RealTimeCfrSurfaceBridge(
                                 presentationTimeNs = outputPtsNs
                             )
                         } else {
-                            renderExternalToEncoder(
-                                st = st,
-                                textureMatrix = textureMatrix,
-                                program = externalProgram,
-                                externalTexture = externalTexture,
+                            renderTextureToEncoder(
+                                program = textureProgram,
+                                texture = current.texture,
                                 vertices = vertices,
                                 texCoords = texCoords,
                                 display = display,
@@ -594,18 +552,16 @@ class RealTimeCfrSurfaceBridge(
                         var done = false
                         val mi = motion
                         if (mi != null && mi.available && outputs <= MAX_MOTION_OUTPUTS) {
-                            done = lumaValid && renderMotionToEncoder(
-                                mi, st, textureMatrix, previousTexture, externalTexture,
+                            done = renderMotionToEncoder(
+                                mi, previous.texture, current.texture,
                                 alpha, flowReady, vertices, texCoords, display, window, outputPtsNs
                             )
                             if (done) flowReady = true else motionFallbacks++
                         }
                         if (!done) renderBlendToEncoder(
-                            st = st,
-                            textureMatrix = textureMatrix,
                             program = blendProgram,
-                            previousTexture = previousTexture,
-                            externalTexture = externalTexture,
+                            previousTexture = previous.texture,
+                            currentTexture = current.texture,
                             alpha = alpha,
                             vertices = vertices,
                             texCoords = texCoords,
@@ -618,14 +574,13 @@ class RealTimeCfrSurfaceBridge(
                     }
                     outputPtsNs += frameIntervalNs
                     outputIndex++
+                    // Durante lacunas longas a GPU fica ocupada; recolhe os frames novos da
+                    // câmera já, para ela não ficar sem buffer e perder mais frames.
+                    if (outputIndex < outputs) ingest()
                 }
 
-                if (analyzed) {
-                    motion?.commit()
-                    lumaValid = true
-                } else {
-                    lumaValid = false
-                }
+                free.addLast(previous)
+                previousSlot = current
                 if (outputs - 1 > largestFillSlots) largestFillSlots = outputs - 1
                 val frameNs = System.nanoTime() - frameStartNs
                 if (frameNs > worstFrameNs) worstFrameNs = frameNs
@@ -650,12 +605,11 @@ class RealTimeCfrSurfaceBridge(
                 runCatching { GLES20.glDeleteTextures(1, motionTextures, 0) }
                 runCatching { GLES20.glDeleteTextures(1, analysisTexture, 0) }
                 runCatching { GLES20.glDeleteFramebuffers(1, analysisFramebuffer, 0) }
-                if (previousFramebuffer != 0) {
-                    runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(previousFramebuffer), 0) }
+                for (slot in ring) {
+                    runCatching { GLES20.glDeleteFramebuffers(1, intArrayOf(slot.framebuffer), 0) }
+                    runCatching { GLES20.glDeleteTextures(1, intArrayOf(slot.texture), 0) }
                 }
-                if (previousTexture != 0) {
-                    runCatching { GLES20.glDeleteTextures(1, intArrayOf(previousTexture), 0) }
-                }
+                if (textureProgram != 0) runCatching { GLES20.glDeleteProgram(textureProgram) }
                 if (externalTexture != 0) {
                     runCatching { GLES20.glDeleteTextures(1, intArrayOf(externalTexture), 0) }
                 }
@@ -676,52 +630,6 @@ class RealTimeCfrSurfaceBridge(
             if (ready.count > 0L) ready.countDown()
             stopped.countDown()
         }
-    }
-
-    private fun copyExternalToPreviousTexture(
-        st: SurfaceTexture,
-        textureMatrix: FloatArray,
-        program: Int,
-        externalTexture: Int,
-        framebuffer: Int,
-        vertices: FloatBuffer,
-        texCoords: FloatBuffer
-    ) {
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer)
-        renderExternal(
-            st = st,
-            textureMatrix = textureMatrix,
-            program = program,
-            externalTexture = externalTexture,
-            vertices = vertices,
-            texCoords = texCoords
-        )
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-    }
-
-    private fun renderExternalToEncoder(
-        st: SurfaceTexture,
-        textureMatrix: FloatArray,
-        program: Int,
-        externalTexture: Int,
-        vertices: FloatBuffer,
-        texCoords: FloatBuffer,
-        display: android.opengl.EGLDisplay,
-        window: android.opengl.EGLSurface,
-        presentationTimeNs: Long
-    ) {
-        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-        renderExternal(
-            st = st,
-            textureMatrix = textureMatrix,
-            program = program,
-            externalTexture = externalTexture,
-            vertices = vertices,
-            texCoords = texCoords,
-            look = true
-        )
-        EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
-        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers falhou" }
     }
 
     private fun renderExternal(
@@ -819,15 +727,53 @@ class RealTimeCfrSurfaceBridge(
         return best
     }
 
+    /** Frame real já no espaço de saída (textura 2D do anel) direto para o encoder, com o look. */
+    private fun renderTextureToEncoder(
+        program: Int,
+        texture: Int,
+        vertices: FloatBuffer,
+        texCoords: FloatBuffer,
+        display: android.opengl.EGLDisplay,
+        window: android.opengl.EGLSurface,
+        presentationTimeNs: Long
+    ) {
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+        GLES20.glViewport(0, 0, outputWidth, outputHeight)
+        GLES20.glUseProgram(program)
+        bindQuad(program, vertices, texCoords)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), 1f)
+        GLES20.glUniform2f(
+            GLES20.glGetUniformLocation(program, "uLookTexel"),
+            VideoLook.RADIUS_PX / outputWidth,
+            VideoLook.RADIUS_PX / outputHeight
+        )
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sTexture"), 0)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
+        check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers falhou" }
+    }
+
+    private fun bindQuad(program: Int, vertices: FloatBuffer, texCoords: FloatBuffer) {
+        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
+        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
+        vertices.position(0)
+        GLES20.glEnableVertexAttribArray(positionHandle)
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
+        texCoords.position(0)
+        GLES20.glEnableVertexAttribArray(texCoordHandle)
+        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
+    }
+
     private fun currentRotation(textureMatrix: FloatArray): Int =
         if (physicalRotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, physicalRotationDegrees)
 
+    /** Rede de segurança (sem movimento): crossfade temporal entre dois frames do anel + look. */
     private fun renderBlendToEncoder(
-        st: SurfaceTexture,
-        textureMatrix: FloatArray,
         program: Int,
         previousTexture: Int,
-        externalTexture: Int,
+        currentTexture: Int,
         alpha: Float,
         vertices: FloatBuffer,
         texCoords: FloatBuffer,
@@ -835,48 +781,23 @@ class RealTimeCfrSurfaceBridge(
         window: android.opengl.EGLSurface,
         presentationTimeNs: Long
     ) {
-        st.getTransformMatrix(textureMatrix)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, outputWidth, outputHeight)
         GLES20.glUseProgram(program)
-        GLES20.glUniform1f(
-            GLES20.glGetUniformLocation(program, "uRotationDegrees"),
-            currentRotation(textureMatrix).toFloat()
-        )
-
-        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
-        val previousHandle = GLES20.glGetUniformLocation(program, "sPrevious")
-        val currentHandle = GLES20.glGetUniformLocation(program, "sCurrent")
-        val alphaHandle = GLES20.glGetUniformLocation(program, "uAlpha")
+        bindQuad(program, vertices, texCoords)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, previousTexture)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sPrevious"), 0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, currentTexture)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sCurrent"), 1)
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "uLookTexel"),
             VideoLook.RADIUS_PX / outputWidth,
             VideoLook.RADIUS_PX / outputHeight
         )
-
-        vertices.position(0)
-        GLES20.glEnableVertexAttribArray(positionHandle)
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
-
-        texCoords.position(0)
-        GLES20.glEnableVertexAttribArray(texCoordHandle)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
-
-        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
-
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, previousTexture)
-        GLES20.glUniform1i(previousHandle, 0)
-
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
-        GLES20.glUniform1i(currentHandle, 1)
-
-        GLES20.glUniform1f(alphaHandle, alpha.coerceIn(0.001f, 0.999f))
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uAlpha"), alpha.coerceIn(0.001f, 0.999f))
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers interpolado falhou" }
     }
@@ -926,44 +847,25 @@ class RealTimeCfrSurfaceBridge(
     }
 
     private fun renderGpuMotionEstimate(
-        st: SurfaceTexture,
-        textureMatrix: FloatArray,
         program: Int,
         previousTexture: Int,
-        externalTexture: Int,
+        currentTexture: Int,
         framebuffer: Int,
         motionWidth: Int,
         motionHeight: Int,
         vertices: FloatBuffer,
         texCoords: FloatBuffer
     ) {
-        st.getTransformMatrix(textureMatrix)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, framebuffer)
         GLES20.glViewport(0, 0, motionWidth, motionHeight)
         GLES20.glUseProgram(program)
-        GLES20.glUniform1f(
-            GLES20.glGetUniformLocation(program, "uRotationDegrees"),
-            currentRotation(textureMatrix).toFloat()
-        )
-
-        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
-        vertices.position(0)
-        GLES20.glEnableVertexAttribArray(positionHandle)
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
-        texCoords.position(0)
-        GLES20.glEnableVertexAttribArray(texCoordHandle)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
-        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
-
+        bindQuad(program, vertices, texCoords)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, previousTexture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sPrevious"), 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, currentTexture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sCurrent"), 1)
-
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "uMotionTexel"),
             1f / motionWidth.coerceAtLeast(1).toFloat(),
@@ -973,38 +875,8 @@ class RealTimeCfrSurfaceBridge(
             GLES20.glGetUniformLocation(program, "uSearchRadius"),
             GPU_SEARCH_RADIUS_TEXELS
         )
-
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-    }
-
-    /**
-     * Analisa o frame atual na GPU (luma + comparação com o anterior). Devolve a fração de
-     * texels que mudaram (0..1), -1 se não comparou ou [ANALYSIS_FAILED] se algo falhou, e
-     * nesse caso o caminho de movimento é desligado de vez.
-     */
-    private fun analyzeFrame(
-        mi: MotionInterpolator,
-        st: SurfaceTexture,
-        textureMatrix: FloatArray,
-        externalTexture: Int,
-        vertices: FloatBuffer,
-        texCoords: FloatBuffer,
-        compare: Boolean
-    ): Float {
-        return try {
-            GLES20.glGetError()
-            st.getTransformMatrix(textureMatrix)
-            val changed = mi.analyze(externalTexture, textureMatrix, currentRotation(textureMatrix), vertices, texCoords, compare)
-            if (!mi.healthy()) throw IllegalStateException("erro GL na análise do frame")
-            changed
-        } catch (t: Throwable) {
-            Log.w(TAG, "análise de frame falhou, desligando movimento: ${t.message}")
-            motionState = "desligadoPorErro"
-            mi.release()
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-            ANALYSIS_FAILED
-        }
     }
 
     /**
@@ -1014,10 +886,8 @@ class RealTimeCfrSurfaceBridge(
      */
     private fun renderMotionToEncoder(
         mi: MotionInterpolator,
-        st: SurfaceTexture,
-        textureMatrix: FloatArray,
         previousTexture: Int,
-        externalTexture: Int,
+        currentTexture: Int,
         alpha: Float,
         flowReady: Boolean,
         vertices: FloatBuffer,
@@ -1028,15 +898,17 @@ class RealTimeCfrSurfaceBridge(
     ): Boolean {
         try {
             GLES20.glGetError() // limpa erro pendente de outro passo
-            st.getTransformMatrix(textureMatrix)
             if (!flowReady) {
+                mi.prepare(previousTexture, currentTexture, vertices, texCoords)
                 mi.estimate(vertices, texCoords)
                 if (!mi.healthy()) throw IllegalStateException("erro GL na estimativa")
             }
             // Com o Super Estável, os frames reais saem recortados; o frame recriado usa o
             // mesmo recorte para não "pulsar" de zoom a cada lacuna.
             val crop = if (superStabilizationEnabled) SUPER_STABLE_CROP_SCALE else 1f
-            mi.warp(alpha, previousTexture, externalTexture, textureMatrix, currentRotation(textureMatrix), vertices, texCoords, crop)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            GLES20.glViewport(0, 0, outputWidth, outputHeight)
+            mi.warp(alpha, previousTexture, currentTexture, vertices, texCoords, crop)
             if (!mi.healthy()) throw IllegalStateException("erro GL no warp")
         } catch (t: Throwable) {
             Log.w(TAG, "interpolação com movimento falhou, voltando ao crossfade: ${t.message}")
@@ -1052,10 +924,8 @@ class RealTimeCfrSurfaceBridge(
     }
 
     private fun renderSuperStableToEncoder(
-        st: SurfaceTexture,
-        textureMatrix: FloatArray,
         program: Int,
-        externalTexture: Int,
+        currentTexture: Int,
         motionTexture: Int,
         motionWidth: Int,
         motionHeight: Int,
@@ -1065,33 +935,16 @@ class RealTimeCfrSurfaceBridge(
         window: android.opengl.EGLSurface,
         presentationTimeNs: Long
     ) {
-        st.getTransformMatrix(textureMatrix)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, outputWidth, outputHeight)
         GLES20.glUseProgram(program)
-        GLES20.glUniform1f(
-            GLES20.glGetUniformLocation(program, "uRotationDegrees"),
-            currentRotation(textureMatrix).toFloat()
-        )
-
-        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
-        vertices.position(0)
-        GLES20.glEnableVertexAttribArray(positionHandle)
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
-        texCoords.position(0)
-        GLES20.glEnableVertexAttribArray(texCoordHandle)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
-        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
-
+        bindQuad(program, vertices, texCoords)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, currentTexture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sCurrent"), 0)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, motionTexture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sMotion"), 1)
-
         GLES20.glUniform2f(
             GLES20.glGetUniformLocation(program, "uMotionTexel"),
             1f / motionWidth.coerceAtLeast(1).toFloat(),
@@ -1106,7 +959,6 @@ class RealTimeCfrSurfaceBridge(
             VideoLook.RADIUS_PX / outputWidth,
             VideoLook.RADIUS_PX / outputHeight
         )
-
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         EGLExt.eglPresentationTimeANDROID(display, window, presentationTimeNs)
         check(EGL14.eglSwapBuffers(display, window)) { "eglSwapBuffers Super Estável falhou" }
@@ -1209,6 +1061,12 @@ class RealTimeCfrSurfaceBridge(
     companion object {
         private const val BACKGROUND_ANALYSIS_INTERVAL_MS = 1_500L
 
+        /**
+         * Texturas do anel (4K RGBA ~33 MB cada): frame anterior + frame em processamento +
+         * fila de frames que chegam enquanto uma lacuna longa é preenchida.
+         */
+        private const val RING_SIZE = 6
+
         private const val EGL_RECORDABLE_ANDROID = 0x3142
         private const val PREPARE_TIMEOUT_SECONDS = 5L
         private const val RELEASE_TIMEOUT_MS = 1_000L
@@ -1304,9 +1162,32 @@ class RealTimeCfrSurfaceBridge(
             0f, 0f, 0f, 1f
         )
 
-        // O frame anterior já está no espaço de saída (cru); o atual é rotacionado aqui.
+        // Frame real já no espaço de saída (textura 2D do anel) com o look.
+        private const val FRAGMENT_SHADER_TEXTURE = """
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
+            precision mediump float;
+            #endif
+            varying vec2 vUv;
+            uniform sampler2D sTexture;
+            uniform float uLook;
+            LOOK_GLSL
+            void main() {
+                vec3 c = texture2D(sTexture, vUv).rgb;
+                if (uLook > 0.5) {
+                    vec2 dx = vec2(uLookTexel.x, 0.0);
+                    vec2 dy = vec2(0.0, uLookTexel.y);
+                    vec3 blur = 0.25 * (texture2D(sTexture, vUv + dx).rgb + texture2D(sTexture, vUv - dx).rgb +
+                                        texture2D(sTexture, vUv + dy).rgb + texture2D(sTexture, vUv - dy).rgb);
+                    c = lookGrade(c, blur);
+                }
+                gl_FragColor = vec4(c, 1.0);
+            }
+        """
+
+        // Rede de segurança (sem movimento): crossfade temporal entre dois frames do anel + look.
         private const val FRAGMENT_SHADER_BLEND = """
-            #extension GL_OES_EGL_image_external : require
             #ifdef GL_FRAGMENT_PRECISION_HIGH
             precision highp float;
             #else
@@ -1314,21 +1195,11 @@ class RealTimeCfrSurfaceBridge(
             #endif
             varying vec2 vUv;
             uniform sampler2D sPrevious;
-            uniform samplerExternalOES sCurrent;
-            uniform mat4 uTextureMatrix;
-            uniform float uRotationDegrees;
+            uniform sampler2D sCurrent;
             uniform float uAlpha;
             LOOK_GLSL
-            vec2 rotateUv(vec2 uv) {
-                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
-                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
-                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);
-                return uv;
-            }
             vec3 composite(vec2 uv) {
-                vec3 previousColor = texture2D(sPrevious, uv).rgb;
-                vec3 currentColor = texture2D(sCurrent, (uTextureMatrix * vec4(rotateUv(uv), 0.0, 1.0)).xy).rgb;
-                return mix(previousColor, currentColor, uAlpha);
+                return mix(texture2D(sPrevious, uv).rgb, texture2D(sCurrent, uv).rgb, uAlpha);
             }
             void main() {
                 vec2 dx = vec2(uLookTexel.x, 0.0);
@@ -1342,25 +1213,15 @@ class RealTimeCfrSurfaceBridge(
         private const val GPU_SEARCH_RADIUS_TEXELS = 3.0f
 
         private const val FRAGMENT_SHADER_GPU_MOTION_ESTIMATE = """
-            #extension GL_OES_EGL_image_external : require
             precision highp float;
             varying vec2 vUv;
             uniform sampler2D sPrevious;
-            uniform samplerExternalOES sCurrent;
+            uniform sampler2D sCurrent;
             uniform vec2 uMotionTexel;
             uniform float uSearchRadius;
-            uniform mat4 uTextureMatrix;
-            uniform float uRotationDegrees;
-            vec2 rotateUv(vec2 uv) {
-                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
-                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
-                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);
-                return uv;
-            }
             vec3 fetchCurrent(vec2 uv) {
-                return texture2D(sCurrent, (uTextureMatrix * vec4(rotateUv(uv), 0.0, 1.0)).xy).rgb;
+                return texture2D(sCurrent, uv).rgb;
             }
-
             float luma(vec3 c) {
                 return dot(c, vec3(0.299, 0.587, 0.114));
             }
@@ -1416,28 +1277,18 @@ class RealTimeCfrSurfaceBridge(
         private const val SUPER_STABLE_CROP_SCALE = 0.90f
 
         private const val FRAGMENT_SHADER_SUPER_STABILIZE = """
-            #extension GL_OES_EGL_image_external : require
             precision highp float;
             varying vec2 vUv;
-            uniform samplerExternalOES sCurrent;
+            uniform sampler2D sCurrent;
             uniform sampler2D sMotion;
             uniform vec2 uMotionTexel;
             uniform float uSearchRadius;
             uniform float uStrength;
             uniform float uCropScale;
             uniform float uLook;
-            uniform mat4 uTextureMatrix;
-            uniform float uRotationDegrees;
-            vec2 rotateUv(vec2 uv) {
-                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
-                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
-                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);
-                return uv;
-            }
             vec3 fetchCurrent(vec2 uv) {
-                return texture2D(sCurrent, (uTextureMatrix * vec4(rotateUv(uv), 0.0, 1.0)).xy).rgb;
+                return texture2D(sCurrent, uv).rgb;
             }
-
             LOOK_GLSL
 
             vec2 decodeMotion(vec2 uv) {
