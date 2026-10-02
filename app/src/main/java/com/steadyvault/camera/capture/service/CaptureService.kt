@@ -3911,6 +3911,7 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
     ) {
         val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
         val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
+        if (iso > 0) com.steadyvault.camera.capture.recorder.SensorNoiseHint.iso = iso
         val duration = result.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L
         val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L
         val af = result.get(CaptureResult.CONTROL_AF_STATE) ?: -1

@@ -1075,8 +1075,10 @@ class RealTimeCfrSurfaceBridge(
         )
         GLES20.glUniform1f(
             GLES20.glGetUniformLocation(program, "uHistoryWeight"),
-            if (historyTexture != 0) TEMPORAL_DENOISE_WEIGHT else 0f
+            if (historyTexture != 0) 1f else 0f
         )
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uNoiseScale"), SensorNoiseHint.motionGateScale())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uMaxAge"), TEMPORAL_MAX_AGE)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
@@ -1435,7 +1437,8 @@ class RealTimeCfrSurfaceBridge(
         /** Peso máximo do frame anterior filtrado no denoise temporal (0 desliga). */
         // Raio (px de saída) das 4 amostras diagonais do filtro espacial anti-grão do ingest.
         private const val SPATIAL_DENOISE_RADIUS_PX = 1f
-        private const val TEMPORAL_DENOISE_WEIGHT = 0.5f
+        // Teto da idade de confiança: peso máximo = idade/(idade+1) = 5/6 (~0,83) em área parada.
+        private const val TEMPORAL_MAX_AGE = 5f
 
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
         private const val TIMING_DIAGNOSTICS = false
@@ -1553,7 +1556,9 @@ class RealTimeCfrSurfaceBridge(
             uniform sampler2D sHistory;
             uniform mat4 uTextureMatrix;
             uniform float uRotationDegrees;
-            uniform float uHistoryWeight;
+            uniform float uHistoryWeight;   // 0 = sem histórico (primeiro frame)
+            uniform float uNoiseScale;      // escala do limiar de movimento conforme o ISO
+            uniform float uMaxAge;          // teto da "idade" de confiança (frames parados)
             uniform vec2 uTexel;
             vec2 rotateUv(vec2 uv) {
                 if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
@@ -1572,22 +1577,35 @@ class RealTimeCfrSurfaceBridge(
                 float y0 = lumaOf(c0);
                 vec3 accC = c0; float wC = 1.0;
                 vec3 accL = c0; float wL = 1.0;
+                float curLuma = y0;
+                float histLuma = lumaOf(texture2D(sHistory, vUv).rgb);
                 for (int i = 0; i < 4; i++) {
                     vec2 o = vec2((i < 2) ? -1.0 : 1.0, (i == 0 || i == 2) ? -1.0 : 1.0) * uTexel;
                     vec3 n = fetchColor(vUv + o);
-                    float dn = abs(lumaOf(n) - y0);
+                    float yn = lumaOf(n);
+                    float dn = abs(yn - y0);
                     float a = 1.0 - smoothstep(0.03, 0.10, dn);
                     float b = 0.4 * (1.0 - smoothstep(0.02, 0.06, dn));
                     accC += n * a; wC += a;
                     accL += n * b; wL += b;
+                    curLuma += yn;
+                    histLuma += lumaOf(texture2D(sHistory, vUv + o).rgb);
                 }
                 vec3 cf = accC / wC;
                 vec3 lf = accL / wL;
                 vec3 c = cf + vec3(lumaOf(lf) - lumaOf(cf));
-                vec3 h = texture2D(sHistory, vUv).rgb;
-                float d = abs(dot(c - h, vec3(0.299, 0.587, 0.114)));
-                float w = uHistoryWeight * (1.0 - smoothstep(0.04, 0.10, d));
-                gl_FragColor = vec4(mix(c, h, w), 1.0);
+
+                vec4 hist = texture2D(sHistory, vUv);
+                // Movimento medido na média de 5 amostras (ruído ~2,2x menor que pixel a pixel,
+                // menos falso "movimento"), com limiar proporcional ao ruído do ISO.
+                float d = abs(curLuma - histLuma) * 0.2;
+                float still = 1.0 - smoothstep(0.025 * uNoiseScale, 0.07 * uNoiseScale, d);
+                // Confiança "Kalman" por pixel: quantos frames seguidos ele ficou parado (alfa).
+                float age = hist.a * 16.0;
+                float w = uHistoryWeight * still * (age / (age + 1.0));
+                float newAge = min(uMaxAge, (age + 1.0) * still);
+                if (uHistoryWeight < 0.5) newAge = 1.0;
+                gl_FragColor = vec4(mix(c, hist.rgb, w), newAge / 16.0);
             }
         """
 
