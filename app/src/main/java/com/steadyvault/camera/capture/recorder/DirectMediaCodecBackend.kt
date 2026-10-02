@@ -6,8 +6,10 @@ import android.media.MediaCodecList
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.os.Build
 import android.os.Bundle
 import android.os.Process
+import android.util.Log
 import android.view.Surface
 import java.io.File
 import java.nio.ByteBuffer
@@ -79,6 +81,15 @@ class DirectMediaCodecBackend(
     private var audioTempFile: File? = null
     private val audioStarted = AtomicBoolean(false)
 
+    @Volatile private var activeCodecName: String = "?"
+    @Volatile private var realtimeTuningApplied = false
+    @Volatile private var encodedSamples = 0L
+    @Volatile private var writtenSamples = 0L
+    @Volatile private var discardedBeforeGate = 0L
+    @Volatile private var ptsHoles = 0L
+    @Volatile private var framesLostByEncoder = 0L
+    @Volatile private var maxPtsDeltaUs = 0L
+
     private val committed = AtomicBoolean(false)
     private val stopRequested = AtomicBoolean(false)
     private val released = AtomicBoolean(false)
@@ -99,27 +110,10 @@ class DirectMediaCodecBackend(
             ?: throw IllegalStateException(
                 "nenhum encoder de hardware suporta ${encoderWidth}x${encoderHeight} ${targetFps} FPS ${videoMime.substringAfter('/').uppercase()}"
             )
-        val format = MediaFormat.createVideoFormat(videoMime, encoderWidth, encoderHeight).apply {
-            setInteger(
-                MediaFormat.KEY_COLOR_FORMAT,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
-            )
-            setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
-            // Mantém o mesmo conjunto mínimo usado no Cadence Probe, que apresentou
-            // a melhor cadência no S25 Ultra. Não forçamos operating-rate, priority
-            // nem CBR: esses parâmetros extras podem ativar caminhos diferentes de
-            // rate-control no codec do fabricante.
-            setInteger(
-                MediaFormat.KEY_I_FRAME_INTERVAL,
-                iFrameIntervalSeconds.coerceAtLeast(1)
-            )
-        }
-
         try {
-            val mediaCodec = MediaCodec.createByCodecName(codecInfo.name)
+            activeCodecName = codecInfo.name
+            val mediaCodec = createConfiguredEncoder(codecInfo.name)
             codec = mediaCodec
-            mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
 
             val encoderSurface = mediaCodec.createInputSurface()
             encoderInputSurface = encoderSurface
@@ -204,6 +198,7 @@ class DirectMediaCodecBackend(
 
         runCatching { codec?.signalEndOfInputStream() }
         runCatching { drainFuture?.get(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS) }
+        logEncoderSummary()
 
         closeCodecAndMuxer()
         started = false
@@ -258,6 +253,8 @@ class DirectMediaCodecBackend(
 
         val nominalDeltaUs = 1_000_000L / targetFps.coerceAtLeast(1)
         val toleranceUs = maxOf(1_500L, nominalDeltaUs / 8L)
+        val holeThresholdUs = nominalDeltaUs + nominalDeltaUs / 2L
+        var lastWrittenPtsUs = Long.MIN_VALUE
 
         try {
             while (true) {
@@ -288,6 +285,7 @@ class DirectMediaCodecBackend(
 
                         if (!isConfig && info.size > 0) {
                             val ptsUs = info.presentationTimeUs
+                            encodedSamples++
 
                             if (!committed.get()) {
                                 previousPtsUs = Long.MIN_VALUE
@@ -341,6 +339,24 @@ class DirectMediaCodecBackend(
                                     )
                                 }
                                 mediaMuxer.writeSampleData(videoTrack, buffer, adjusted)
+                                writtenSamples++
+
+                                // Buraco de PTS na SAÍDA do encoder: a ponte entrega uma grade
+                                // perfeita, então qualquer intervalo > 1,5 frame aqui é frame
+                                // que o próprio codec pulou.
+                                if (lastWrittenPtsUs != Long.MIN_VALUE) {
+                                    val deltaUs = ptsUs - lastWrittenPtsUs
+                                    if (deltaUs > maxPtsDeltaUs) maxPtsDeltaUs = deltaUs
+                                    if (deltaUs > holeThresholdUs) {
+                                        ptsHoles++
+                                        framesLostByEncoder +=
+                                            ((deltaUs + nominalDeltaUs / 2L) / nominalDeltaUs - 1L)
+                                                .coerceAtLeast(0L)
+                                    }
+                                }
+                                lastWrittenPtsUs = ptsUs
+                            } else {
+                                discardedBeforeGate++
                             }
                         }
 
@@ -469,6 +485,101 @@ class DirectMediaCodecBackend(
         extractor.unselectTrack(sourceTrack)
     }
 
+    /**
+     * Formato do encoder.
+     *
+     * [realtimeTuning] restaura os parâmetros que o histórico do projeto associa ao
+     * 4K60 sem perdas no S25 Ultra (1.8.209–1.8.211) e que a main3 havia removido:
+     *  - ALLOW_FRAME_DROP=0: o encoder não pode pular frames de entrada para "caber" no
+     *    bitrate. Um frame pulado vira buraco no PTS DEPOIS da ponte CFR, onde nada mais
+     *    consegue preenchê-lo — é o único gap que a ponte não enxerga;
+     *  - PRIORITY=0 + OPERATING_RATE=fps: sinaliza tempo real e mantém os clocks do
+     *    codec no ritmo da captura em vez de tratá-lo como transcodificação;
+     *  - LATENCY=1 e MAX_B_FRAMES=0: sem fila de reordenação, saída na ordem de entrada.
+     */
+    private fun buildVideoFormat(realtimeTuning: Boolean): MediaFormat =
+        MediaFormat.createVideoFormat(videoMime, encoderWidth, encoderHeight).apply {
+            setInteger(
+                MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+            )
+            setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate)
+            setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
+            setInteger(
+                MediaFormat.KEY_I_FRAME_INTERVAL,
+                iFrameIntervalSeconds.coerceAtLeast(1)
+            )
+            if (realtimeTuning) {
+                setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                setInteger(MediaFormat.KEY_PRIORITY, 0)
+                setInteger(MediaFormat.KEY_OPERATING_RATE, targetFps)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    setInteger(MediaFormat.KEY_LATENCY, 1)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                    setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 0)
+                }
+            }
+        }
+
+    /**
+     * Tenta primeiro a configuração realtime; se o codec do fabricante recusar algum
+     * parâmetro, cai para a configuração mínima anterior em vez de falhar a gravação.
+     */
+    private fun createConfiguredEncoder(codecName: String): MediaCodec {
+        var tuned: MediaCodec? = null
+        try {
+            val created = MediaCodec.createByCodecName(codecName)
+            tuned = created
+            created.configure(
+                buildVideoFormat(realtimeTuning = true),
+                null,
+                null,
+                MediaCodec.CONFIGURE_FLAG_ENCODE
+            )
+            realtimeTuningApplied = true
+            return created
+        } catch (throwable: Throwable) {
+            runCatching { tuned?.release() }
+            Log.w(TAG, "encoder $codecName recusou os parâmetros realtime; usando configuração mínima", throwable)
+        }
+
+        val minimal = MediaCodec.createByCodecName(codecName)
+        try {
+            minimal.configure(
+                buildVideoFormat(realtimeTuning = false),
+                null,
+                null,
+                MediaCodec.CONFIGURE_FLAG_ENCODE
+            )
+        } catch (throwable: Throwable) {
+            runCatching { minimal.release() }
+            throw throwable
+        }
+        realtimeTuningApplied = false
+        return minimal
+    }
+
+    private fun logEncoderSummary() {
+        val bridge = cfrBridge?.stats()
+        val sentByBridge = bridge?.let { it.realFrames + it.interpolatedFrames } ?: -1L
+        Log.i(
+            TAG,
+            "resumo encoder: codec=$activeCodecName realtime=$realtimeTuningApplied " +
+                "enviadosPelaPonte=$sentByBridge saidas=$encodedSamples gravados=$writtenSamples " +
+                "descartadosNoInicio=$discardedBeforeGate buracosPTS=$ptsHoles " +
+                "quadrosPerdidosNoEncoder=$framesLostByEncoder " +
+                "maiorIntervalo=${maxPtsDeltaUs / 1000}ms fps=$targetFps"
+        )
+        if (framesLostByEncoder > 0L) {
+            Log.w(
+                TAG,
+                "o ENCODER pulou $framesLostByEncoder frame(s): o gap está depois da ponte CFR " +
+                    "(bitrate/clock do codec), não na câmera"
+            )
+        }
+    }
+
     private fun selectEncoder(): MediaCodecInfo? {
         val compatible = MediaCodecList(MediaCodecList.ALL_CODECS)
             .codecInfos
@@ -531,6 +642,7 @@ class DirectMediaCodecBackend(
     }
 
     companion object {
+        private const val TAG = "SteadyVaultCfr"
         private const val DEQUEUE_TIMEOUT_US = 10_000L
         private const val STOP_TIMEOUT_SECONDS = 4L
         private const val RELEASE_TIMEOUT_MS = 350L

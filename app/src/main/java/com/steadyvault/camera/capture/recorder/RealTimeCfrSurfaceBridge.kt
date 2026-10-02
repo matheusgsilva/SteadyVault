@@ -60,6 +60,10 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var realFrames = 0L
     @Volatile private var interpolatedFrames = 0L
     @Volatile private var droppedFrames = 0L
+    @Volatile private var timingBlends = 0L
+    @Volatile private var gapFilledFrames = 0L
+    @Volatile private var maxIntervalNs = 0L
+    private val intervalBuckets = LongArray(5)
     @Volatile private var largestFillSlots = 0
     @Volatile private var worstFrameNs = 0L
     @Volatile private var maxBacklogSignals = 0
@@ -102,7 +106,9 @@ class RealTimeCfrSurfaceBridge(
         droppedFrames = droppedFrames,
         largestFillSlots = largestFillSlots,
         worstFrameMs = worstFrameNs / 1_000_000L,
-        maxBacklogSignals = maxBacklogSignals
+        maxBacklogSignals = maxBacklogSignals,
+        timingBlends = timingBlends,
+        gapFilledFrames = gapFilledFrames
     )
 
     private fun logSummary() {
@@ -110,11 +116,32 @@ class RealTimeCfrSurfaceBridge(
         val stats = stats()
         Log.i(
             TAG,
-            "resumo CFR: reais=${stats.realFrames} preenchidos=${stats.interpolatedFrames} " +
-                    "descartados=${stats.droppedFrames} maiorGap=${stats.largestFillSlots}slots " +
-                    "piorFrame=${stats.worstFrameMs}ms filaMax=${stats.maxBacklogSignals} " +
-                    "fps=$fps saida=${outputWidth}x$outputHeight"
+            "resumo CFR: reais=${stats.realFrames} misturaDeTempo=${stats.timingBlends} " +
+                "gapsPreenchidos=${stats.gapFilledFrames} descartados=${stats.droppedFrames} " +
+                "maiorGap=${stats.largestFillSlots}slots piorFrame=${stats.worstFrameMs}ms " +
+                "filaMax=${stats.maxBacklogSignals} fps=$fps saida=${outputWidth}x$outputHeight"
         )
+        val total = intervalBuckets.sum().coerceAtLeast(1L)
+        fun pct(index: Int) = 100L * intervalBuckets[index] / total
+        Log.i(
+            TAG,
+            "sensor: intervalos ±5%=${pct(0)}% ±15%=${pct(1)}% ±30%=${pct(2)}% " +
+                "±50%=${pct(3)}% >50%=${pct(4)}% maiorIntervalo=${maxIntervalNs / 1_000_000L}ms"
+        )
+    }
+
+    /** Histograma do intervalo REAL entre frames do sensor, em desvio relativo ao nominal. */
+    private fun recordSensorInterval(deltaNs: Long, nominalNs: Long) {
+        if (deltaNs > maxIntervalNs) maxIntervalNs = deltaNs
+        val deviation = abs(deltaNs - nominalNs).toDouble() / nominalNs.toDouble()
+        val bucket = when {
+            deviation < 0.05 -> 0
+            deviation < 0.15 -> 1
+            deviation < 0.30 -> 2
+            deviation < 0.50 -> 3
+            else -> 4
+        }
+        intervalBuckets[bucket]++
     }
 
     fun release() {
@@ -137,7 +164,11 @@ class RealTimeCfrSurfaceBridge(
         /** Pior tempo de processamento de um frame (cópia + blends + encoder). */
         val worstFrameMs: Long = 0L,
         /** Maior fila de frames aguardando a thread GL. */
-        val maxBacklogSignals: Int = 0
+        val maxBacklogSignals: Int = 0,
+        /** Saídas misturadas só para corrigir o TEMPO de um frame (jitter), sem gap real. */
+        val timingBlends: Long = 0L,
+        /** Saídas sintetizadas para preencher frames que a câmera realmente perdeu. */
+        val gapFilledFrames: Long = 0L
     )
 
     private fun renderLoop() {
@@ -239,7 +270,7 @@ class RealTimeCfrSurfaceBridge(
             ready.countDown()
 
             val frameIntervalNs = 1_000_000_000L / fps.coerceAtLeast(1)
-            val slotClock = CfrSlotClock(frameIntervalNs)
+            val resampler = CfrTimeResampler(frameIntervalNs)
             var haveLatchedFrame = false
             var timelineStarted = false
             var previousSourceTimestampNs = 0L
@@ -291,7 +322,7 @@ class RealTimeCfrSurfaceBridge(
                     st.updateTexImage()
                     haveLatchedFrame = true
                     previousSourceTimestampNs = st.timestamp
-                    slotClock.start(previousSourceTimestampNs)
+                    resampler.start(previousSourceTimestampNs)
                     copiedTimestampNs = Long.MIN_VALUE
                     outputPtsNs = System.nanoTime()
                     renderExternalToEncoder(
@@ -343,58 +374,64 @@ class RealTimeCfrSurfaceBridge(
                     continue
                 }
 
-                // Posição pelo tempo acumulado (e não pelo delta do par): sem blends falsos
-                // por jitter/timestamps pareados e sem a saída correr à frente do tempo real.
-                val decision = slotClock.next(currentSourceTimestampNs)
+                // Reamostragem pelo tempo EXATO de captura: cada saída (1/fps) usa o frame que
+                // existiria naquele instante. Frame já alinhado passa direto e nítido; frame
+                // atrasado/adiantado ou perdido vira mistura temporal com peso proporcional
+                // ao tempo. Isso corrige o solavanco (conteúdo capturado em instantes
+                // irregulares exibido a intervalos regulares) e o gap com o mesmo mecanismo.
+                val sensorIntervalNs = currentSourceTimestampNs - previousSourceTimestampNs
+                recordSensorInterval(sensorIntervalNs, frameIntervalNs)
+                val outputs = resampler.plan(previousSourceTimestampNs, currentSourceTimestampNs)
                 previousSourceTimestampNs = currentSourceTimestampNs
 
-                if (decision.drop) {
-                    // Câmera acima do FPS nominal: a saída já está à frente; este frame real
-                    // só serve de referência para um eventual blend seguinte.
+                if (outputs == 0) {
+                    // Câmera acima do FPS nominal: nenhum instante de saída cai neste frame.
                     droppedFrames++
                     continue
                 }
 
                 // main3 fix: preserve geometric integrity.
-                // Missing CFR slots are synthesized only by temporal blending between
-                // the two surrounding real frames. No optical-flow warp is applied,
-                // so a repair frame cannot bend straight lines or create local flashes.
-                val interpolationAlphas =
-                    CfrInterpolationPlanner.interpolationAlphas(decision.missingSlots + 1)
-
-                for (alpha in interpolationAlphas) {
-                    renderBlendToEncoder(
-                        st = st,
-                        textureMatrix = textureMatrix,
-                        program = blendProgram,
-                        previousTexture = previousTexture,
-                        externalTexture = externalTexture,
-                        alpha = alpha,
-                        vertices = vertices,
-                        texCoords = texCoords,
-                        display = display,
-                        window = window,
-                        presentationTimeNs = outputPtsNs
-                    )
+                // Frames sintetizados usam somente mistura temporal entre os dois frames reais
+                // vizinhos. Nenhum warp por fluxo óptico é aplicado, então um frame de reparo
+                // não dobra linhas retas nem cria clarões locais.
+                var outputIndex = 0
+                while (outputIndex < outputs) {
+                    val alpha = resampler.alphaAt(outputIndex)
+                    if (alpha >= 1f) {
+                        renderExternalToEncoder(
+                            st = st,
+                            textureMatrix = textureMatrix,
+                            program = externalProgram,
+                            externalTexture = externalTexture,
+                            vertices = vertices,
+                            texCoords = texCoords,
+                            display = display,
+                            window = window,
+                            presentationTimeNs = outputPtsNs
+                        )
+                        realFrames++
+                    } else {
+                        renderBlendToEncoder(
+                            st = st,
+                            textureMatrix = textureMatrix,
+                            program = blendProgram,
+                            previousTexture = previousTexture,
+                            externalTexture = externalTexture,
+                            alpha = alpha,
+                            vertices = vertices,
+                            texCoords = texCoords,
+                            display = display,
+                            window = window,
+                            presentationTimeNs = outputPtsNs
+                        )
+                        interpolatedFrames++
+                        if (outputs == 1) timingBlends++ else gapFilledFrames++
+                    }
                     outputPtsNs += frameIntervalNs
-                    interpolatedFrames++
+                    outputIndex++
                 }
 
-                renderExternalToEncoder(
-                    st = st,
-                    textureMatrix = textureMatrix,
-                    program = externalProgram,
-                    externalTexture = externalTexture,
-                    vertices = vertices,
-                    texCoords = texCoords,
-                    display = display,
-                    window = window,
-                    presentationTimeNs = outputPtsNs
-                )
-                outputPtsNs += frameIntervalNs
-                realFrames++
-
-                if (decision.missingSlots > largestFillSlots) largestFillSlots = decision.missingSlots
+                if (outputs - 1 > largestFillSlots) largestFillSlots = outputs - 1
                 val frameNs = System.nanoTime() - frameStartNs
                 if (frameNs > worstFrameNs) worstFrameNs = frameNs
             }

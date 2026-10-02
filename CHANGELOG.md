@@ -1,3 +1,13 @@
+## main3 — gravação lisa: orientação, tempo exato e encoder sem frame-drop
+
+- **Orientação:** a ponte GPU grava o arquivo já em retrato (metadata 0°) e gira no shader. Os ramos de 90°/270° estavam trocados e o vídeo saía de cabeça para baixo; além disso a rotação assumia que a matriz do `SurfaceTexture` era só um flip vertical, e em aparelhos que a entregam com a rotação embutida a imagem saía esticada. O shader agora escolhe a rotação (0/90/180/270) a partir da matriz real de cada frame; o primeiro frame registra a matriz e a rotação escolhida no logcat.
+- **Solavancos com 60 FPS "redondos":** a ponte gravava PTS uniformes, mas o conteúdo de cada frame foi capturado em instantes irregulares, então o movimento andava desigual sem nenhum frame perdido. Novo `CfrTimeResampler`: para cada instante de saída (1/fps, no relógio do sensor) usa o frame que existiria naquele instante. Frame alinhado (±0,25 frame) passa direto e nítido; frame atrasado ou perdido vira mistura temporal com peso proporcional ao tempo. A grade segue a fase da câmera (PLL de ganho baixo) e é ancorada ao relógio, sem deriva do áudio. Substitui o `CfrSlotClock`, que tolerava ~12 ms de erro de tempo sem corrigir.
+- **Fila do SurfaceTexture:** `startOutput()` zerava o contador e deixava frames antigos presos na fila (um buffer a menos e um frame de atraso permanentes). A thread GL agora esvazia a fila de verdade e é acordada pelo callback do frame, em vez de esperar o poll de 1 ms. A cópia do frame anterior só roda uma vez por frame latched.
+- **Encoder em tempo real:** `KEY_ALLOW_FRAME_DROP=0` (Android 15+), `KEY_PRIORITY=0`, `KEY_OPERATING_RATE=fps`, `KEY_LATENCY=1` e `KEY_MAX_B_FRAMES=0`, os parâmetros das versões 1.8.209–1.8.211 que sustentaram 4K60 sem perdas e que a main3 havia removido. Um frame pulado pelo encoder vira buraco no PTS depois da ponte, onde nada consegue preenchê-lo. Se o codec recusar algum parâmetro, cai para a configuração mínima anterior em vez de falhar a gravação.
+- **Telemetria (logcat, tag `SteadyVaultCfr`):** `resumo CFR` (reais, `misturaDeTempo`, `gapsPreenchidos`, descartados, maior gap, pior frame, fila máxima), `sensor:` (histograma dos intervalos reais do sensor: ±5%/±15%/±30%/±50%/>50%) e `resumo encoder` (frames enviados pela ponte, gravados e perdidos pelo encoder). Indica se um gap veio da câmera, da GPU ou do encoder.
+- Remove `CfrSlotClock` e `CfrSlotClockTest`; adiciona `CfrTimeResamplerTest`.
+- Ajuste fino: `CfrTimeResampler.DEFAULT_SNAP_FRACTION` (0,25). Menor = movimento mais exato e mais mistura; maior = imagem mais nítida e mais tolerância a jitter.
+
 ## 1.8.266 — correção do Looper no início da gravação
 
 - Corrige `No handler given, and current thread has no looper!` ao iniciar 4K60.
