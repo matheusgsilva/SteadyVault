@@ -679,6 +679,7 @@ class RealTimeCfrSurfaceBridge(
         var externalTexture = 0
         var externalProgram = 0
         var ingestProgram = 0
+        var gmc: GlobalMotionEstimator? = null
         val analysisTexture = IntArray(1)
         val analysisFramebuffer = IntArray(1)
         var st: SurfaceTexture? = null
@@ -760,6 +761,16 @@ class RealTimeCfrSurfaceBridge(
             for (slot in ring) slot.framebuffer = createFramebuffer(slot.texture)
             externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_EXTERNAL, lookProfile))
             ingestProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_INGEST)
+            // Movimento global (panorâmica) para alinhar o histórico do filtro temporal. Se a GPU
+            // não suportar, o filtro continua como antes (sem alinhamento).
+            gmc = GlobalMotionEstimator(outputWidth, outputHeight)
+            gmc.initialize()
+            Log.i("SteadyVaultCfr", "movimento global: ${if (gmc.available) "ativo" else "indisponível"}")
+            val gmcShift = FloatArray(2)
+            var gmcSamples = 0L
+            var gmcMoving = 0L
+            var gmcMaxShift = 0f
+            var frameCounter = 0L
 
             // Frame de análise do foco inteligente: orientação do SENSOR (o consumidor rotaciona).
             val analysisWidth = (sourceWidth / 16).coerceIn(160, 320)
@@ -864,8 +875,22 @@ class RealTimeCfrSurfaceBridge(
                     externalTexture = externalTexture,
                     historyTexture = lastIngested?.texture ?: 0,
                     vertices = vertices,
-                    texCoords = texCoords
+                    texCoords = texCoords,
+                    targetFramebuffer = destination.framebuffer,
+                    motion = gmc
                 )
+                frameCounter++
+                val estimator = gmc
+                if (estimator != null && estimator.available && frameCounter % 60L == 0L) {
+                    // Telemetria: 1 pixel por segundo.
+                    estimator.readShift(gmcShift)
+                    gmcSamples++
+                    val mag = kotlin.math.hypot(gmcShift[0], gmcShift[1])
+                    if (mag >= 1f) gmcMoving++
+                    if (mag > gmcMaxShift) gmcMaxShift = mag
+                    Log.i("SteadyVaultCfr", "movimento global: dx=%.1f dy=%.1f px/frame (amostras=%d comMovimento=%d máx=%.1f)".format(gmcShift[0], gmcShift[1], gmcSamples, gmcMoving, gmcMaxShift))
+                    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                }
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
                 // O slot vai ser lido pelo contexto de saída: a cópia precisa ter terminado.
                 // Cerca EGL (padrão para compartilhar texturas entre contextos); se a cerca não
@@ -929,6 +954,7 @@ class RealTimeCfrSurfaceBridge(
             surfaceTexture = null
             if (externalProgram != 0) runCatching { GLES20.glDeleteProgram(externalProgram) }
             if (ingestProgram != 0) runCatching { GLES20.glDeleteProgram(ingestProgram) }
+            runCatching { gmc?.release() }
             runCatching { GLES20.glDeleteTextures(1, analysisTexture, 0) }
             runCatching { GLES20.glDeleteFramebuffers(1, analysisFramebuffer, 0) }
             for (slot in ring) {
@@ -1052,10 +1078,22 @@ class RealTimeCfrSurfaceBridge(
         externalTexture: Int,
         historyTexture: Int,
         vertices: FloatBuffer,
-        texCoords: FloatBuffer
+        texCoords: FloatBuffer,
+        targetFramebuffer: Int,
+        motion: GlobalMotionEstimator?
     ) {
         st.getTransformMatrix(textureMatrix)
         val shaderRotation = if (physicalRotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, physicalRotationDegrees)
+        val motionActive = motion != null && motion.available
+        if (motionActive) {
+            motion!!.estimate(
+                externalTexture = externalTexture,
+                textureMatrix = textureMatrix,
+                rotationDegrees = shaderRotation,
+                hasPrevious = historyTexture != 0
+            ) { quadProgram -> bindQuad(quadProgram, vertices, texCoords) }
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, targetFramebuffer)
+        }
         GLES20.glViewport(0, 0, outputWidth, outputHeight)
         GLES20.glUseProgram(program)
         bindQuad(program, vertices, texCoords)
@@ -1077,6 +1115,13 @@ class RealTimeCfrSurfaceBridge(
             GLES20.glGetUniformLocation(program, "uHistoryWeight"),
             if (historyTexture != 0) 1f else 0f
         )
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (motionActive) motion!!.motionTexture else 0)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sMotion"), 2)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uMotionOn"), if (motionActive && historyTexture != 0) 1f else 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uShiftScale"), GlobalMotionEstimator.DOWNSCALE.toFloat())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uShiftRadius"), GlobalMotionEstimator.RADIUS.toFloat())
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uOutTexel"), 1f / outputWidth, 1f / outputHeight)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uNoiseScale"), SensorNoiseHint.motionGateScale())
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uMaxAge"), TEMPORAL_MAX_AGE)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
@@ -1560,6 +1605,11 @@ class RealTimeCfrSurfaceBridge(
             uniform float uNoiseScale;      // escala do limiar de movimento conforme o ISO
             uniform float uMaxAge;          // teto da "idade" de confiança (frames parados)
             uniform vec2 uTexel;
+            uniform sampler2D sMotion;      // 1x1: deslocamento global (dx,dy) em 16 bits
+            uniform float uMotionOn;        // 1 = alinhar o histórico pelo movimento global
+            uniform float uShiftScale;      // pixels de saída por pixel pequeno
+            uniform float uShiftRadius;
+            uniform vec2 uOutTexel;
             vec2 rotateUv(vec2 uv) {
                 if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
                 if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
@@ -1578,7 +1628,15 @@ class RealTimeCfrSurfaceBridge(
                 vec3 accC = c0; float wC = 1.0;
                 vec3 accL = c0; float wL = 1.0;
                 float curLuma = y0;
-                float histLuma = lumaOf(texture2D(sHistory, vUv).rgb);
+                // Histórico alinhado: o pixel p do frame atual estava em p - d no anterior (d inteiro,
+                // em pixels de saída, para amostrar sempre no centro do texel, sem borrar).
+                vec4 m = texture2D(sMotion, vec2(0.5));
+                vec2 d16 = vec2(m.r * 255.0 * 256.0 + m.g * 255.0, m.b * 255.0 * 256.0 + m.a * 255.0);
+                vec2 shiftPx = floor((d16 / 65535.0 * 2.0 * uShiftRadius - uShiftRadius) * uShiftScale + 0.5) * uMotionOn;
+                vec2 hUv = vUv - shiftPx * uOutTexel;
+                vec2 edge = uTexel * 1.5;
+                float inside = step(edge.x, hUv.x) * step(hUv.x, 1.0 - edge.x) * step(edge.y, hUv.y) * step(hUv.y, 1.0 - edge.y);
+                float histLuma = lumaOf(texture2D(sHistory, hUv).rgb);
                 for (int i = 0; i < 4; i++) {
                     vec2 o = vec2((i < 2) ? -1.0 : 1.0, (i == 0 || i == 2) ? -1.0 : 1.0) * uTexel;
                     vec3 n = fetchColor(vUv + o);
@@ -1589,19 +1647,20 @@ class RealTimeCfrSurfaceBridge(
                     accC += n * a; wC += a;
                     accL += n * b; wL += b;
                     curLuma += yn;
-                    histLuma += lumaOf(texture2D(sHistory, vUv + o).rgb);
+                    histLuma += lumaOf(texture2D(sHistory, hUv + o).rgb);
                 }
                 vec3 cf = accC / wC;
                 vec3 lf = accL / wL;
                 vec3 c = cf + vec3(lumaOf(lf) - lumaOf(cf));
 
-                vec4 hist = texture2D(sHistory, vUv);
+                vec4 hist = texture2D(sHistory, hUv);
                 // Movimento medido na média de 5 amostras (ruído ~2,2x menor que pixel a pixel,
                 // menos falso "movimento"), com limiar proporcional ao ruído do ISO.
                 float d = abs(curLuma - histLuma) * 0.2;
                 float still = 1.0 - smoothstep(0.025 * uNoiseScale, 0.07 * uNoiseScale, d);
                 // Confiança "Kalman" por pixel: quantos frames seguidos ele ficou parado (alfa).
                 float age = hist.a * 16.0;
+                still *= inside;
                 float w = uHistoryWeight * still * (age / (age + 1.0));
                 float newAge = min(uMaxAge, (age + 1.0) * still);
                 if (uHistoryWeight < 0.5) newAge = 1.0;
