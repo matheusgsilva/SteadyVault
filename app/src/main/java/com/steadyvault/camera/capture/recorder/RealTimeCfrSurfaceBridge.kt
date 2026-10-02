@@ -249,6 +249,7 @@ class RealTimeCfrSurfaceBridge(
         val ring = ArrayList<Slot>()
         var externalProgram = 0
         var textureProgram = 0
+        var ingestProgram = 0
         var blendProgram = 0
         var motionEstimateProgram = 0
         var motion: MotionInterpolator? = null
@@ -340,6 +341,7 @@ class RealTimeCfrSurfaceBridge(
             }
             externalProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_EXTERNAL))
             textureProgram = createProgram(VERTEX_SHADER_EXTERNAL, VideoLook.insert(FRAGMENT_SHADER_TEXTURE))
+            ingestProgram = createProgram(VERTEX_SHADER_EXTERNAL, FRAGMENT_SHADER_INGEST)
             blendProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_BLEND))
             motionEstimateProgram = createProgram(VERTEX_SHADER_BLEND, FRAGMENT_SHADER_GPU_MOTION_ESTIMATE)
             stabilizationProgram = createProgram(VERTEX_SHADER_BLEND, VideoLook.insert(FRAGMENT_SHADER_SUPER_STABILIZE))
@@ -408,6 +410,8 @@ class RealTimeCfrSurfaceBridge(
             ring.forEach { free.addLast(it) }
             val queue = ArrayDeque<Slot>()
             var previousSlot: Slot? = null
+            // Último frame trazido para o anel (já com a redução de ruído): histórico do filtro temporal.
+            var lastIngested: Slot? = null
             var timelineStarted = false
             var outputPtsNs = 0L
             var lastAnalysisSampleMs = 0L
@@ -422,15 +426,17 @@ class RealTimeCfrSurfaceBridge(
                     val slot = free.removeFirst()
                     slot.timestampNs = source.timestamp
                     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, slot.framebuffer)
-                    renderExternal(
+                    renderIngest(
                         st = source,
                         textureMatrix = textureMatrix,
-                        program = externalProgram,
+                        program = ingestProgram,
                         externalTexture = externalTexture,
+                        historyTexture = lastIngested?.texture ?: 0,
                         vertices = vertices,
                         texCoords = texCoords
                     )
                     GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                    lastIngested = slot
                     queue.addLast(slot)
                     if (queue.size > maxBacklogSignals) maxBacklogSignals = queue.size
                     val ingestNs = System.nanoTime() - ingestStartNs
@@ -475,6 +481,7 @@ class RealTimeCfrSurfaceBridge(
                 while (queue.isNotEmpty()) free.addLast(queue.removeFirst())
                 previousSlot?.let { free.addLast(it) }
                 previousSlot = null
+                lastIngested = null
                 timelineStarted = false
             }
 
@@ -518,6 +525,8 @@ class RealTimeCfrSurfaceBridge(
 
                 // O mesmo timestamp nunca pode virar um segundo frame no arquivo.
                 if (current.timestampNs <= previous.timestampNs) {
+                    // O slot volta para a lista livre: não pode ficar como histórico do filtro.
+                    if (lastIngested === current) lastIngested = previous
                     free.addLast(current)
                     continue
                 }
@@ -643,6 +652,7 @@ class RealTimeCfrSurfaceBridge(
                     runCatching { GLES20.glDeleteTextures(1, intArrayOf(slot.texture), 0) }
                 }
                 if (textureProgram != 0) runCatching { GLES20.glDeleteProgram(textureProgram) }
+                if (ingestProgram != 0) runCatching { GLES20.glDeleteProgram(ingestProgram) }
                 if (externalTexture != 0) {
                     runCatching { GLES20.glDeleteTextures(1, intArrayOf(externalTexture), 0) }
                 }
@@ -758,6 +768,42 @@ class RealTimeCfrSurfaceBridge(
             }
         }
         return best
+    }
+
+    /**
+     * Copia o frame da câmera (OES, com matriz e rotação) para o slot, com redução de ruído
+     * temporal recursiva: onde o frame quase não mudou em relação ao anterior já filtrado, os
+     * dois são misturados (ruído cai ~metade em cena parada); onde mudou (movimento), passa o
+     * frame novo intacto, sem rastro.
+     */
+    private fun renderIngest(
+        st: SurfaceTexture,
+        textureMatrix: FloatArray,
+        program: Int,
+        externalTexture: Int,
+        historyTexture: Int,
+        vertices: FloatBuffer,
+        texCoords: FloatBuffer
+    ) {
+        st.getTransformMatrix(textureMatrix)
+        val shaderRotation = if (physicalRotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, physicalRotationDegrees)
+        GLES20.glViewport(0, 0, outputWidth, outputHeight)
+        GLES20.glUseProgram(program)
+        bindQuad(program, vertices, texCoords)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uTextureMatrix"), 1, false, textureMatrix, 0)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uRotationDegrees"), shaderRotation.toFloat())
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sTexture"), 0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+        // Sem histórico (primeiro frame): peso 0, e uma textura qualquer só para o sampler ficar válido.
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, if (historyTexture != 0) historyTexture else 0)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "sHistory"), 1)
+        GLES20.glUniform1f(
+            GLES20.glGetUniformLocation(program, "uHistoryWeight"),
+            if (historyTexture != 0) TEMPORAL_DENOISE_WEIGHT else 0f
+        )
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
     /** Frame real já no espaço de saída (textura 2D do anel) direto para o encoder, com o look. */
@@ -1112,6 +1158,9 @@ class RealTimeCfrSurfaceBridge(
          */
         private const val RING_SIZE = 6
 
+        /** Peso máximo do frame anterior filtrado no denoise temporal (0 desliga). */
+        private const val TEMPORAL_DENOISE_WEIGHT = 0.5f
+
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
         private const val TIMING_DIAGNOSTICS = true
 
@@ -1209,6 +1258,35 @@ class RealTimeCfrSurfaceBridge(
             0f, 0f, 1f, 0f,
             0f, 0f, 0f, 1f
         )
+
+        // Cópia câmera -> anel com denoise temporal recursivo, gated por movimento.
+        private const val FRAGMENT_SHADER_INGEST = """
+            #extension GL_OES_EGL_image_external : require
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
+            precision mediump float;
+            #endif
+            varying vec2 vUv;
+            uniform samplerExternalOES sTexture;
+            uniform sampler2D sHistory;
+            uniform mat4 uTextureMatrix;
+            uniform float uRotationDegrees;
+            uniform float uHistoryWeight;
+            vec2 rotateUv(vec2 uv) {
+                if (uRotationDegrees > 225.0) return vec2(uv.y, 1.0 - uv.x);
+                if (uRotationDegrees > 135.0) return vec2(1.0 - uv.x, 1.0 - uv.y);
+                if (uRotationDegrees > 45.0) return vec2(1.0 - uv.y, uv.x);
+                return uv;
+            }
+            void main() {
+                vec3 c = texture2D(sTexture, (uTextureMatrix * vec4(rotateUv(vUv), 0.0, 1.0)).xy).rgb;
+                vec3 h = texture2D(sHistory, vUv).rgb;
+                float d = abs(dot(c - h, vec3(0.299, 0.587, 0.114)));
+                float w = uHistoryWeight * (1.0 - smoothstep(0.04, 0.10, d));
+                gl_FragColor = vec4(mix(c, h, w), 1.0);
+            }
+        """
 
         // Frame real já no espaço de saída (textura 2D do anel) com o look.
         private const val FRAGMENT_SHADER_TEXTURE = """
