@@ -1,3 +1,16 @@
+## main5 — correções de gravação da main3 (tempo, lacunas, duplicados, look)
+
+Porta para a main5, mantendo o Super Estável e o foco inteligente em background:
+
+- **Tempo exato:** `CfrTimeResampler` substitui o `CfrSlotClock` (removido junto com o teste). Frame alinhado passa direto; frame atrasado ou perdido vira saída no instante exato. Âncora com histerese (±1 intervalo) e quadro intermediário em vez de repetir frame (era a causa das travadas de 1 frame).
+- **Lacunas da câmera:** interpolação com compensação de movimento na GPU (`MotionInterpolator`/`MotionShaders`: pirâmide de luma, block matching hierárquico, seleção de vetor por pixel, frame nítido quando o movimento é duvidoso), com crossfade como rede de segurança. Substitui o warp de 1 nível da main5 (o estimador leve de 1/16 continua só para o Super Estável).
+- **Super Estável:** os frames recriados usam o mesmo recorte (0,90) dos frames reais estabilizados, para não pulsar de zoom a cada lacuna.
+- **Duplicados:** frame idêntico ao anterior reentregue pela HAL é detectado na GPU (luma 1/32, poucos KB) e descartado.
+- **Encoder:** `ALLOW_FRAME_DROP=0`, `PRIORITY=0`, `OPERATING_RATE=fps`, `LATENCY=1`, `MAX_B_FRAMES=0`, com fallback; contador de buracos de PTS.
+- **Look (`VideoLook`):** nitidez, saturação e curva em S, aplicados uma vez a toda saída (frame real, estabilizado, mistura e recriado). O frame anterior guardado fica cru. A amostra do foco inteligente não recebe o look.
+- **Telemetria (`SteadyVaultCfr`):** `resumo encoder`, `resumo CFR`, `movimento:` (estado, compensados, voltaram ao crossfade, duplicados, repetições da grade) e `sensor:` (histograma dos intervalos).
+- `CfrInterpolationPlanner` deixa de ser usado pela ponte (continua no projeto com os testes).
+
 ## 1.8.266 — correção do Looper no início da gravação
 
 - Corrige `No handler given, and current thread has no looper!` ao iniciar 4K60.
