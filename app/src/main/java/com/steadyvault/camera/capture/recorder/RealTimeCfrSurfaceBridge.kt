@@ -430,7 +430,10 @@ class RealTimeCfrSurfaceBridge(
             fun resetOutput() {
                 while (true) {
                     val stale = frameQueue.poll() ?: break
-                    stale.fence?.let { runCatching { EGLExt.eglDestroySyncKHR(display, it) } }
+                    val staleFence: android.opengl.EGLSync? = stale.fence
+                    if (staleFence != null) {
+                        runCatching { EGLExt.eglDestroySyncKHR(display, staleFence) }
+                    }
                     stale.fence = null
                     freeSlots.add(stale)
                 }
@@ -453,13 +456,14 @@ class RealTimeCfrSurfaceBridge(
                 }
 
                 val current = frameQueue.poll(2, TimeUnit.MILLISECONDS) ?: continue
-                current.fence?.let { fence ->
+                val currentFence: android.opengl.EGLSync? = current.fence
+                if (currentFence != null) {
                     runCatching {
                         EGLExt.eglClientWaitSyncKHR(
-                            display, fence, EGLExt.EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, FENCE_TIMEOUT_NS
+                            display, currentFence, EGLExt.EGL_SYNC_FLUSH_COMMANDS_BIT_KHR, FENCE_TIMEOUT_NS
                         )
                     }
-                    runCatching { EGLExt.eglDestroySyncKHR(display, fence) }
+                    runCatching { EGLExt.eglDestroySyncKHR(display, currentFence) }
                     current.fence = null
                 }
                 if (current.sequence <= lastSequence) orderViolations++
