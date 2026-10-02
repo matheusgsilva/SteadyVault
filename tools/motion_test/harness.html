@@ -107,7 +107,7 @@ window.runTests=function(S){
     const est=(k,lvl,target,prior)=>pass(pEst[k],target,{uTexel:[1/sz[lvl][0],1/sz[lvl][1]],uHasPrior:prior?1:0},
         [['sP',lv[0][lvl]],['sC',lv[1][lvl]],['sFlow',prior||lv[0][lvl]]]);
     est('L2',2,fl2,null);est('L1',1,fl1,fl2);est('L0',0,fl0,fl1);est('L0b',0,flb,fl0);
-    const warp=(a,flow)=>{pass(pWarp,null,{uAlpha:a,uCostLow:cfg.costLow,uCostHigh:cfg.costHigh,uDiffLow:cfg.diffLow,uDiffHigh:cfg.diffHigh},
+    const warp=(a,flow)=>{pass(pWarp,null,{uAlpha:a,uFlowTexel:[1/sz[0][0],1/sz[0][1]],uCostLow:cfg.costLow,uCostHigh:cfg.costHigh,uDiffLow:cfg.diffLow,uDiffHigh:cfg.diffHigh},
         [['sP',tA],['sFlow',flow],['sC',tB]]);return readPng();};
     const mo=warp(t,flb);
     // crossfade: fluxo zero -> custo alto força confiança 0

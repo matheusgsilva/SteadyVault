@@ -1,3 +1,9 @@
+## main3 — preenchimento mais estável (menos riscos e borrado)
+
+- **Frame recriado nítido onde o fluxo falha:** antes, onde o movimento não era confiável o shader misturava os dois frames (fantasma/borrado). Agora usa só o frame mais próximo no tempo, que é nítido. Onde os dois lados discordam, também fica com o mais próximo; onde concordam, faz a média (reduz ruído).
+- **Seleção de vetor por pixel:** testa o fluxo do bloco e o dos 4 vizinhos e escolhe o que melhor casa os dois frames, com viés para o bloco do próprio pixel. Corrige os riscos nas bordas de objetos em movimento.
+- Teste headless (`tools/motion_test`): PSNR do frame central mantido (26,8-34,3 dB contra 27,8-35,0 antes, a pequena queda vem de escolher o frame mais próximo em vez da média), com bordas sem fantasma.
+
 ## main3 — look na GPU: nitidez, cor e contraste
 
 - `VideoLook`: máscara de nitidez (raio 2 px), saturação (1,2) e curva em S suave (0,4) aplicadas na GPU a toda saída enviada ao encoder (frame real, mistura e frame interpolado, com o mesmo código para não pulsar). O frame anterior guardado para a interpolação continua cru, então o look é aplicado uma vez só. Ajuste os três `#define` em `VideoLook.kt` (0 desliga cada um).

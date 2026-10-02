@@ -167,6 +167,7 @@ uniform float uCostHigh;
 uniform float uDiffLow;
 uniform float uDiffHigh;
 uniform float uLook;
+uniform vec2 uFlowTexel;
 LOOK_GLSL
 #ifdef SOURCE_OES
 uniform samplerExternalOES sC;
@@ -191,21 +192,53 @@ vec3 previousColor(vec2 uv) {
     return texture2D(sP, uv).rgb;
 }
 vec2 gFlow;
-float gConfidence;
+float gCostConf;
+float gDiffConf;
 vec3 composite(vec2 uv) {
     float t = uAlpha;
-    vec3 warped = mix(previousColor(uv - t * gFlow), currentColor(uv + (1.0 - t) * gFlow), t);
-    vec3 plain = mix(previousColor(uv), currentColor(uv), t);
-    return mix(plain, warped, gConfidence);
+    vec3 p = previousColor(uv - t * gFlow);
+    vec3 c = currentColor(uv + (1.0 - t) * gFlow);
+    vec3 plainNear = previousColor(uv);
+    vec3 near = p;
+    if (t >= 0.5) {
+        plainNear = currentColor(uv);
+        near = c;
+    }
+    // Os dois lados concordam: media (reduz ruido). Discordam: usa so o mais proximo no
+    // tempo, nitido, em vez de uma mistura borrada. Fluxo nao confiavel: frame mais proximo.
+    vec3 warped = mix(near, mix(p, c, t), gDiffConf);
+    return mix(plainNear, warped, gCostConf);
 }
 void main() {
-    vec4 flow = texture2D(sFlow, vUv);
-    gFlow = flow.rg;
     float t = uAlpha;
-    vec3 p = previousColor(vUv - t * gFlow);
-    vec3 c = currentColor(vUv + (1.0 - t) * gFlow);
-    gConfidence = (1.0 - smoothstep(uCostLow, uCostHigh, flow.b)) *
-                  (1.0 - smoothstep(uDiffLow, uDiffHigh, length(p - c)));
+    // Selecao de vetor: testa o fluxo do bloco e o dos 4 vizinhos e fica com o que melhor
+    // casa os dois frames neste pixel. Corrige as bordas de objetos (riscos) onde o fluxo
+    // bilinear misturaria vetores de fundo e de objeto.
+    vec2 base = (floor(vUv / uFlowTexel) + 0.5) * uFlowTexel;
+    vec4 bestFlow = vec4(0.0);
+    vec3 bestP = vec3(0.0);
+    vec3 bestC = vec3(0.0);
+    float bestDiff = 1.0e9;
+    for (int i = 0; i < 5; i++) {
+        vec2 o = vec2(0.0);
+        if (i == 1) o = vec2(1.0, 0.0);
+        if (i == 2) o = vec2(-1.0, 0.0);
+        if (i == 3) o = vec2(0.0, 1.0);
+        if (i == 4) o = vec2(0.0, -1.0);
+        vec4 f = texture2D(sFlow, base + o * uFlowTexel);
+        vec3 p = previousColor(vUv - t * f.rg);
+        vec3 c = currentColor(vUv + (1.0 - t) * f.rg);
+        float d = length(p - c) + (i == 0 ? 0.0 : 0.08);
+        if (d < bestDiff) {
+            bestDiff = d;
+            bestFlow = f;
+            bestP = p;
+            bestC = c;
+        }
+    }
+    gFlow = bestFlow.rg;
+    gCostConf = 1.0 - smoothstep(uCostLow, uCostHigh, bestFlow.b);
+    gDiffConf = 1.0 - smoothstep(uDiffLow, uDiffHigh, length(bestP - bestC));
     vec3 result = composite(vUv);
     if (uLook > 0.5) {
         vec2 dx = vec2(uLookTexel.x, 0.0);
