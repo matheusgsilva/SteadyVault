@@ -555,11 +555,13 @@ class RealTimeCfrSurfaceBridge(
                             )
                             if (done) flowReady = true else motionFallbacks++
                         }
+                        // Sem movimento compensado (limitador/erro) a mistura de dois frames em
+                        // movimento vira fantasma/borrão: usa o frame real mais próximo, nítido.
                         if (!done) renderBlendToEncoder(
                             program = blendProgram,
                             previousTexture = previous.texture,
                             currentTexture = current.texture,
-                            alpha = alpha,
+                            alpha = if (alpha < 0.5f) 0f else 1f,
                             vertices = vertices,
                             texCoords = texCoords,
                             display = display,
