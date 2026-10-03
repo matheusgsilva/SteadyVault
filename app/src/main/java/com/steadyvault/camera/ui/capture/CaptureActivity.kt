@@ -212,6 +212,7 @@ class CaptureActivity : ComponentActivity() {
     private var previewFpsLastTimestampNs = 0L
     private var previewFpsFrameCount = 0
     private var previewMeasuredFps = 0.0
+    private var previewHudExpanded = false
     private val smartPoseAnalyzer by lazy { SmartPoseFocusAnalyzer() }
     private var smartPoseAnalysisInFlight = false
     private var smartPoseLastTargetAtMs = 0L
@@ -1437,14 +1438,50 @@ class CaptureActivity : ComponentActivity() {
 
     private fun renderPreviewPerformanceOverlay() {
         if (!::previewPerformanceText.isInitialized || !previewOpen) return
-        val targetFps = CaptureSettings.snapshot(this).fps
-        val fpsText = if (previewMeasuredFps > 0.0) {
-            "FPS real ${String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)} / $targetFps"
-        } else {
-            "FPS real -- / $targetFps"
+        previewPerformanceText.text = buildPreviewHudText()
+        previewPerformanceText.setTextColor(previewHudColor())
+        previewPerformanceText.setOnClickListener {
+            previewHudExpanded = !previewHudExpanded
+            renderPreviewPerformanceOverlay()
         }
-        val focusText = smartPoseTargetLabel()?.let { " • foco: $it" }.orEmpty()
-        previewPerformanceText.text = fpsText + focusText
+    }
+
+    /** Verde ≥95% do alvo, amarelo ≥80%, vermelho abaixo; branco enquanto não há medição. */
+    private fun previewHudColor(): Int {
+        val target = CaptureSettings.snapshot(this).fps
+        if (previewMeasuredFps <= 0.0 || target <= 0) return android.graphics.Color.WHITE
+        val ratio = previewMeasuredFps / minOf(target, PREVIEW_HUD_PREVIEW_FPS_CAP)
+        return when {
+            ratio >= 0.95 -> 0xFF7CFC9A.toInt()
+            ratio >= 0.80 -> 0xFFFFD54F.toInt()
+            else -> 0xFFFF6B6B.toInt()
+        }
+    }
+
+    private fun buildPreviewHudText(): String {
+        val settings = CaptureSettings.snapshot(this)
+        val previewTarget = minOf(settings.fps, PREVIEW_HUD_PREVIEW_FPS_CAP)
+        val measured = if (previewMeasuredFps > 0.0) {
+            String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)
+        } else "--"
+        val first = "${CaptureSettings.resolutionLabel(settings.resolution)} • ${settings.fps}fps • prévia $measured/$previewTarget"
+        val exposureNs = idlePreview.latestExposureNs
+        val iso = idlePreview.latestIso
+        val exposure = if (exposureNs > 0L) "1/${(1_000_000_000.0 / exposureNs).toInt().coerceAtLeast(1)}s" else "--"
+        val isoText = if (iso > 0) "ISO $iso" else "ISO --"
+        val focus = smartPoseTargetLabel()?.let { " • foco: $it" }.orEmpty()
+        val second = "$exposure • $isoText$focus"
+        if (!previewHudExpanded) return "$first\n$second"
+        val third = "${settings.codec} • ${settings.bitrateMbps} Mbps • alvo de gravação ${settings.fps} fps (a prévia usa no máx. $PREVIEW_HUD_PREVIEW_FPS_CAP)"
+        val last = lastRecordedFpsSummary()?.let { "\nÚltimo teste: $it" }.orEmpty()
+        return "$first\n$second\n$third$last"
+    }
+
+    private fun lastRecordedFpsSummary(): String? {
+        val fps = com.steadyvault.camera.core.state.LastRecordingStats.fps
+        val nominal = com.steadyvault.camera.core.state.LastRecordingStats.nominalFps
+        if (fps <= 0.0 || nominal <= 0) return null
+        return String.format(java.util.Locale.US, "%.1f / %d fps gravados", fps, nominal)
     }
     private fun showSmartFocusChoices() {
         val enabled = SmartFocusSettings.enabled(this)
@@ -2850,14 +2887,18 @@ class CaptureActivity : ComponentActivity() {
             busy && !keepVideoLive -> "Captura externa ou fallback da câmera.\nO encoder está com prioridade total."
             else -> ""
         }
-        previewPerformanceText.text = when {
+        val busyStatus = when {
             captureBusy && keepPhotoLive -> "Foto de teste • preview e captura na mesma sessão"
             captureBusy -> "Foto externa • câmera exclusiva para máxima qualidade"
             busy && keepVideoLive -> "Vídeo de teste • preview e encoder compartilhando a sessão"
             busy -> "Vídeo externo • câmera exclusiva para máxima qualidade"
-            else -> if (previewMeasuredFps > 0.0) {
-                "FPS real ${String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)} / ${CaptureSettings.snapshot(this).fps}"
-            } else "FPS real -- / ${CaptureSettings.snapshot(this).fps}"
+            else -> null
+        }
+        if (busyStatus != null) {
+            previewPerformanceText.text = busyStatus
+            previewPerformanceText.setTextColor(android.graphics.Color.WHITE)
+        } else {
+            renderPreviewPerformanceOverlay()
         }
         if (message.isNotBlank() && (busy || captureBusy)) previewSettingsText.text = message
         else updatePreviewSettingsText()
@@ -4351,5 +4392,6 @@ class CaptureActivity : ComponentActivity() {
         private const val SMART_POSE_TARGET_RELEASE_MS = 2_400L
         private const val SMART_POSE_FORCE_REFRESH_MS = 1_600L
         private const val SMART_POSE_MIN_MOVE = 0.045
+        private const val PREVIEW_HUD_PREVIEW_FPS_CAP = 60
     }
 }

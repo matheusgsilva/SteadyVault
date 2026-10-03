@@ -57,6 +57,12 @@ class IdleCameraPreviewController(
     private val onPreviewFrame: (photoMode: Boolean) -> Unit = {},
     private val onFrameTimestampNs: (Long) -> Unit = {}
 ) {
+    /** Última exposição/ISO reportadas pela HAL; lidas pelo HUD de teste, sem custo extra. */
+    @Volatile var latestExposureNs: Long = 0L
+        private set
+    @Volatile var latestIso: Int = 0
+        private set
+
     private val cameraManager = context.getSystemService(CameraManager::class.java)
     private val thread = HandlerThread(
         "SteadyVault-LivePreview",
@@ -1068,7 +1074,9 @@ class IdleCameraPreviewController(
                     mainHandler.post { onPreviewFrame(photoMode) }
                 }
                 result.get(CaptureResult.SENSOR_TIMESTAMP)?.let(onFrameTimestampNs)
-                if (!highSpeed && SmartFocusSettings.enabled(context)) {
+                latestExposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
+                latestIso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
+                if (!highSpeed &&SmartFocusSettings.enabled(context)) {
                     updateSmartFocusFromFaces(
                         result = result,
                         device = device,

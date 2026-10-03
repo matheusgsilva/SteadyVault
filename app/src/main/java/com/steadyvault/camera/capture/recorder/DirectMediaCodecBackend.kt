@@ -600,6 +600,7 @@ class DirectMediaCodecBackend(
         if (writtenSamples > 1L && writtenSpanUs > 0L) {
             val recordedFps = (writtenSamples - 1) * 1_000_000.0 / writtenSpanUs
             Log.i(TAG, "FPS gravado no arquivo: %.2f nominal=%d (%.1f%%)".format(recordedFps, targetFps, recordedFps * 100.0 / targetFps))
+            com.steadyvault.camera.core.state.LastRecordingStats.record(recordedFps, targetFps)
         }
         if (framesLostByEncoder > 0L && !directCamera) {
             Log.w(
