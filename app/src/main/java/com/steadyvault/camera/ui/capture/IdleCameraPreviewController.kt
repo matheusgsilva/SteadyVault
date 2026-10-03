@@ -62,6 +62,7 @@ class IdleCameraPreviewController(
         private set
     @Volatile var latestIso: Int = 0
         private set
+    private var smartFocusLastKickMs = 0L
 
     private val cameraManager = context.getSystemService(CameraManager::class.java)
     private val thread = HandlerThread(
@@ -600,7 +601,17 @@ class IdleCameraPreviewController(
             smartFocusLastUpdateMs = smartFocusLastSeenMs
             smartPoseOverrideUntilMs = smartFocusLastSeenMs + SMART_POSE_OVERRIDE_MS
             // Reemitir o request repetido derruba alguns quadros da prévia; só faz isso se a região mudou.
-            if (!unchanged) restoreRepeatingAfterFocus()
+            if (!unchanged) {
+                // AF contínuo da HAL quase ignora só a região: um disparo de AF (como o toque na tela)
+                // faz a lente realmente ir até o alvo; depois volta ao contínuo com a mesma região.
+                val now = SystemClock.elapsedRealtime()
+                if (now - smartFocusLastKickMs >= SMART_FOCUS_KICK_MS) {
+                    smartFocusLastKickMs = now
+                    triggerManualFocus(normalizedX.coerceIn(0f, 1f), normalizedY.coerceIn(0f, 1f), holdFocus = false) {}
+                } else {
+                    restoreRepeatingAfterFocus()
+                }
+            }
         }
     }
 
@@ -1542,6 +1553,7 @@ class IdleCameraPreviewController(
         const val PHOTO_READY_RETRY_MS = 80L
         const val PHOTO_ASPECT_TOLERANCE = 0.08
         const val MANUAL_FOCUS_TIMEOUT_MS = 1_800L
+        private const val SMART_FOCUS_KICK_MS = 2_500L
         const val MANUAL_FOCUS_HOLD_MS = 2_200L
         const val FOCUS_REGION_FRACTION = 0.10f
         const val MAX_PHOTO_FOCUS_RETRIES = 1

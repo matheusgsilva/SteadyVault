@@ -219,6 +219,7 @@ class CaptureService : Service() {
     private var backgroundSmartFocusLastAppliedMs = 0L
     @Volatile private var lastSmartFocusFeedMs = 0L
     @Volatile private var softAe: SoftAutoExposure? = null
+    private var smartFocusAfKickMs = 0L
     @Volatile private var softAePlan: SensorCadencePolicy.Plan? = null
     @Volatile private var softAeLastLogMs = 0L
     @Volatile private var highSpeedCompensation = 0
@@ -2999,19 +3000,41 @@ class CaptureService : Service() {
             } ?: return
         } else null
 
-        val request = runCatching {
+        fun build(afTrigger: Int?): CaptureRequest? = runCatching {
             createRecordRequestBuilder(camera).apply {
                 addTarget(surface)
                 configureCaptureRequest(this, profile, manualPlan)
                 applyFinalWhiteBalance(this, profile)
+                if (afTrigger != null) setSafely(this, CaptureRequest.CONTROL_AF_TRIGGER, afTrigger)
             }.build()
-        }.getOrNull() ?: return
+        }.getOrNull()
+
+        val request = build(null) ?: return
 
         runCatching {
             session.setRepeatingRequest(request, recordingProbe, mainHandler)
         }.onFailure {
             Log.w(LOG_TAG, "Foco inteligente em segundo plano recusado pela sessão", it)
+            return
         }
+
+        // AF contínuo de vídeo quase ignora só a região: um disparo único de AF leva a lente ao alvo
+        // e o CANCEL logo depois devolve o contínuo (com a mesma região). Espaçado para não custar cadência.
+        val now = SystemClock.elapsedRealtime()
+        if (now - smartFocusAfKickMs < SMART_FOCUS_AF_KICK_MS) return
+        smartFocusAfKickMs = now
+        runCatching {
+            build(CameraMetadata.CONTROL_AF_TRIGGER_START)?.let { session.capture(it, recordingProbe, mainHandler) }
+            mainHandler.postDelayed({
+                if (!serviceActive.get() || stopping.get()) return@postDelayed
+                cameraExecutor.execute {
+                    runCatching {
+                        val live = synchronized(resourceLock) { captureSession } ?: return@runCatching
+                        build(CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)?.let { live.capture(it, recordingProbe, mainHandler) }
+                    }
+                }
+            }, SMART_FOCUS_AF_RELEASE_MS)
+        }.onFailure { Log.w(LOG_TAG, "Disparo de AF do foco inteligente recusado", it) }
     }
     private fun applySmartFocusTarget(
         builder: CaptureRequest.Builder,
@@ -4007,6 +4030,8 @@ class CaptureService : Service() {
         private const val FOCUS_LOCK_MAX_WARMUP_FRAMES = 8
         private const val FIXED_CADENCE_MAX_WAIT_FRAMES = 90
         private const val SOFT_AE_INTERVAL_MS = 250L
+        private const val SMART_FOCUS_AF_KICK_MS = 3_000L
+        private const val SMART_FOCUS_AF_RELEASE_MS = 700L
         // Sem granulado: exposição sobe (até ~1/60 s) antes de o ISO passar disto.
         private const val SOFT_AE_COMFORT_ISO = 800
         private const val FOCUS_LOCK_MAX_WARMUP_MS = 250L
