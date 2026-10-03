@@ -1033,7 +1033,8 @@ class IdleCameraPreviewController(
             edgeMode = CaptureSettings.PROCESSING_HIGH_QUALITY
         )
     } else {
-        settings
+        // Sessão regular de preview não aceita 120/240; a gravação high-speed abre a própria sessão.
+        settings.copy(fps = settings.fps.coerceAtMost(CaptureModeStore.FPS_60))
     }
 
     private fun startRepeating(

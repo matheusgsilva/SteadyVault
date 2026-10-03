@@ -220,6 +220,7 @@ class CaptureService : Service() {
     @Volatile private var softAe: SoftAutoExposure? = null
     @Volatile private var softAePlan: SensorCadencePolicy.Plan? = null
     @Volatile private var softAeLastLogMs = 0L
+    @Volatile private var highSpeedCompensation = 0
 
 
 
@@ -647,7 +648,7 @@ class CaptureService : Service() {
             .putInt(CONFIG_WIDTH, camera.videoSize.width)
             .putInt(CONFIG_HEIGHT, camera.videoSize.height)
             .putInt(CONFIG_FPS, camera.targetFps)
-            .remove(CONFIG_HIGH_SPEED)
+            .putBoolean(CONFIG_HIGH_SPEED, camera.highSpeed)
             .putLong(CONFIG_DYNAMIC_RANGE, camera.dynamicRangeProfile)
             .putString(CONFIG_MIME, encoder.mime)
             .apply()
@@ -660,7 +661,7 @@ class CaptureService : Service() {
     ): Pair<CameraProfile, EncoderProfile>? {
         val prefs = getSharedPreferences(CONFIG_CACHE_PREFS, MODE_PRIVATE)
         if (prefs.getString(CONFIG_SIGNATURE, null) != signature) return null
-        if (prefs.getBoolean(CONFIG_HIGH_SPEED, false)) return null
+        val rememberedHighSpeed = prefs.getBoolean(CONFIG_HIGH_SPEED, false)
         val cameraId = prefs.getString(CONFIG_CAMERA_ID, null) ?: return null
         val width = prefs.getInt(CONFIG_WIDTH, 0)
         val height = prefs.getInt(CONFIG_HEIGHT, 0)
@@ -677,7 +678,7 @@ class CaptureService : Service() {
         val characteristics = runCatching {
             getSystemService(CameraManager::class.java).getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return null
-        val fpsRange = resolveFpsRange(characteristics, rememberedSize, fps, false) ?: return null
+        val fpsRange = resolveFpsRange(characteristics, rememberedSize, fps, rememberedHighSpeed) ?: return null
         val dynamicRange = when {
             allowHdr && supportsHlg10(characteristics) -> storedDynamicRange
             allowHdr -> return null
@@ -689,7 +690,7 @@ class CaptureService : Service() {
             videoSize = rememberedSize,
             targetFps = fps,
             fpsRange = fpsRange,
-            highSpeed = false,
+            highSpeed = rememberedHighSpeed,
             dynamicRangeProfile = dynamicRange
         )
         if (mime !in recordingSettings.codecMimes(profile.hdrHlg10)) return null
@@ -732,13 +733,16 @@ class CaptureService : Service() {
             else -> standardDynamicRangeProfile()
         }
         val size = recordingSettings.exactPreferredSize() ?: return null
+        val useHighSpeed = shouldUseHighSpeed(cameraId, characteristics, size, targetFps)
+        // High-speed não combina com HDR 10-bit: com HDR ligado 120/240 só valem no modo regular.
+        if (useHighSpeed && allowHdr) return null
         val profile = createCameraProfile(
             cameraId = cameraId,
             characteristics = characteristics,
             videoSize = size,
             targetFps = targetFps,
-            fpsRange = resolveStandardFpsRange(characteristics, targetFps),
-            highSpeed = false,
+            fpsRange = resolveFpsRange(characteristics, size, targetFps, useHighSpeed) ?: return null,
+            highSpeed = useHighSpeed,
             dynamicRangeProfile = dynamicRange
         )
         if (!matchesRequestedMode(profile, targetFps)) return null
@@ -753,8 +757,46 @@ class CaptureService : Service() {
         targetFps: Int,
         highSpeed: Boolean
     ): Range<Int>? {
-        if (highSpeed) return null
+        if (highSpeed) return highSpeedFpsRange(characteristics, size, targetFps)
         return resolveStandardFpsRange(characteristics, targetFps)
+    }
+
+    /** Faixa constrained high-speed anunciada pela HAL para este tamanho (fixa quando existir). */
+    private fun highSpeedFpsRange(
+        characteristics: CameraCharacteristics,
+        size: Size,
+        targetFps: Int
+    ): Range<Int>? {
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
+        val sizes = runCatching { map.highSpeedVideoSizes?.toList().orEmpty() }.getOrDefault(emptyList())
+        if (size !in sizes) return null
+        val ranges = runCatching { map.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }
+            .getOrDefault(emptyList())
+        return ranges.firstOrNull { it.lower == targetFps && it.upper == targetFps }
+            ?: ranges.firstOrNull { it.upper == targetFps }
+    }
+
+    /**
+     * 120/240 FPS: o modo regular (AE própria, cadência fixa) é preferido quando a matriz de
+     * capacidades o confirmou; senão a sessão constrained high-speed da Samsung, se a HAL a anunciar.
+     */
+    private fun shouldUseHighSpeed(
+        cameraId: String,
+        characteristics: CameraCharacteristics,
+        size: Size,
+        targetFps: Int
+    ): Boolean {
+        if (targetFps < CaptureModeStore.FPS_120) return false
+        val known = CaptureCapabilityMatrix.cached(this)?.forCamera(cameraId)?.modes.orEmpty()
+            .filter { it.size == size && it.fps == targetFps }
+        if (known.any { !it.highSpeed }) return false
+        if (known.any { it.highSpeed }) return true
+        if (highSpeedFpsRange(characteristics, size, targetFps) == null) return false
+        if (targetFps >= CaptureModeStore.FPS_240) return true
+        val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return true
+        val minimum = encoderSurfaceMinFrameDurationNs(map, size)
+        val nominal = 1_000_000_000L / targetFps
+        return minimum > nominal + nominal / 10
     }
 
     /**
@@ -804,7 +846,7 @@ class CaptureService : Service() {
         fpsRange.lower == targetFps && fpsRange.upper == targetFps
 
     private fun CameraProfile.matchesRequestedFpsContract(): Boolean =
-        !highSpeed && hasExactFpsRange()
+        if (highSpeed) fpsRange.upper == targetFps else hasExactFpsRange()
 
 
     private fun Size.toPolicyDimensions() = StrictCaptureModePolicy.Dimensions(width, height)
@@ -1115,8 +1157,8 @@ class CaptureService : Service() {
                     audioAgc = recordingSettings.audioAgc,
                     audioNoiseSuppressor = recordingSettings.audioNoiseSuppressor,
                     audioLowCut = recordingSettings.audioLowCut,
-                    analysisEnabled = SmartFocusSettings.enabled(this) || fixedCadenceWanted(cameraProfile),
-                    analysisIntervalMs = if (fixedCadenceWanted(cameraProfile)) SOFT_AE_INTERVAL_MS else 700L,
+                    analysisEnabled = SmartFocusSettings.enabled(this) || brightnessLoopWanted(cameraProfile),
+                    analysisIntervalMs = if (brightnessLoopWanted(cameraProfile)) SOFT_AE_INTERVAL_MS else 700L,
                     onAnalysisFrame = { rgba, frameWidth, frameHeight ->
                         runSoftAutoExposure(rgba, frameWidth, frameHeight)
                         val nowMs = SystemClock.elapsedRealtime()
@@ -1368,6 +1410,7 @@ class CaptureService : Service() {
         // Toda gravação usa a mesma sessão encoder-only. A tela de captura pode manter
         // sua interface, mas nunca recebe uma segunda saída Camera2 durante o vídeo.
         // Isso reserva ISP, memória e largura de banda exclusivamente para o arquivo.
+        if (profile.highSpeed) highSpeedCompensation = initialHighSpeedCompensation(profile)
         val requestBuilder =
             createRecordRequestBuilder(camera).apply {
                 addTarget(surface)
@@ -2187,7 +2230,12 @@ class CaptureService : Service() {
     }
 
     private fun fixedCadenceWanted(profile: CameraProfile): Boolean =
-        profile.targetFps == CaptureModeStore.FPS_60 && !profile.hdrHlg10 && supportsManualSensor(profile)
+        SensorCadencePolicy.supportsFixedCadence(profile.targetFps) && !profile.highSpeed &&
+            !profile.hdrHlg10 && supportsManualSensor(profile)
+
+    /** Laço de brilho por software: AE própria (cadência fixa) ou compensação de EV (high-speed). */
+    private fun brightnessLoopWanted(profile: CameraProfile): Boolean =
+        fixedCadenceWanted(profile) || profile.highSpeed
 
     private fun initSoftAe(profile: CameraProfile, plan: SensorCadencePolicy.Plan) {
         val exposureRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) ?: return
@@ -2203,9 +2251,13 @@ class CaptureService : Service() {
 
     /** AE própria: ajusta exposição/ISO sem mexer na duração do quadro (cadência fixa). */
     private fun runSoftAutoExposure(rgba: ByteArray, width: Int, height: Int) {
-        val ae = softAe ?: return
         if (!serviceActive.get() || stopping.get()) return
         val profile = selectedCamera ?: return
+        if (profile.highSpeed) {
+            runHighSpeedBrightnessGuard(profile, rgba, width, height)
+            return
+        }
+        val ae = softAe ?: return
         val (luma, sat) = SoftAutoExposure.measure(rgba, width, height)
         if (luma <= 0.0) return
         val before = ae.light
@@ -2245,6 +2297,60 @@ class CaptureService : Service() {
             val session = synchronized(resourceLock) { captureSession } ?: return@execute
             val request = runCatching { buildFixedCadenceRequest(profile, plan) }.getOrNull() ?: return@execute
             runCatching { session.setRepeatingRequest(request, recordingProbe, mainHandler) }
+        }
+    }
+
+    private fun compensationStep(profile: CameraProfile): Double {
+        val step: Double = profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toDouble() ?: 0.5
+        return if (step > 0.0) step else 0.5
+    }
+
+    /** Em 120/240 FPS a exposição máxima é 1/fps: começa com +1 EV para a cena não nascer escura. */
+    private fun initialHighSpeedCompensation(profile: CameraProfile): Int {
+        val range = profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: return 0
+        val base = recordingSettings.exposureCompensation
+        val boost = Math.round(1.0 / compensationStep(profile)).toInt()
+        return (base + boost).coerceIn(range.lower, range.upper)
+    }
+
+    /**
+     * Constrained high-speed mantém o AE da HAL (sem cadência manual). Se o quadro sair escuro,
+     * sobe a compensação de EV aos poucos; se estourar, desce até o valor do usuário. Troca só o
+     * burst repetido: a duração do quadro e o número de quadros nunca mudam.
+     */
+    private fun runHighSpeedBrightnessGuard(profile: CameraProfile, rgba: ByteArray, width: Int, height: Int) {
+        val range = profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: return
+        val (luma, sat) = SoftAutoExposure.measure(rgba, width, height)
+        if (luma <= 0.0) return
+        val base = recordingSettings.exposureCompensation.coerceIn(range.lower, range.upper)
+        val current = highSpeedCompensation
+        val delta = when {
+            sat > 0.25 || luma > 0.62 -> if (luma > 0.8) -2 else -1
+            luma < 0.15 -> 2
+            luma < 0.30 -> 1
+            else -> 0
+        }
+        val next = (current + delta).coerceIn(base, range.upper)
+        val now = SystemClock.elapsedRealtime()
+        if (now - softAeLastLogMs >= 1_000L) {
+            softAeLastLogMs = now
+            Log.i("SteadyVaultCfr", "brilho high-speed: luma=%.2f sat=%.2f EV(índice)=%d->%d máx=%d".format(luma, sat, current, next, range.upper))
+        }
+        if (next == current) return
+        highSpeedCompensation = next
+        cameraExecutor.execute {
+            if (!serviceActive.get() || stopping.get()) return@execute
+            val session = synchronized(resourceLock) { captureSession } as? CameraConstrainedHighSpeedCaptureSession
+                ?: return@execute
+            val camera = synchronized(resourceLock) { cameraDevice } ?: return@execute
+            val surface = synchronized(resourceLock) { recorderSurface } ?: return@execute
+            runCatching {
+                val request = createRecordRequestBuilder(camera).apply {
+                    addTarget(surface)
+                    configureCaptureRequest(this, profile)
+                }.build()
+                session.setRepeatingBurst(session.createHighSpeedRequestList(request), null, mainHandler)
+            }.onFailure { Log.w(LOG_TAG, "Ajuste de brilho high-speed recusado", it) }
         }
     }
 
@@ -2563,6 +2669,9 @@ class CaptureService : Service() {
         setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
         setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
         setSafely(builder, CaptureRequest.CONTROL_AE_LOCK, false)
+        profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)?.let {
+            setSafely(builder, CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, highSpeedCompensation.coerceIn(it.lower, it.upper))
+        }
 
         // Constrained high-speed não herdava o anti-banding do request regular.
         // Em alta taxa isso deixa LEDs ligados em rede aparecerem como quadros/faixas
@@ -3740,7 +3849,7 @@ class CaptureService : Service() {
             "camera_recovery_attempt"
 
         private const val LOG_TAG = "SteadyVaultCapture"
-        private const val CAPTURE_PIPELINE_REVISION = "main5-gpu-only-motion-cfr-superstable-1.9.1"
+        private const val CAPTURE_PIPELINE_REVISION = "main5-pure-120-240-1.0"
         private const val CONFIG_CACHE_PREFS = "steadyvault_capture_fast_start"
         private const val CONFIG_SIGNATURE = "signature"
         private const val CONFIG_CAMERA_ID = "camera_id"

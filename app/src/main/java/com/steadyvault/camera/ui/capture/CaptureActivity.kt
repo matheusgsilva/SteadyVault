@@ -123,6 +123,8 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var modeInfoText: TextView
     private lateinit var fps30Button: TextView
     private lateinit var fps60Button: TextView
+    private lateinit var fps120Button: TextView
+    private lateinit var fps240Button: TextView
     private lateinit var batteryStatusText: TextView
     private lateinit var startButton: View
     private lateinit var stopButton: View
@@ -167,6 +169,8 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var previewLastMediaPlay: ImageView
     private lateinit var previewFps30Button: TextView
     private lateinit var previewFps60Button: TextView
+    private lateinit var previewFps120Button: TextView
+    private lateinit var previewFps240Button: TextView
     private lateinit var previewZoom06Button: TextView
     private lateinit var previewZoom1Button: TextView
     private lateinit var previewZoom3Button: TextView
@@ -408,6 +412,8 @@ class CaptureActivity : ComponentActivity() {
         modeInfoText = findViewById(R.id.modeInfoText)
         fps30Button = findViewById(R.id.fps30Button)
         fps60Button = findViewById(R.id.fps60Button)
+        fps120Button = findViewById(R.id.fps120Button)
+        fps240Button = findViewById(R.id.fps240Button)
         batteryStatusText = findViewById(R.id.batteryStatusText)
         startButton = findViewById(R.id.startButton)
         stopButton = findViewById(R.id.stopButton)
@@ -448,6 +454,8 @@ class CaptureActivity : ComponentActivity() {
         previewLastMediaPlay = findViewById(R.id.previewLastMediaPlay)
         previewFps30Button = findViewById(R.id.previewFps30Button)
         previewFps60Button = findViewById(R.id.previewFps60Button)
+        previewFps120Button = findViewById(R.id.previewFps120Button)
+        previewFps240Button = findViewById(R.id.previewFps240Button)
         previewZoom06Button = findViewById(R.id.previewZoom06Button)
         previewZoom1Button = findViewById(R.id.previewZoom1Button)
         previewZoom3Button = findViewById(R.id.previewZoom3Button)
@@ -643,6 +651,8 @@ class CaptureActivity : ComponentActivity() {
         }
         previewFps30Button.setOnClickListener { selectPreviewRecordingMode(CaptureModeStore.FPS_30) }
         previewFps60Button.setOnClickListener { selectPreviewRecordingMode(CaptureModeStore.FPS_60) }
+        previewFps120Button.setOnClickListener { selectPreviewRecordingMode(CaptureModeStore.FPS_120) }
+        previewFps240Button.setOnClickListener { selectPreviewRecordingMode(CaptureModeStore.FPS_240) }
         previewZoom06Button.setOnClickListener { selectPreviewLensShortcut(0.6f) }
         previewZoom1Button.setOnClickListener { selectPreviewLensShortcut(1f) }
         previewZoom3Button.setOnClickListener { selectPreviewLensShortcut(3f) }
@@ -663,6 +673,14 @@ class CaptureActivity : ComponentActivity() {
             selectRecordingMode(
                 CaptureModeStore.FPS_60
             )
+        }
+
+        listOf(CaptureModeStore.FPS_120 to fps120Button, CaptureModeStore.FPS_240 to fps240Button).forEach { (fps, button) ->
+            button.setOnClickListener {
+                if (!button.isEnabled) return@setOnClickListener
+                Haptics.tap(this)
+                selectRecordingMode(fps)
+            }
         }
 
 
@@ -2747,7 +2765,9 @@ class CaptureActivity : ComponentActivity() {
         val stopping = UiBehaviorRules.isRecordingFinalizing(CaptureStateStore.currentState(this))
         val fpsButtons = listOf(
             CaptureModeStore.FPS_30 to previewFps30Button,
-            CaptureModeStore.FPS_60 to previewFps60Button
+            CaptureModeStore.FPS_60 to previewFps60Button,
+            CaptureModeStore.FPS_120 to previewFps120Button,
+            CaptureModeStore.FPS_240 to previewFps240Button
         )
         fpsButtons.forEach { (fps, button) ->
             val selected = settings.fps == fps
@@ -3314,7 +3334,10 @@ class CaptureActivity : ComponentActivity() {
 
         configureButton(fps30Button, CaptureModeStore.FPS_30)
         configureButton(fps60Button, CaptureModeStore.FPS_60)
-        (fps30Button.parent as? View)?.visibility = if (fps30Button.visibility == View.VISIBLE || fps60Button.visibility == View.VISIBLE) View.VISIBLE else View.GONE
+        configureButton(fps120Button, CaptureModeStore.FPS_120)
+        configureButton(fps240Button, CaptureModeStore.FPS_240)
+        val fpsButtonViews = listOf(fps30Button, fps60Button, fps120Button, fps240Button)
+        (fps30Button.parent as? View)?.visibility = if (fpsButtonViews.any { it.visibility == View.VISIBLE }) View.VISIBLE else View.GONE
 
         val selectedProfile = configuredProfile(settings.fps, settings.resolution)
         val displayedResolution = effectiveMode?.resolutionLabel

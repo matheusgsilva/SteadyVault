@@ -101,6 +101,7 @@ object CaptureCapabilityMatrix {
         private fun bestCandidate(candidates: List<Mode>, fps: Int): Mode? =
             candidates.maxWithOrNull(
                 compareBy<Mode> { resolutionScore(it.resolution) }
+                    .thenBy { if (it.highSpeed) 0 else 1 }
                     .thenBy { if (it.encoderMime == MediaFormat.MIMETYPE_VIDEO_HEVC) 1 else 0 }
             )
 
@@ -256,10 +257,33 @@ object CaptureCapabilityMatrix {
                 }
             }
 
+            // Modos constrained high-speed (120/240 FPS da Samsung): só entram quando a HAL anuncia
+            // o tamanho com faixa de FPS fixa e o encoder de hardware aceita a taxa.
+            val highSpeedSizes = runCatching { streamMap.highSpeedVideoSizes?.toSet().orEmpty() }
+                .getOrDefault(emptySet())
+            for ((resolution, size) in knownSizes()) {
+                if (size !in highSpeedSizes) continue
+                val ranges = runCatching { streamMap.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }
+                    .getOrDefault(emptyList())
+                for (fps in CaptureSettings.supportedFpsValues.filter { it >= 120 }) {
+                    if (!ranges.any { it.upper == fps }) continue
+                    val encoders = encoderCache.getOrPut(Triple(size, fps, true)) {
+                        findHardwareEncoders(size, fps, allowRateMetadataFallback = false)
+                    }
+                    if (encoders.isEmpty()) {
+                        diagnostics += "Câmera $cameraId: ${size.width}×${size.height} $fps FPS high-speed sem encoder de hardware"
+                        continue
+                    }
+                    encoders.forEach { mime ->
+                        modes += Mode(cameraId, resolution, size, fps, highSpeed = true, encoderMime = mime)
+                    }
+                }
+            }
+
         }
 
         val unique = modes
-            .distinctBy { listOf(it.cameraId, it.resolution, it.fps, it.encoderMime) }
+            .distinctBy { listOf(it.cameraId, it.resolution, it.fps, it.highSpeed, it.encoderMime) }
             .sortedWith(
                 compareByDescending<Mode> { it.fps }
                     .thenByDescending { resolutionScore(it.resolution) }
@@ -775,13 +799,13 @@ object CaptureCapabilityMatrix {
         val modes = root.getJSONArray("modes").jsonObjects().mapNotNull { item ->
             val fps = item.getInt("fps")
             val highSpeed = item.optBoolean("highSpeed", false)
-            if (fps !in CaptureSettings.supportedFpsValues || highSpeed) return@mapNotNull null
+            if (fps !in CaptureSettings.supportedFpsValues) return@mapNotNull null
             Mode(
                 cameraId = item.getString("cameraId"),
                 resolution = item.getString("resolution"),
                 size = Size(item.getInt("width"), item.getInt("height")),
                 fps = fps,
-                highSpeed = false,
+                highSpeed = highSpeed,
                 encoderMime = item.getString("encoderMime")
             )
         }
@@ -837,5 +861,5 @@ object CaptureCapabilityMatrix {
 
     private const val CACHE_PREFS = "steadyvault_hardware_capabilities"
     private const val CACHE_KEY = "matrix_json"
-    private const val CACHE_SCHEMA = 10
+    private const val CACHE_SCHEMA = 11
 }

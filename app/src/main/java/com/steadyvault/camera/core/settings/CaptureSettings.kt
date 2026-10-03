@@ -275,6 +275,7 @@ object CaptureSettings {
             else -> 60
         }
         val recommended = when {
+            fps >= 240 -> (at60 * 2.2).toInt()
             fps >= 120 -> (at60 * 1.6).toInt()
             fps >= 60 -> at60
             else -> when (resolution) {
@@ -337,5 +338,5 @@ object CaptureSettings {
         FOCUS_LOCKED,
         FOCUS_OFF
     )
-    private val SUPPORTED_FPS = linkedSetOf(30, 60, 120)
+    private val SUPPORTED_FPS = linkedSetOf(30, 60, 120, 240)
 }
