@@ -1602,7 +1602,10 @@ class CaptureActivity : ComponentActivity() {
             message = "O preview tenta reproduzir a cadência selecionada. A captura final valida a câmera e o encoder.",
             choices = values.map { fps ->
                 val profile = catalog.profile(fps)
-                OneUiDialog.Choice(profile.inlineText, profile.capabilityDescription, profile.selectable)
+                // O título mostra a resolução escolhida nos Ajustes para este FPS, não a máxima do aparelho.
+                val configured = configuredProfile(fps)
+                val title = if (profile.selectable) configured.inlineText else profile.inlineText
+                OneUiDialog.Choice(title, profile.capabilityDescription, profile.selectable)
             },
             selectedIndex = values.indexOf(settings.fps).coerceAtLeast(0)
         ) { position -> selectPreviewRecordingMode(values[position]) }
