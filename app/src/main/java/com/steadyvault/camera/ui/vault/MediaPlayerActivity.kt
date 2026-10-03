@@ -25,7 +25,6 @@ import com.steadyvault.camera.core.playback.PlaybackSettings
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.state.VideoProcessingStateStore
 import com.steadyvault.camera.processing.service.VideoProcessingService
-import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.processing.model.FrameRepairMode
 import com.steadyvault.camera.processing.model.OptimizationConfig
 import com.steadyvault.camera.processing.model.OptimizationPreset
@@ -1336,7 +1335,6 @@ class MediaPlayerActivity : ComponentActivity() {
             message = "Aguardando o arquivo ser liberado com segurança…"
         )
         VideoProcessingService.cancel(this)
-        AutoGapRepairService.cancelAndForget(this, media.file)
         waitForFileRelease(
             media.file,
             onReleased = {

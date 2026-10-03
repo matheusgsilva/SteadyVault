@@ -27,8 +27,6 @@ import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureSettings
 import com.steadyvault.camera.core.state.VideoProcessingStateStore
 import com.steadyvault.camera.processing.service.VideoProcessingService
-import com.steadyvault.camera.processing.auto.AutoGapRepairService
-import com.steadyvault.camera.processing.auto.AutoGapRepairQueueStore
 import com.steadyvault.camera.storage.security.SecondaryVaultLock
 import com.steadyvault.camera.storage.security.TertiaryVaultLock
 import com.steadyvault.camera.storage.security.PrimaryVaultLock
@@ -161,10 +159,8 @@ class PrimaryVaultActivity : FragmentActivity() {
         override fun run() {
             if (!PrimaryVaultLock.isUnlocked(this@PrimaryVaultActivity)) return
             val snapshot = VideoProcessingStateStore.snapshot(this@PrimaryVaultActivity)
-            val autoJob = AutoGapRepairQueueStore.runningJob(this@PrimaryVaultActivity)
             when {
                 snapshot.running -> updateOptimizationUi(snapshot)
-                autoJob != null -> updateProcessingUi(autoJob.sourcePath, autoJob.progress, autoJob.message, "Reparo")
                 else -> { refresh(); return }
             }
             mainHandler.postDelayed(this, OPTIMIZATION_REFRESH_MS)
@@ -194,18 +190,6 @@ class PrimaryVaultActivity : FragmentActivity() {
                             intent.getIntExtra(VideoProcessingService.EXTRA_PROGRESS, 0),
                             intent.getStringExtra(VideoProcessingService.EXTRA_MESSAGE).orEmpty(),
                             "Processamento"
-                        )
-                        scheduleOptimizationRefresh()
-                    } else mainHandler.postDelayed({ refresh() }, 100L)
-                }
-                AutoGapRepairService.ACTION_STATE -> {
-                    val running = intent.getBooleanExtra(AutoGapRepairService.EXTRA_RUNNING, false)
-                    if (running) {
-                        updateProcessingUi(
-                            intent.getStringExtra(AutoGapRepairService.EXTRA_SOURCE_PATH),
-                            intent.getIntExtra(AutoGapRepairService.EXTRA_PROGRESS, 0),
-                            intent.getStringExtra(AutoGapRepairService.EXTRA_MESSAGE).orEmpty(),
-                            "Reparo"
                         )
                         scheduleOptimizationRefresh()
                     } else mainHandler.postDelayed({ refresh() }, 100L)
@@ -1506,14 +1490,11 @@ class PrimaryVaultActivity : FragmentActivity() {
         trashLabel.text = "Lixeira"
         trashLabel.contentDescription = if (page.trashCount == 0) "Lixeira" else "Lixeira, ${page.trashCount} item(ns)"
         applyGalleryView(page.optimization)
-        val autoJob = if (!page.optimization.running) AutoGapRepairQueueStore.runningJob(this) else null
-        if (autoJob != null) adapter.updateProcessing(autoJob.sourcePath, autoJob.progress)
         if (restorePosition >= 0 && mediaGrid.visibility == View.VISIBLE) {
             mediaGrid.setSelectionFromTop(restorePosition, restoreTop)
         }
         storageText.text = when {
             page.optimization.running -> "Processamento ${page.optimization.progress}% • ${page.optimization.message}"
-            autoJob != null -> "Reparo ${autoJob.progress}% • ${autoJob.message}"
             else -> "${page.total} mídia(s) • ${VaultRepository.formatBytes(page.usedBytes)} • privado até exportar"
         }
         updateLockUi()
@@ -1698,7 +1679,6 @@ class PrimaryVaultActivity : FragmentActivity() {
                     1 -> showMediaDetails(item)
                     2 -> {
                         VideoProcessingService.cancel(this)
-                        AutoGapRepairService.cancelAndForget(this, item.file)
                         Toast.makeText(this, "Cancelando processamento…", Toast.LENGTH_SHORT).show()
                         scheduleOptimizationRefresh()
                     }
@@ -1834,7 +1814,6 @@ class PrimaryVaultActivity : FragmentActivity() {
             message = "Aguardando o arquivo ser liberado com segurança…"
         )
         VideoProcessingService.cancel(this)
-        AutoGapRepairService.cancelAndForget(this, item.file)
         val deadline = SystemClock.uptimeMillis() + PROCESSING_RELEASE_TIMEOUT_MS
         fun check() {
             if (isFinishing || isDestroyed) {
@@ -1881,7 +1860,6 @@ class PrimaryVaultActivity : FragmentActivity() {
         if (optimizationReceiverRegistered) return
         val filter = IntentFilter().apply {
             addAction(VideoProcessingService.ACTION_STATE)
-            addAction(AutoGapRepairService.ACTION_STATE)
         }
         optimizationReceiverRegistered = runCatching {
             ContextCompat.registerReceiver(
@@ -1902,7 +1880,7 @@ class PrimaryVaultActivity : FragmentActivity() {
 
     private fun scheduleOptimizationRefresh() {
         mainHandler.removeCallbacks(optimizationRefresh)
-        if (VideoProcessingStateStore.snapshot(this).running || AutoGapRepairQueueStore.runningJob(this) != null) {
+        if (VideoProcessingStateStore.snapshot(this).running) {
             mainHandler.postDelayed(optimizationRefresh, OPTIMIZATION_REFRESH_MS)
         }
     }
