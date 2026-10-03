@@ -252,14 +252,11 @@ class DirectMediaCodecBackend(
         val info = MediaCodec.BufferInfo()
         var videoTrack = -1
 
-        var previousPtsUs = Long.MIN_VALUE
-        var stableIntervals = 0
         var syncRequested = false
         var gateOpen = false
         var firstPtsUs = 0L
 
         val nominalDeltaUs = 1_000_000L / targetFps.coerceAtLeast(1)
-        val toleranceUs = maxOf(1_500L, nominalDeltaUs / 8L)
         val holeThresholdUs = nominalDeltaUs + nominalDeltaUs / 2L
         var lastWrittenPtsUs = Long.MIN_VALUE
 
@@ -295,32 +292,12 @@ class DirectMediaCodecBackend(
                             encodedSamples++
 
                             if (!committed.get()) {
-                                previousPtsUs = Long.MIN_VALUE
-                                stableIntervals = 0
+                                // aquecimento: ainda antes do início oficial do arquivo
                             } else if (!gateOpen) {
-                                if (previousPtsUs != Long.MIN_VALUE && ptsUs > previousPtsUs) {
-                                    val deltaUs = ptsUs - previousPtsUs
-                                    stableIntervals =
-                                        if (abs(deltaUs - nominalDeltaUs) <= toleranceUs) {
-                                            stableIntervals + 1
-                                        } else {
-                                            0
-                                        }
-                                }
-                                previousPtsUs = ptsUs
-
-                                if (
-                                    stableIntervals >= STABLE_INTERVALS_BEFORE_FILE &&
-                                    !syncRequested
-                                ) {
-                                    val params = Bundle().apply {
-                                        putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
-                                    }
-                                    runCatching { mediaCodec.setParameters(params) }
-                                    syncRequested = true
-                                }
-
-                                if (syncRequested && isKeyFrame) {
+                                // Gravação pura: o PTS segue o sensor (pode ser menor que o nominal, ex.:
+                                // HAL limitando 4K a 60). O arquivo começa no primeiro quadro-chave
+                                // após o início; se o codec ainda não mandou um, pede um agora.
+                                if (isKeyFrame) {
                                     gateOpen = true
                                     firstPtsUs = ptsUs
                                     if (
@@ -330,6 +307,12 @@ class DirectMediaCodecBackend(
                                         runCatching { audioRecorder?.start() }
                                             .onFailure { onError(it) }
                                     }
+                                } else if (!syncRequested) {
+                                    val params = Bundle().apply {
+                                        putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                                    }
+                                    runCatching { mediaCodec.setParameters(params) }
+                                    syncRequested = true
                                 }
                             }
 
@@ -653,7 +636,6 @@ class DirectMediaCodecBackend(
         private const val DEQUEUE_TIMEOUT_US = 10_000L
         private const val STOP_TIMEOUT_SECONDS = 4L
         private const val RELEASE_TIMEOUT_MS = 350L
-        private const val STABLE_INTERVALS_BEFORE_FILE = 4
         private const val REMUX_BUFFER_BYTES = 16 * 1024 * 1024
     }
 }

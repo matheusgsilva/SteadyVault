@@ -245,7 +245,9 @@ object CaptureCapabilityMatrix {
                         diagnostics += "Câmera $cameraId: ${size.width}×${size.height} $fps FPS rejeitado pela consulta de sessão em runtime"
                         continue
                     }
-                    if (!publicTimingAccepts && runtimeSessionSupport != true) {
+                    // 120+ FPS: a consulta de sessão aceita a faixa mesmo quando a HAL entrega menos
+                    // (4K "120" chegou a 60 FPS reais); aqui vale só o tempo mínimo de quadro.
+                    if (!publicTimingAccepts && (fps >= 120 || runtimeSessionSupport != true)) {
                         continue
                     }
                     if (!publicTimingAccepts && runtimeSessionSupport == true) {
@@ -869,5 +871,5 @@ object CaptureCapabilityMatrix {
 
     private const val CACHE_PREFS = "steadyvault_hardware_capabilities"
     private const val CACHE_KEY = "matrix_json"
-    private const val CACHE_SCHEMA = 11
+    private const val CACHE_SCHEMA = 12
 }
