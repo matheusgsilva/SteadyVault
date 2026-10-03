@@ -1246,7 +1246,20 @@ class SettingsActivity : FragmentActivity() {
                 refreshCompatibilityOptions()
             }
             resolution -> {
-                resolutionSelections[editingFps] = selected(resolution)
+                // A resolução escolhida vale para todos os FPS que a suportam; os que não suportam
+                // ficam com a maior resolução que conseguem (ex.: 4K -> 4K em 30/60 e 1080p em 120).
+                val chosen = selected(resolution)
+                val matrix = selectedCapabilityMatrix()?.takeIf { it.modes.isNotEmpty() }
+                CaptureSettings.supportedFpsValues.forEach { value ->
+                    resolutionSelections[value] = CaptureModeCatalog.preferredResolution(
+                        context = this,
+                        fps = value,
+                        requestedResolution = chosen,
+                        matrix = matrix,
+                        scanInProgress = capabilityMatrix == null && capabilityScanInProgress
+                    )
+                }
+                resolutionSelections[editingFps] = chosen
                 refreshCompatibilityOptions()
             }
             codec -> enforceHdrCompatibility()
