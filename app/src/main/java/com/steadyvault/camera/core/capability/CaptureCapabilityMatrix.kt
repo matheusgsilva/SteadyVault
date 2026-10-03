@@ -132,8 +132,9 @@ object CaptureCapabilityMatrix {
 
         companion object {
             private fun resolutionScore(value: String): Int = when (value) {
-                CaptureSettings.RESOLUTION_8K -> 4
-                CaptureSettings.RESOLUTION_4K -> 3
+                CaptureSettings.RESOLUTION_8K -> 5
+                CaptureSettings.RESOLUTION_4K -> 4
+                CaptureSettings.RESOLUTION_2K -> 3
                 CaptureSettings.RESOLUTION_1080P -> 2
                 CaptureSettings.RESOLUTION_720P -> 1
                 else -> 0
@@ -614,6 +615,7 @@ object CaptureCapabilityMatrix {
     private fun knownSizes(): List<Pair<String, Size>> = listOf(
         CaptureSettings.RESOLUTION_8K to CaptureSettings.EIGHT_K_SIZE,
         CaptureSettings.RESOLUTION_4K to CaptureSettings.UHD_SIZE,
+        CaptureSettings.RESOLUTION_2K to CaptureSettings.QHD_SIZE,
         CaptureSettings.RESOLUTION_1080P to CaptureSettings.FHD_SIZE,
         CaptureSettings.RESOLUTION_720P to CaptureSettings.HD_SIZE
     )
@@ -703,8 +705,9 @@ object CaptureCapabilityMatrix {
     }
 
     private fun resolutionScore(value: String): Int = when (value) {
-        CaptureSettings.RESOLUTION_8K -> 4
-        CaptureSettings.RESOLUTION_4K -> 3
+        CaptureSettings.RESOLUTION_8K -> 5
+        CaptureSettings.RESOLUTION_4K -> 4
+        CaptureSettings.RESOLUTION_2K -> 3
         CaptureSettings.RESOLUTION_1080P -> 2
         CaptureSettings.RESOLUTION_720P -> 1
         else -> 0
