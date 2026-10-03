@@ -1075,10 +1075,9 @@ class MediaPlayerActivity : ComponentActivity() {
 
     private fun applyAutomaticPlaybackSpeed(frameRate: Float) {
         if (userSelectedPlaybackSpeed) return
-        // 120/240 FPS tocam em câmera lenta por padrão (como o slow motion da câmera Samsung):
-        // a velocidade que deixa a saída em ~30 quadros/s (120 -> 0,25x; 240 -> 0,125x).
-        // Até 60 FPS toca em tempo real. O botão de velocidade muda quando quiser.
-        val targetSpeed = if (frameRate >= 100f) {
+        // Só 240 FPS toca em câmera lenta por padrão (saída em ~30 quadros/s -> 0,125x, como o slow
+        // motion da Samsung). Até 120 FPS toca em tempo real. O botão de velocidade muda quando quiser.
+        val targetSpeed = if (frameRate >= 180f) {
             PLAYBACK_SPEEDS.minByOrNull { kotlin.math.abs(it - 30f / frameRate) } ?: 1f
         } else 1f
         val targetIndex = PLAYBACK_SPEEDS.indexOfFirst { it == targetSpeed }.takeIf { it >= 0 } ?: 4
