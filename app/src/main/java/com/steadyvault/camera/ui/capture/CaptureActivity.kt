@@ -3150,7 +3150,8 @@ class CaptureActivity : ComponentActivity() {
         }
 
         CameraProfileStore.saveCurrent(this)
-        val requestedResolution = settings.resolution
+        // Cada FPS guarda a própria resolução: parte da escolhida para ESTE fps, não da do fps atual.
+        val requestedResolution = CaptureSettings.resolutionForFps(this, targetFps)
         val targetResolution = CaptureModeCatalog.preferredResolution(
             context = this,
             fps = targetFps,
