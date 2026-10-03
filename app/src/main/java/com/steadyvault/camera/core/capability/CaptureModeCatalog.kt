@@ -117,8 +117,10 @@ object CaptureModeCatalog {
         if (confirmed.isNotEmpty()) {
             val ordered = CaptureSettings.supportedResolutionValues
             val startIndex = ordered.indexOf(safeRequested).coerceAtLeast(0)
+            // Sem nada confirmado igual ou abaixo do pedido, sobe só até a menor resolução confirmada
+            // (nunca pula direto para a máxima: pedir 720p não pode virar 4K).
             return ordered.drop(startIndex).firstOrNull { it in confirmed }
-                ?: ordered.firstOrNull { it in confirmed }
+                ?: ordered.take(startIndex).lastOrNull { it in confirmed }
                 ?: safeRequested
         }
         return resolveSelection(context, fps, safeRequested, matrix, scanInProgress).resolutionValue ?: safeRequested
