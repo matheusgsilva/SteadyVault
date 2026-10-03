@@ -594,11 +594,13 @@ class IdleCameraPreviewController(
                 normalizedX.coerceIn(0f, 1f),
                 normalizedY.coerceIn(0f, 1f)
             ) ?: return@post
+            val unchanged = smartFocusRegion?.let { it.rect == region.rect } == true
             smartFocusRegion = region
             smartFocusLastSeenMs = SystemClock.elapsedRealtime()
             smartFocusLastUpdateMs = smartFocusLastSeenMs
             smartPoseOverrideUntilMs = smartFocusLastSeenMs + SMART_POSE_OVERRIDE_MS
-            restoreRepeatingAfterFocus()
+            // Reemitir o request repetido derruba alguns quadros da prévia; só faz isso se a região mudou.
+            if (!unchanged) restoreRepeatingAfterFocus()
         }
     }
 
@@ -1076,7 +1078,7 @@ class IdleCameraPreviewController(
                 result.get(CaptureResult.SENSOR_TIMESTAMP)?.let(onFrameTimestampNs)
                 latestExposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
                 latestIso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
-                if (!highSpeed &&SmartFocusSettings.enabled(context)) {
+                if (!highSpeed && SmartFocusSettings.enabled(context)) {
                     updateSmartFocusFromFaces(
                         result = result,
                         device = device,
