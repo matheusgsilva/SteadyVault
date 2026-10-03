@@ -2225,7 +2225,7 @@ class CaptureActivity : ComponentActivity() {
         val columns = if (options.size <= 5) options.size else 4
         val rowCount = (options.size + columns - 1) / columns
         val gap = dp(2)
-        val cardHeight = dp(if (columns >= 5) 112 else 106)
+        val cardHeight = dp(if (columns >= 5) 124 else 118)
         val profileAreaHeight = rowCount * cardHeight + (rowCount - 1).coerceAtLeast(0) * gap
         previewCameraProfilesScroll.layoutParams = previewCameraProfilesScroll.layoutParams.apply {
             height = profileAreaHeight.coerceAtMost(dp(218))
@@ -2286,10 +2286,10 @@ class CaptureActivity : ComponentActivity() {
                     gravity = Gravity.CENTER
                     includeFontPadding = false
                     setTextColor(getColor(R.color.text_primary))
-                    textSize = 8.5f
+                    textSize = 10f
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
                     maxLines = 1
-                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(13)))
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(15)))
                 content.addView(lensBadge, LinearLayout.LayoutParams(dp(44), dp(44)))
 
                 content.addView(TextView(this).apply {
@@ -2297,8 +2297,9 @@ class CaptureActivity : ComponentActivity() {
                     gravity = Gravity.CENTER
                     includeFontPadding = false
                     setTextColor(getColor(android.R.color.white))
-                    textSize = if (columns >= 5) 8.5f else 9.5f
+                    textSize = if (columns >= 5) 10f else 10.5f
                     maxLines = 2
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
                     setPadding(0, dp(4), 0, 0)
                 }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -2308,10 +2309,11 @@ class CaptureActivity : ComponentActivity() {
                     gravity = Gravity.CENTER
                     includeFontPadding = false
                     setTextColor(if (selected) getColor(R.color.record_yellow) else AppearanceStore.palette(this@CaptureActivity).accent)
-                    textSize = 8.2f
+                    textSize = 9.5f
                     maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
-                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(15)))
+                }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(18)))
 
                 root.addView(
                     content,
@@ -2627,14 +2629,14 @@ class CaptureActivity : ComponentActivity() {
             addView(TextView(this@CaptureActivity).apply {
                 text = title
                 setTextColor(getColor(if (destructive) R.color.record_red else R.color.text_primary))
-                textSize = 13f
+                textSize = 14f
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
             })
             addView(TextView(this@CaptureActivity).apply {
                 text = subtitle
                 setTextColor(getColor(R.color.text_secondary))
-                textSize = 9.5f
-                maxLines = 2
+                textSize = 11f
+                maxLines = 3
                 setPadding(0, dp(3), 0, 0)
             })
         }
