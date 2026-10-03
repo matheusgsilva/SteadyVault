@@ -8,6 +8,7 @@ import com.steadyvault.camera.capture.timing.RecordingStabilizationPolicy
 import com.steadyvault.camera.capture.timing.CaptureCadencePolicy
 import com.steadyvault.camera.capture.timing.StrictCaptureModePolicy
 import com.steadyvault.camera.capture.timing.SensorCadencePolicy
+import com.steadyvault.camera.capture.timing.SoftAutoExposure
 
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.camera.Camera3AStateStore
@@ -215,6 +216,10 @@ class CaptureService : Service() {
     private var backgroundSmartFocusLastY = 0.5f
     private var backgroundSmartFocusLastKind: SmartPoseFocusAnalyzer.Kind? = null
     private var backgroundSmartFocusLastAppliedMs = 0L
+    @Volatile private var lastSmartFocusFeedMs = 0L
+    @Volatile private var softAe: SoftAutoExposure? = null
+    @Volatile private var softAePlan: SensorCadencePolicy.Plan? = null
+    @Volatile private var softAeLastLogMs = 0L
 
 
 
@@ -1199,9 +1204,15 @@ class CaptureService : Service() {
                     audioNoiseSuppressor = recordingSettings.audioNoiseSuppressor,
                     audioLowCut = recordingSettings.audioLowCut,
                     superStabilizationEnabled = recordingSettings.stabilization == CaptureSettings.STABILIZATION_SUPER,
-                    analysisEnabled = SmartFocusSettings.enabled(this),
+                    analysisEnabled = SmartFocusSettings.enabled(this) || fixedCadenceWanted(cameraProfile),
+                    analysisIntervalMs = if (fixedCadenceWanted(cameraProfile)) SOFT_AE_INTERVAL_MS else 700L,
                     onAnalysisFrame = { rgba, frameWidth, frameHeight ->
-                        analyzeBackgroundSmartFocusFrame(rgba, frameWidth, frameHeight)
+                        runSoftAutoExposure(rgba, frameWidth, frameHeight)
+                        val nowMs = SystemClock.elapsedRealtime()
+                        if (nowMs - lastSmartFocusFeedMs >= 700L) {
+                            lastSmartFocusFeedMs = nowMs
+                            analyzeBackgroundSmartFocusFrame(rgba, frameWidth, frameHeight)
+                        }
                     },
                     lookProfile = com.steadyvault.camera.capture.recorder.VideoLook.profileFor(recordingSettings.colorProfile),
                     onError = { throwable ->
@@ -1681,21 +1692,16 @@ class CaptureService : Service() {
         runCatching {
             armRecorderForFirstFrame(token)
             val manualSensor = supportsManualSensor(profile)
+            softAe = null
+            softAePlan = null
             Log.i(
                 "SteadyVaultCfr",
-                "modo de exposição: " + if (
-                    !recordingSettings.autoFpsLowLight && profile.targetFps == CaptureModeStore.FPS_60 &&
-                    !profile.hdrHlg10 && manualSensor
-                ) "CADÊNCIA FIXA (exposição limitada a 1/120 s, menos borrão)"
-                else "AE AUTOMÁTICO (exposição até 1/60 s; desligue 'Auto FPS em pouca luz' para limitar a 1/120 s) " +
-                    "autoFpsLowLight=${recordingSettings.autoFpsLowLight} fps=${profile.targetFps} hdr=${profile.hdrHlg10} manual=$manualSensor"
+                "modo de exposição: " + if (fixedCadenceWanted(profile))
+                    "CADÊNCIA FIXA + AE PRÓPRIA (quadro 16,67 ms fixo; exposição/ISO acompanham a cena; " +
+                        (if (recordingSettings.autoFpsLowLight) "prioridade pouca luz" else "exposição 1/120 s") + ")"
+                else "AE AUTOMÁTICO fps=${profile.targetFps} hdr=${profile.hdrHlg10} manual=$manualSensor"
             )
-            if (
-                !recordingSettings.autoFpsLowLight &&
-                profile.targetFps == CaptureModeStore.FPS_60 &&
-                !profile.hdrHlg10 &&
-                manualSensor
-            ) {
+            if (fixedCadenceWanted(profile)) {
                 // Recupera o caminho AE60 CLEAN usado nas branches iOS-like:
                 // captura primeiro a exposição real do AE e fixa frame-duration/ISO/exposure
                 // para impedir oscilações periódicas da HAL durante 60 FPS.
@@ -1704,6 +1710,7 @@ class CaptureService : Service() {
                     fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso)
                 }
                 if (immediatePlan != null) {
+                    initSoftAe(profile, immediatePlan)
                     val fixedRequest = buildFixedCadenceRequest(profile, immediatePlan)
                         ?: throw IllegalStateException("câmera não disponível para request de cadência fixa")
                     session.setRepeatingRequest(fixedRequest, recordingProbe, mainHandler)
@@ -2318,6 +2325,7 @@ class CaptureService : Service() {
                         "observado exp=${(exposureNs ?: 0L) / 1_000L}us iso=${sensitivityIso ?: 0} -> " +
                         (plan?.let { "exp=${it.exposureTimeNs / 1_000L}us iso=${it.sensitivityIso} dur=${it.frameDurationNs / 1_000L}us" } ?: "sem plano (AE automático)")
                 )
+                plan?.let { initSoftAe(profile, it) }
                 val fixedRequest = plan?.let { buildFixedCadenceRequest(profile, it) }
                 runCatching {
                     captureSession.setRepeatingRequest(fixedRequest ?: autoRequest, recordingProbe, mainHandler)
@@ -2340,6 +2348,66 @@ class CaptureService : Service() {
             configureCaptureRequest(this, profile, plan)
             applyFinalWhiteBalance(this, profile)
         }.build()
+    }
+
+    private fun fixedCadenceWanted(profile: CameraProfile): Boolean =
+        profile.targetFps == CaptureModeStore.FPS_60 && !profile.hdrHlg10 && supportsManualSensor(profile)
+
+    private fun initSoftAe(profile: CameraProfile, plan: SensorCadencePolicy.Plan) {
+        val exposureRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) ?: return
+        val isoRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: return
+        val absCap = minOf(exposureRange.upper, plan.frameDurationNs - 500_000L)
+        softAePlan = plan
+        softAe = SoftAutoExposure(
+            initialLight = plan.exposureTimeNs.toDouble() * plan.sensitivityIso,
+            minLight = exposureRange.lower.toDouble() * isoRange.lower,
+            maxLight = absCap.toDouble() * isoRange.upper
+        )
+    }
+
+    /** AE própria: ajusta exposição/ISO sem mexer na duração do quadro (cadência fixa). */
+    private fun runSoftAutoExposure(rgba: ByteArray, width: Int, height: Int) {
+        val ae = softAe ?: return
+        if (!serviceActive.get() || stopping.get()) return
+        val profile = selectedCamera ?: return
+        val (luma, sat) = SoftAutoExposure.measure(rgba, width, height)
+        if (luma <= 0.0) return
+        val before = ae.light
+        val light = ae.update(luma, sat)
+        val exposureRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) ?: return
+        val isoRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: return
+        val maxFrameDuration = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION) ?: 0L
+        val plan = SensorCadencePolicy.resolveFromLight(
+            fps = profile.targetFps,
+            light = light,
+            exposureMinNs = exposureRange.lower,
+            exposureMaxNs = exposureRange.upper,
+            sensitivityMinIso = isoRange.lower,
+            sensitivityMaxIso = isoRange.upper,
+            maxFrameDurationNs = maxFrameDuration,
+            manualSensorSupported = true,
+            lowLightPriority = recordingSettings.autoFpsLowLight
+        ) ?: return
+        val now = SystemClock.elapsedRealtime()
+        if (now - softAeLastLogMs >= 1_000L) {
+            softAeLastLogMs = now
+            Log.i(
+                "SteadyVaultCfr",
+                "AE própria: luma=%.2f alvo=%.2f sat=%.2f luz=%.3g -> exp=%dus iso=%d".format(
+                    luma, ae.target, sat, light, plan.exposureTimeNs / 1_000L, plan.sensitivityIso
+                )
+            )
+        }
+        if (light == before) return
+        val old = softAePlan
+        if (old != null && old.exposureTimeNs == plan.exposureTimeNs && old.sensitivityIso == plan.sensitivityIso) return
+        softAePlan = plan
+        cameraExecutor.execute {
+            if (!serviceActive.get() || stopping.get()) return@execute
+            val session = synchronized(resourceLock) { captureSession } ?: return@execute
+            val request = runCatching { buildFixedCadenceRequest(profile, plan) }.getOrNull() ?: return@execute
+            runCatching { session.setRepeatingRequest(request, recordingProbe, mainHandler) }
+        }
     }
 
     private fun fixedCadencePlan(
@@ -2759,13 +2827,9 @@ class CaptureService : Service() {
         val surface = synchronized(resourceLock) { recorderSurface } ?: return
         if (!surface.isValid) return
 
-        val fixedCadenceActive =
-            !recordingSettings.autoFpsLowLight &&
-            profile.targetFps == CaptureModeStore.FPS_60 &&
-            !profile.hdrHlg10 &&
-            supportsManualSensor(profile)
+        val fixedCadenceActive = fixedCadenceWanted(profile)
         val manualPlan = if (fixedCadenceActive) {
-            Camera3AStateStore.recentExposure(profile.cameraId)?.let {
+            softAePlan ?: Camera3AStateStore.recentExposure(profile.cameraId)?.let {
                 fixedCadencePlan(profile, it.exposureTimeNs, it.sensitivityIso)
             } ?: return
         } else null
@@ -3796,6 +3860,7 @@ class CaptureService : Service() {
         private const val BACKGROUND_SMART_FOCUS_FORCE_MS = 3_000L
         private const val FOCUS_LOCK_MAX_WARMUP_FRAMES = 8
         private const val FIXED_CADENCE_MAX_WAIT_FRAMES = 90
+        private const val SOFT_AE_INTERVAL_MS = 250L
         private const val FOCUS_LOCK_MAX_WARMUP_MS = 250L
         private const val THREE_A_LOCK_MIN_WARMUP_FRAMES = 4
         private const val THREE_A_LOCK_MAX_WARMUP_FRAMES = 10

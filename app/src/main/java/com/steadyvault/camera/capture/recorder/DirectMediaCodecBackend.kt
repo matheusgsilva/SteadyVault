@@ -47,6 +47,7 @@ class DirectMediaCodecBackend(
     private val superStabilizationEnabled: Boolean = false,
     private val analysisEnabled: Boolean = false,
     private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
+    private val analysisIntervalMs: Long = 700L,
     private val lookProfile: Int = VideoLook.PROFILE_NATURAL,
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
@@ -166,6 +167,7 @@ class DirectMediaCodecBackend(
                 superStabilizationEnabled = superStabilizationEnabled,
                 analysisEnabled = analysisEnabled,
                 onAnalysisFrame = onAnalysisFrame,
+                analysisIntervalMs = analysisIntervalMs,
                 lookProfile = lookProfile,
                 onError = onError
             )

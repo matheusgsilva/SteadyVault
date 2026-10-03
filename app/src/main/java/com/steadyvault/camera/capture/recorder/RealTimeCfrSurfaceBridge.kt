@@ -57,6 +57,7 @@ class RealTimeCfrSurfaceBridge(
     private val superStabilizationEnabled: Boolean = false,
     private val analysisEnabled: Boolean = false,
     private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
+    private val analysisIntervalMs: Long = 700L,
     private val lookProfile: Int = VideoLook.PROFILE_NATURAL,
     private val onError: (Throwable) -> Unit
 ) {
@@ -943,7 +944,7 @@ class RealTimeCfrSurfaceBridge(
 
                 if (analysisEnabled && onAnalysisFrame != null) {
                     val nowMs = SystemClock.elapsedRealtime()
-                    if (nowMs - lastAnalysisSampleMs >= BACKGROUND_ANALYSIS_INTERVAL_MS) {
+                    if (nowMs - lastAnalysisSampleMs >= analysisIntervalMs) {
                         lastAnalysisSampleMs = nowMs
                         readCurrentAnalysisFrame(
                             st = source,
