@@ -422,6 +422,8 @@ class RealTimeCfrSurfaceBridge(
             var timelineStarted = false
             var motionLightUntilNs = 0L
             var outputPtsNs = 0L
+            var pureBaseSensorNs = 0L
+            var pureBasePtsNs = 0L
             var lastSequence = 0L
             var seenGeneration = generation.get()
 
@@ -487,6 +489,8 @@ class RealTimeCfrSurfaceBridge(
                 if (!timelineStarted || previous == null) {
                     resampler.start(current.timestampNs)
                     outputPtsNs = System.nanoTime()
+                    pureBaseSensorNs = current.timestampNs
+                    pureBasePtsNs = outputPtsNs
                     renderTextureToEncoder(
                         program = textureProgram,
                         texture = current.texture,
@@ -514,7 +518,10 @@ class RealTimeCfrSurfaceBridge(
                 // existiria naquele instante. Frame alinhado passa direto e nítido; frame
                 // perdido vira interpolação com compensação de movimento.
                 recordSensorInterval(current.timestampNs - previous.timestampNs, frameIntervalNs)
-                val outputs = resampler.plan(previous.timestampNs, current.timestampNs)
+                // GRAVAÇÃO PURA: um frame da câmera = um frame no arquivo, com o instante real do
+                // sensor como PTS. Nada de frame criado, repetido ou descartado.
+                val outputs = if (PURE_FRAMES) 1 else resampler.plan(previous.timestampNs, current.timestampNs)
+                if (PURE_FRAMES) outputPtsNs = pureBasePtsNs + (current.timestampNs - pureBaseSensorNs)
 
                 if (outputs == 0) {
                     // Câmera acima do FPS nominal: nenhum instante de saída cai neste frame.
@@ -553,7 +560,9 @@ class RealTimeCfrSurfaceBridge(
                     // igualmente espaçadas entre o frame anterior e o atual. Deixar a fase da
                     // grade decidir colava a intermediária no frame anterior (alfa ~0): uma
                     // repetição seguida de salto duplo, visível em panorâmica (medido no mp4).
-                    val alpha = if (outputs >= 2 && outputIndex < outputs - 1) {
+                    val alpha = if (PURE_FRAMES) {
+                        1f
+                    } else if (outputs >= 2 && outputIndex < outputs - 1) {
                         (outputIndex + 1).toFloat() / outputs
                     } else {
                         resampler.alphaAt(outputIndex)
@@ -1523,7 +1532,10 @@ class RealTimeCfrSurfaceBridge(
          * o pixel da câmera. Continuam: reamostragem CFR por timestamp (frames sem repetir) e
          * foco inteligente. Troque para false para voltar ao processamento.
          */
-        private const val ORIGINAL_IMAGE = false
+        private const val ORIGINAL_IMAGE = true
+
+        /** Sem reamostragem CFR: nenhum frame é criado, repetido ou descartado (PTS = tempo do sensor). */
+        private const val PURE_FRAMES = true
         private const val APPLY_LOOK = VideoLook.ENABLED
 
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */

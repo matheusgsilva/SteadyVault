@@ -20,7 +20,7 @@ internal object VideoLook {
      * true = só COR (saturação + curva de contraste) pelo perfil escolhido; a NITIDEZ da GPU fica
      * em 0 em todos os perfis (ela amplificava o grão). false = nenhum ajuste de cor.
      */
-    const val ENABLED = true
+    const val ENABLED = false
 
     const val PROFILE_NATURAL = 0
     const val PROFILE_SOFT = 1
