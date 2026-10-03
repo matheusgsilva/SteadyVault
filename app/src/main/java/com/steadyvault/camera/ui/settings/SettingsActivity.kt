@@ -412,7 +412,7 @@ class SettingsActivity : FragmentActivity() {
             "Priorizar qualidade em pouca luz",
             "Deixa a exposição subir até ~1/60 s antes de aumentar o ISO: menos grão no escuro, um pouco mais de borrão em movimento. Desligado: exposição 1/120 s.",
             snapshot.autoFpsLowLight
-        )
+        ).apply { visibility = View.GONE }
         lockAeAwbForCadence = addSwitch(
             "Travar AE/AWB para preservar cadência",
             "Desligado: exposição, ISO e balanço de branco continuam se adaptando durante toda a gravação. Ligado: prioriza cadência e estabilidade de exposição/cor.",
@@ -1337,7 +1337,7 @@ class SettingsActivity : FragmentActivity() {
     ): CaptureSettings.Snapshot = base.copy(
         resolution = resolutionValue,
         fps = fpsValue,
-        autoFpsLowLight = autoFpsLowLight.isChecked,
+        autoFpsLowLight = true,
         codec = selected(codec),
         bitrateMbps = selected(bitrate).toIntOrNull()?.coerceIn(4, 240) ?: base.bitrateMbps,
         iFrameIntervalSeconds = selected(iframe).toIntOrNull()?.coerceIn(1, 10) ?: base.iFrameIntervalSeconds,

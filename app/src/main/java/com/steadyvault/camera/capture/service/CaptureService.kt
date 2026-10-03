@@ -1698,7 +1698,7 @@ class CaptureService : Service() {
                 "SteadyVaultCfr",
                 "modo de exposição: " + if (fixedCadenceWanted(profile))
                     "CADÊNCIA FIXA + AE PRÓPRIA (quadro 16,67 ms fixo; exposição/ISO acompanham a cena; " +
-                        (if (recordingSettings.autoFpsLowLight) "prioridade pouca luz" else "exposição 1/120 s") + ")"
+                        "exposição 1/120 s, até ~1/60 s se o ISO passar de $SOFT_AE_COMFORT_ISO" + ")"
                 else "AE AUTOMÁTICO fps=${profile.targetFps} hdr=${profile.hdrHlg10} manual=$manualSensor"
             )
             if (fixedCadenceWanted(profile)) {
@@ -2386,7 +2386,7 @@ class CaptureService : Service() {
             sensitivityMaxIso = isoRange.upper,
             maxFrameDurationNs = maxFrameDuration,
             manualSensorSupported = true,
-            lowLightPriority = recordingSettings.autoFpsLowLight,
+            lowLightPriority = true,
             comfortIso = SOFT_AE_COMFORT_ISO
         ) ?: return
         val now = SystemClock.elapsedRealtime()
