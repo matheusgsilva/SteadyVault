@@ -205,6 +205,7 @@ object CaptureStateStore {
     private fun resolutionValueFromLabel(label: String): String = when {
         label.contains("8K", ignoreCase = true) -> CaptureSettings.RESOLUTION_8K
         label.contains("4K", ignoreCase = true) -> CaptureSettings.RESOLUTION_4K
+        label.contains("2K", ignoreCase = true) || label.contains("QHD", ignoreCase = true) || label.contains("1440") -> CaptureSettings.RESOLUTION_2K
         label.contains("1080", ignoreCase = true) -> CaptureSettings.RESOLUTION_1080P
         label.contains("720", ignoreCase = true) -> CaptureSettings.RESOLUTION_720P
         else -> CaptureSettings.RESOLUTION_4K

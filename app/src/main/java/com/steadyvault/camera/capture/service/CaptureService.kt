@@ -3811,6 +3811,9 @@ class CaptureService : Service() {
             UHD_SIZE ->
                 "4K UHD"
 
+            CaptureSettings.QHD_SIZE ->
+                CaptureSettings.resolutionLabel(CaptureSettings.RESOLUTION_2K)
+
             FHD_SIZE ->
                 "1080p"
 
@@ -3824,6 +3827,7 @@ class CaptureService : Service() {
     private fun resolutionValue(size: Size): String = when (size) {
         EIGHT_K_SIZE -> CaptureSettings.RESOLUTION_8K
         UHD_SIZE -> CaptureSettings.RESOLUTION_4K
+        CaptureSettings.QHD_SIZE -> CaptureSettings.RESOLUTION_2K
         FHD_SIZE -> CaptureSettings.RESOLUTION_1080P
         HD_SIZE -> CaptureSettings.RESOLUTION_720P
         else -> recordingSettings.resolution
