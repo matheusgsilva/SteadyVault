@@ -130,7 +130,7 @@ object CapabilityReport {
                 if (summaries.isNotEmpty()) lines += "Câmera $cameraId: ${summaries.joinToString(" • ")}"
             }
         }
-        matrix?.diagnostics?.takeLast(12)?.takeIf { it.isNotEmpty() }?.let { diagnostics ->
+        matrix?.diagnostics?.takeLast(30)?.takeIf { it.isNotEmpty() }?.let { diagnostics ->
             lines += "Diagnóstico da análise"
             lines += diagnostics
         }

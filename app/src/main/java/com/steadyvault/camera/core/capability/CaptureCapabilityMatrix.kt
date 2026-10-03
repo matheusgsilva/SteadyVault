@@ -261,6 +261,14 @@ object CaptureCapabilityMatrix {
             // o tamanho com faixa de FPS fixa e o encoder de hardware aceita a taxa.
             val highSpeedSizes = runCatching { streamMap.highSpeedVideoSizes?.toSet().orEmpty() }
                 .getOrDefault(emptySet())
+            diagnostics += "Câmera $cameraId: high-speed anunciado = " + highSpeedSizes
+                .sortedByDescending { it.width.toLong() * it.height }
+                .take(6)
+                .joinToString(" • ") { size ->
+                    val rs = runCatching { streamMap.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }
+                        .getOrDefault(emptyList())
+                    "${size.width}×${size.height} " + rs.joinToString("/") { "${it.lower}-${it.upper}" }
+                }.ifBlank { "nenhum" }
             for ((resolution, size) in knownSizes()) {
                 if (size !in highSpeedSizes) continue
                 val ranges = runCatching { streamMap.getHighSpeedVideoFpsRangesFor(size)?.toList().orEmpty() }

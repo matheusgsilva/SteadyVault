@@ -107,6 +107,16 @@ object CaptureModeCatalog {
         val safeRequested = requestedResolution.takeIf { it in CaptureSettings.supportedResolutionValues }
             ?: CaptureSettings.RESOLUTION_4K
         if (matrix?.bestMode(safeRequested, fps) != null) return safeRequested
+        // Taxa alta (ex.: 120/240) costuma existir só em resoluções menores: usa a maior confirmada
+        // que não passe da pedida; se não houver, a maior disponível.
+        val confirmed = matrix?.modes.orEmpty().filter { it.fps == fps }.map { it.resolution }.toSet()
+        if (confirmed.isNotEmpty()) {
+            val ordered = CaptureSettings.supportedResolutionValues
+            val startIndex = ordered.indexOf(safeRequested).coerceAtLeast(0)
+            return ordered.drop(startIndex).firstOrNull { it in confirmed }
+                ?: ordered.firstOrNull { it in confirmed }
+                ?: safeRequested
+        }
         return resolveSelection(context, fps, safeRequested, matrix, scanInProgress).resolutionValue ?: safeRequested
     }
 
@@ -116,8 +126,7 @@ object CaptureModeCatalog {
             val mode = matrix.maximumMode(fps)
             if (mode == null) editor.remove(resolutionKey(fps)) else editor.putString(resolutionKey(fps), mode.resolution)
         }
-        editor.remove("resolution_120").remove("resolution_240")
-            .remove("high_speed_30").remove("high_speed_60").remove("high_speed_120").remove("high_speed_240")
+        editor.remove("high_speed_30").remove("high_speed_60").remove("high_speed_120").remove("high_speed_240")
             .apply()
     }
 
