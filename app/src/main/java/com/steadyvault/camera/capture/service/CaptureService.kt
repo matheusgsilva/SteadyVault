@@ -1203,7 +1203,7 @@ class CaptureService : Service() {
                     audioAgc = recordingSettings.audioAgc,
                     audioNoiseSuppressor = recordingSettings.audioNoiseSuppressor,
                     audioLowCut = recordingSettings.audioLowCut,
-                    superStabilizationEnabled = recordingSettings.stabilization == CaptureSettings.STABILIZATION_SUPER,
+                    superStabilizationEnabled = false, // gravação pura: sem estabilização na GPU
                     analysisEnabled = SmartFocusSettings.enabled(this) || fixedCadenceWanted(cameraProfile),
                     analysisIntervalMs = if (fixedCadenceWanted(cameraProfile)) SOFT_AE_INTERVAL_MS else 700L,
                     onAnalysisFrame = { rgba, frameWidth, frameHeight ->

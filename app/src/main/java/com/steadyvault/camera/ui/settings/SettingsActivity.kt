@@ -353,7 +353,7 @@ class SettingsActivity : FragmentActivity() {
             "Perfil de cor da gravação",
             colorProfileOptions(snapshot),
             snapshot.colorProfile
-        )
+        ).also(::hideSpinner)
         addInfo("A prioridade de fluidez fica sempre ativa: o app usa uma única Surface do encoder e preserva os timestamps reais sem interpolar, repetir ou remapear quadros.")
 
         addSection("Câmera e estabilização")
@@ -382,13 +382,12 @@ class SettingsActivity : FragmentActivity() {
             "Redução de ruído da imagem",
             processingOptions(noise = true, currentValue = snapshot.noiseReduction),
             snapshot.noiseReduction
-        )
+        ).also(::hideSpinner)
         edge = addSpinner(
             "Processamento de nitidez e contornos",
             processingOptions(noise = false, currentValue = snapshot.edgeMode),
             snapshot.edgeMode
-        )
-        addInfo("Em 4K60, Redução de ruído ou Nitidez em Alta qualidade podem aumentar o custo do ISP. A opção escolhida continua sendo respeitada.")
+        ).also(::hideSpinner)
         antibanding = addSpinner(
             "Correção de cintilação da iluminação",
             antibandingOptions(snapshot.antibanding),
@@ -403,7 +402,7 @@ class SettingsActivity : FragmentActivity() {
             "Temperatura / tonalidade de cor",
             yellowReductionOptions(snapshot.yellowReduction),
             snapshot.yellowReduction
-        )
+        ).also(::hideSpinner)
         lockWhiteBalance = addSwitch(
             "Travar cor ao começar a gravar",
             "Depois que a câmera estabiliza, impede mudanças de amarelo para azul no meio do vídeo.",
@@ -411,14 +410,14 @@ class SettingsActivity : FragmentActivity() {
         )
         autoFpsLowLight = addSwitch(
             "Priorizar qualidade em pouca luz",
-            "Mantém o FPS exatamente no valor escolhido no app. Na main3, gaps curtos são preenchidos durante a própria gravação pela ponte CFR da GPU.",
+            "Deixa a exposição subir até ~1/60 s antes de aumentar o ISO: menos grão no escuro, um pouco mais de borrão em movimento. Desligado: exposição 1/120 s.",
             snapshot.autoFpsLowLight
         )
         lockAeAwbForCadence = addSwitch(
             "Travar AE/AWB para preservar cadência",
             "Desligado: exposição, ISO e balanço de branco continuam se adaptando durante toda a gravação. Ligado: prioriza cadência e estabilidade de exposição/cor.",
             snapshot.lockAeAwbForCadence
-        )
+        ).apply { visibility = View.GONE }
         previewMode = addSpinner(
             "Visualização da câmera antes de capturar",
             listOf(
@@ -1343,16 +1342,16 @@ class SettingsActivity : FragmentActivity() {
         bitrateMbps = selected(bitrate).toIntOrNull()?.coerceIn(4, 240) ?: base.bitrateMbps,
         iFrameIntervalSeconds = selected(iframe).toIntOrNull()?.coerceIn(1, 10) ?: base.iFrameIntervalSeconds,
         hdrHlg10 = false,
-        colorProfile = selected(colorProfile),
+        colorProfile = CaptureSettings.COLOR_NATURAL,
         stabilization = selected(stabilization),
         focusMode = selected(focus),
-        noiseReduction = selected(noiseReduction),
-        edgeMode = selected(edge),
+        noiseReduction = CaptureSettings.PROCESSING_AUTO,
+        edgeMode = CaptureSettings.PROCESSING_AUTO,
         antibanding = selected(antibanding),
         whiteBalanceMode = selected(whiteBalance),
         yellowReduction = selected(yellowReduction),
         lockWhiteBalance = lockWhiteBalance.isChecked,
-        lockAeAwbForCadence = lockAeAwbForCadence.isChecked,
+        lockAeAwbForCadence = false,
         previewMode = CaptureSettings.PREVIEW_OFF,
         exposureCompensation = selected(exposure).toIntOrNull()?.coerceIn(-12, 12) ?: 0,
         thermalProtection = thermal.isChecked,
@@ -1929,7 +1928,6 @@ class SettingsActivity : FragmentActivity() {
         val activeFps = if (::fps.isInitialized) selected(fps).toIntOrNull() ?: CaptureSettings.snapshot(this).fps else CaptureSettings.snapshot(this).fps
         val specs = listOf(
             FeatureOptionSpec(CaptureSettings.STABILIZATION_AUTO, "Automática", "Escolhe Preview stabilization, EIS, OIS ou Off conforme o formato e as capacidades. Acima de 60 FPS prioriza cadência."),
-            FeatureOptionSpec(CaptureSettings.STABILIZATION_SUPER, "Super Estável", "Combina estabilização da HAL quando disponível com suavização e crop dinâmico na GPU da main5. Feito para movimento forte sem pós-processamento."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_PREVIEW, "Preview stabilization", "Estabilização avançada da câmera."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_EIS, "EIS eletrônica", "Recorta a imagem e usa processamento eletrônico."),
             FeatureOptionSpec(CaptureSettings.STABILIZATION_OIS, "OIS óptica", "Usa o movimento físico da lente."),
@@ -2185,7 +2183,21 @@ class SettingsActivity : FragmentActivity() {
 
     }
 
+    /** Configs de processamento de imagem/cor removidas: a gravação é pura. */
+    private val hiddenSpinners = mutableSetOf<Spinner>()
+
+    private fun hideSpinner(spinner: Spinner) {
+        hiddenSpinners.add(spinner)
+        spinner.visibility = View.GONE
+        labelBySpinner[spinner]?.visibility = View.GONE
+        helperBySpinner[spinner]?.visibility = View.GONE
+    }
+
     private fun updateSpinnerVisibility(spinner: Spinner) {
+        if (spinner in hiddenSpinners) {
+            hideSpinner(spinner)
+            return
+        }
         val count = (spinner.adapter as ChoiceSpinnerAdapter).count
         val visible = count > 1 || !capabilityScanCompleted
         spinner.visibility = if (visible) View.VISIBLE else View.GONE

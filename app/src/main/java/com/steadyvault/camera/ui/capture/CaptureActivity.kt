@@ -1333,7 +1333,6 @@ class CaptureActivity : ComponentActivity() {
         if (hasMultipleExposedValues(CaptureSettings.supportedYellowReductionValues) { value ->
                 yellowReductionSupport(features, value)
             }) {
-            actions.add(OneUiDialog.Choice("Neutralizar amarelo", yellowReductionLabel(settings.yellowReduction)) to ::showLiveYellowReductionChoices)
         }
         if (features?.exposureCompensationSupported != false) {
             actions.add(OneUiDialog.Choice("Exposição", exposureLabel(settings.exposureCompensation)) to ::showLiveExposureChoices)
@@ -1359,7 +1358,6 @@ class CaptureActivity : ComponentActivity() {
             actions.add(OneUiDialog.Choice("Foco", focusLabel(settings.focusMode)) to ::showLiveFocusChoices)
         }
         if (!settings.hdrHlg10 && settings.fps < CaptureModeStore.FPS_60) {
-            actions.add(OneUiDialog.Choice("Perfil de cor", CaptureSettings.colorProfileLabel(settings.colorProfile)) to ::showLiveColorProfileChoices)
         }
         val processingCandidates = listOf(
             CaptureSettings.PROCESSING_AUTO,
@@ -1370,12 +1368,10 @@ class CaptureActivity : ComponentActivity() {
         if (hasMultipleExposedValues(processingCandidates) { value ->
                 processingSupport(settings, features, value, noise = true)
             }) {
-            actions.add(OneUiDialog.Choice("Redução de ruído", processingLabel(settings.noiseReduction)) to { showLiveProcessingChoices(noise = true) })
         }
         if (hasMultipleExposedValues(processingCandidates) { value ->
                 processingSupport(settings, features, value, noise = false)
             }) {
-            actions.add(OneUiDialog.Choice("Nitidez", processingLabel(settings.edgeMode)) to { showLiveProcessingChoices(noise = false) })
         }
         if (hasMultipleExposedValues(
                 listOf(
@@ -2500,7 +2496,6 @@ class CaptureActivity : ComponentActivity() {
         addPreviewSettingsAction("Exposição", exposureLabel(settings.exposureCompensation)) { showLiveExposureChoices() }
         addPreviewSettingsAction("Foco", focusLabel(settings.focusMode)) { showLiveFocusChoices() }
         addPreviewSettingsAction("Balanço de branco", whiteBalanceLabel(settings.whiteBalanceMode)) { showLiveWhiteBalanceChoices() }
-        addPreviewSettingsAction("Temperatura / cor", yellowReductionLabel(settings.yellowReduction)) { showLiveYellowReductionChoices() }
         addPreviewSettingsAction("Anti-flicker", antibandingLabel(settings.antibanding)) { showLiveAntibandingChoices() }
         addPreviewSettingsAction(if (previewAeAfLocked) "Liberar AF/AE" else "Travar AF/AE", if (previewAeAfLocked) "Travado" else "Contínuo") { togglePreviewAeAfLock() }
         addPreviewSettingsAction("Grade 3×3", if (isPreviewGridEnabled()) "Ativada" else "Desativada") { togglePreviewGrid() }
@@ -2561,12 +2556,10 @@ class CaptureActivity : ComponentActivity() {
                     CaptureSettings.PROCESSING_HIGH_QUALITY
                 )
             ) { value -> processingSupport(settings, features, value, noise = true) }) {
-            addPreviewSettingsAction("Redução de ruído", processingLabel(settings.noiseReduction)) { showLiveProcessingChoices(noise = true) }
         }
         if (hasMultipleExposedValues(CaptureSettings.supportedYellowReductionValues) { value ->
                 yellowReductionSupport(features, value)
             }) {
-            addPreviewSettingsAction("Neutralizar amarelo", yellowReductionLabel(settings.yellowReduction)) { showLiveYellowReductionChoices() }
         }
     }
 
@@ -2604,7 +2597,6 @@ class CaptureActivity : ComponentActivity() {
             addPreviewSettingsAction("Foco", focusLabel(settings.focusMode)) { showLiveFocusChoices() }
         }
         if (!settings.hdrHlg10 && settings.fps < CaptureModeStore.FPS_60) {
-            addPreviewSettingsAction("Perfil de cor", CaptureSettings.colorProfileLabel(settings.colorProfile)) { showLiveColorProfileChoices() }
         }
         val processingCandidates = listOf(
             CaptureSettings.PROCESSING_AUTO,
@@ -2615,12 +2607,10 @@ class CaptureActivity : ComponentActivity() {
         if (hasMultipleExposedValues(processingCandidates) { value ->
                 processingSupport(settings, features, value, noise = true)
             }) {
-            addPreviewSettingsAction("Redução de ruído", processingLabel(settings.noiseReduction)) { showLiveProcessingChoices(noise = true) }
         }
         if (hasMultipleExposedValues(processingCandidates) { value ->
                 processingSupport(settings, features, value, noise = false)
             }) {
-            addPreviewSettingsAction("Nitidez", processingLabel(settings.edgeMode)) { showLiveProcessingChoices(noise = false) }
         }
         if (hasMultipleExposedValues(
                 listOf(
