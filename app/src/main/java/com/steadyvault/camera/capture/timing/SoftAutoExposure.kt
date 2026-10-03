@@ -30,6 +30,7 @@ class SoftAutoExposure(
 
     private var calibrationCount = if (fixedTarget != null) CALIBRATION_SAMPLES else 0
     private var calibrationSum = 0.0
+    private var smoothedLuma = 0.0
 
     /** Atualiza com a luminância média (0..1) e a fração de pixels saturados; devolve a nova luz. */
     fun update(meanLuma: Double, saturatedFraction: Double): Double {
@@ -43,16 +44,20 @@ class SoftAutoExposure(
             return light
         }
 
-        var ratio = (target / m).pow(GAIN)
+        // Média móvel da luminância: luzes RGB/PWM e movimento não fazem o laço perseguir o ruído.
         val blown = m >= 0.95 || saturatedFraction > 0.35
+        smoothedLuma = if (smoothedLuma <= 0.0 || blown) m else smoothedLuma + (m - smoothedLuma) * SMOOTHING
+        var ratio = (target / smoothedLuma).pow(GAIN)
         if (blown && ratio > 0.5) ratio = 0.5
         val lnRatio = abs(ln(ratio))
         if (!blown && lnRatio < DEAD_BAND) return light
 
+        // Passos pequenos: a luz muda no máximo ~4% por atualização em regime e ~15% em erro moderado,
+        // senão cada ajuste vira um "pisca" visível de brilho no vídeo; só um erro grande (cena que mudou) salta.
         val limit = when {
             lnRatio > 0.7 -> 2.5
-            lnRatio > 0.25 -> 1.3
-            else -> 1.12
+            lnRatio > 0.3 -> 1.15
+            else -> 1.04
         }
         ratio = ratio.coerceIn(1.0 / limit, limit)
         light = (light * ratio).coerceIn(minLight, maxLight)
@@ -63,9 +68,10 @@ class SoftAutoExposure(
         private const val CALIBRATION_SAMPLES = 2
         private const val TARGET_MIN = 0.35
         private const val TARGET_MAX = 0.55
-        private const val DEAD_BAND = 0.06
-        // luma (gamma) ~ luz^(1/2.2); passo em luz = (alvo/medido)^(2,2) amortecido em 0,8.
-        private const val GAIN = 2.2 * 0.8
+        private const val DEAD_BAND = 0.10
+        private const val SMOOTHING = 0.5
+        // luma (gamma) ~ luz^(1/2.2); passo em luz = (alvo/medido)^(2,2) amortecido em 0,6.
+        private const val GAIN = 2.2 * 0.6
 
         /** Luminância média (0..1) da região central e fração saturada, de um RGBA row-major. */
         fun measure(rgba: ByteArray, width: Int, height: Int): Pair<Double, Double> {
