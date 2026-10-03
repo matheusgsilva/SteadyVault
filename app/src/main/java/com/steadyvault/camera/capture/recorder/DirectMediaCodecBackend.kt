@@ -266,6 +266,9 @@ class DirectMediaCodecBackend(
         val nominalDeltaUs = 1_000_000L / targetFps.coerceAtLeast(1)
         val holeThresholdUs = nominalDeltaUs + nominalDeltaUs / 2L
         var lastWrittenPtsUs = Long.MIN_VALUE
+        var smoothInit = false
+        var smoothUs = 0.0
+        var smoothDeltaUs = nominalDeltaUs.toDouble()
 
         try {
             while (true) {
@@ -327,11 +330,34 @@ class DirectMediaCodecBackend(
                                 buffer.position(info.offset)
                                 buffer.limit(info.offset + info.size)
 
+                                val rawRelUs = (ptsUs - firstPtsUs).coerceAtLeast(0L)
+                                val outRelUs = if (directCamera) {
+                                    // Alta velocidade: a HAL carimba os quadros em lotes (pares com ~4 ms e ~12 ms de
+                                    // intervalo em 120 FPS). O ritmo médio é exato, então suaviza o PTS (sem criar nem
+                                    // remover quadros) para o player não pular um de cada par no vsync.
+                                    if (!smoothInit) {
+                                        smoothInit = true
+                                        smoothUs = rawRelUs.toDouble()
+                                    } else {
+                                        val predicted = smoothUs + smoothDeltaUs
+                                        val error = rawRelUs - predicted
+                                        val next = if (abs(error) > smoothDeltaUs * 1.5) {
+                                            rawRelUs.toDouble() // lacuna ou salto real: segue o sensor
+                                        } else {
+                                            predicted + error * 0.1
+                                        }.coerceAtLeast(smoothUs + 1.0)
+                                        smoothDeltaUs = smoothDeltaUs * 0.98 + (next - smoothUs) * 0.02
+                                        smoothUs = next
+                                    }
+                                    smoothUs.toLong()
+                                } else {
+                                    rawRelUs
+                                }
                                 val adjusted = MediaCodec.BufferInfo().apply {
                                     set(
                                         info.offset,
                                         info.size,
-                                        (ptsUs - firstPtsUs).coerceAtLeast(0L),
+                                        outRelUs,
                                         info.flags
                                     )
                                 }
