@@ -787,8 +787,8 @@ class RealTimeCfrSurfaceBridge(
             if (!ORIGINAL_IMAGE) gmc.initialize()
             Log.i(
                 "SteadyVaultCfr",
-                if (ORIGINAL_IMAGE) "imagem: ORIGINAL (sem denoise, sem alinhamento, sem look); só tempo/CFR e foco"
-                else "movimento global: ${if (gmc.available) "ativo" else "indisponível"}"
+                if (ORIGINAL_IMAGE) "imagem: ORIGINAL (sem denoise)"
+                else "imagem: DENOISE constante ligado; movimento global: ${if (gmc.available) "ativo" else "indisponível"}"
             )
             val gmcShift = FloatArray(2)
             var gmcSamples = 0L
@@ -1146,11 +1146,11 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uShiftScale"), GlobalMotionEstimator.DOWNSCALE.toFloat())
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uShiftRadius"), GlobalMotionEstimator.RADIUS.toFloat())
         GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uOutTexel"), 1f / outputWidth, 1f / outputHeight)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uNoiseScale"), SensorNoiseHint.motionGateScale())
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uNoiseScale"), SensorNoiseHint.motionGateScale().coerceAtLeast(NOISE_SCALE_FLOOR))
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uPassthrough"), if (ORIGINAL_IMAGE) 1f else 0f)
         GLES20.glUniform1f(
             GLES20.glGetUniformLocation(program, "uMaxAge"),
-            (TEMPORAL_MAX_AGE + 4f * (SensorNoiseHint.motionGateScale() - 1f)).coerceIn(TEMPORAL_MAX_AGE, TEMPORAL_MAX_AGE_HIGH_ISO)
+            (TEMPORAL_MAX_AGE + 4f * (SensorNoiseHint.motionGateScale().coerceAtLeast(NOISE_SCALE_FLOOR) - 1f)).coerceIn(TEMPORAL_MAX_AGE, TEMPORAL_MAX_AGE_HIGH_ISO)
         )
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
@@ -1513,6 +1513,8 @@ class RealTimeCfrSurfaceBridge(
         private const val SPATIAL_DENOISE_RADIUS_PX = 1f
         // Teto da idade de confiança: peso máximo = idade/(idade+1) = 5/6 (~0,83) em área parada.
         private const val TEMPORAL_MAX_AGE = 5f
+        // Força mínima constante do denoise: o grão não pode aparecer e sumir conforme o ISO/cena.
+        private const val NOISE_SCALE_FLOOR = 1.5f
         private const val TEMPORAL_MAX_AGE_HIGH_ISO = 8f
 
         /**
@@ -1521,7 +1523,7 @@ class RealTimeCfrSurfaceBridge(
          * o pixel da câmera. Continuam: reamostragem CFR por timestamp (frames sem repetir) e
          * foco inteligente. Troque para false para voltar ao processamento.
          */
-        private const val ORIGINAL_IMAGE = true
+        private const val ORIGINAL_IMAGE = false
         private const val APPLY_LOOK = VideoLook.ENABLED
 
         /** glFinish em lacunas para medir o tempo de GPU (log "tempos:"). Desligue depois do diagnóstico. */
@@ -1691,7 +1693,7 @@ class RealTimeCfrSurfaceBridge(
                     float yn = lumaOf(n);
                     float dn = abs(yn - y0);
                     float a = 1.0 - smoothstep(0.03 * spScale, 0.10 * spScale, dn);
-                    float b = 0.4 * (1.0 - smoothstep(0.02 * spScale, 0.06 * spScale, dn));
+                    float b = 0.65 * (1.0 - smoothstep(0.02 * spScale, 0.06 * spScale, dn));
                     accC += n * a; wC += a;
                     accL += n * b; wL += b;
                     curLuma += yn;

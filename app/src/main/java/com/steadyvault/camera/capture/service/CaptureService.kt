@@ -1698,7 +1698,7 @@ class CaptureService : Service() {
                 "SteadyVaultCfr",
                 "modo de exposição: " + if (fixedCadenceWanted(profile))
                     "CADÊNCIA FIXA + AE PRÓPRIA (quadro 16,67 ms fixo; exposição/ISO acompanham a cena; " +
-                        (if (recordingSettings.autoFpsLowLight) "prioridade pouca luz" else "exposição 1/120 s") + ")"
+                        "ISO de conforto $SOFT_AE_COMFORT_ISO" + ")"
                 else "AE AUTOMÁTICO fps=${profile.targetFps} hdr=${profile.hdrHlg10} manual=$manualSensor"
             )
             if (fixedCadenceWanted(profile)) {
@@ -2386,7 +2386,8 @@ class CaptureService : Service() {
             sensitivityMaxIso = isoRange.upper,
             maxFrameDurationNs = maxFrameDuration,
             manualSensorSupported = true,
-            lowLightPriority = recordingSettings.autoFpsLowLight
+            lowLightPriority = true,
+            comfortIso = SOFT_AE_COMFORT_ISO
         ) ?: return
         val now = SystemClock.elapsedRealtime()
         if (now - softAeLastLogMs >= 1_000L) {
@@ -3861,6 +3862,8 @@ class CaptureService : Service() {
         private const val FOCUS_LOCK_MAX_WARMUP_FRAMES = 8
         private const val FIXED_CADENCE_MAX_WAIT_FRAMES = 90
         private const val SOFT_AE_INTERVAL_MS = 250L
+        // Sem granulado: exposição sobe (até ~1/60 s) antes de o ISO passar disto.
+        private const val SOFT_AE_COMFORT_ISO = 400
         private const val FOCUS_LOCK_MAX_WARMUP_MS = 250L
         private const val THREE_A_LOCK_MIN_WARMUP_FRAMES = 4
         private const val THREE_A_LOCK_MAX_WARMUP_FRAMES = 10
