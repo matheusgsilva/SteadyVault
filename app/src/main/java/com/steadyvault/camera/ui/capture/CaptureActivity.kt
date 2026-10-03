@@ -1464,7 +1464,8 @@ class CaptureActivity : ComponentActivity() {
         val measured = if (previewMeasuredFps > 0.0) {
             String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)
         } else "--"
-        val first = "${CaptureSettings.resolutionLabel(settings.resolution)} • ${settings.fps}fps • prévia $measured/$previewTarget"
+        val first = if (previewPhotoMode) "FOTO • prévia $measured/$previewTarget"
+        else "${CaptureSettings.resolutionLabel(settings.resolution)} • ${settings.fps}fps • prévia $measured/$previewTarget"
         val exposureNs = idlePreview.latestExposureNs
         val iso = idlePreview.latestIso
         val exposure = if (exposureNs > 0L) "1/${(1_000_000_000.0 / exposureNs).toInt().coerceAtLeast(1)}s" else "--"

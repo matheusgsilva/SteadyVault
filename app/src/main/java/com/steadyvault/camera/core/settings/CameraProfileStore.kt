@@ -95,7 +95,13 @@ object CameraProfileStore {
                 resolution = CaptureSettings.resolutionForFps(context, stored.fps)
             )
         } else {
-            stored.copy(bitrateMbps = fallback.bitrateMbps)
+            // Foto não tem resolução/FPS de vídeo próprios: manter os atuais evita que entrar em FOTO
+            // grave o 4K/30 do perfil de foto por cima da resolução de vídeo escolhida nos Ajustes.
+            stored.copy(
+                bitrateMbps = fallback.bitrateMbps,
+                resolution = fallback.resolution,
+                fps = fallback.fps
+            )
         }
         CaptureSettings.save(context, activated)
         return activated
