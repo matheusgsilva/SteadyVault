@@ -44,15 +44,13 @@ class DirectMediaCodecBackend(
     private val audioAgc: Boolean,
     private val audioNoiseSuppressor: Boolean,
     private val audioLowCut: Boolean,
-    private val superStabilizationEnabled: Boolean = false,
     private val analysisEnabled: Boolean = false,
     private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
     private val analysisIntervalMs: Long = 700L,
-    private val lookProfile: Int = VideoLook.PROFILE_NATURAL,
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
 
-    override val backendName: String = if (superStabilizationEnabled) "MediaCodec + CFR GPU + Super Estável" else "MediaCodec + CFR GPU"
+    override val backendName: String = "MediaCodec + ponte GPU (gravação pura)"
     override val videoBitrateBps: Long get() = videoBitrate.toLong()
     override val audioBitrateBps: Long get() = if (integratedAudio) audioBitrate.toLong() else 0L
 
@@ -164,11 +162,9 @@ class DirectMediaCodecBackend(
                 outputHeight = encoderHeight,
                 physicalRotationDegrees = if (physicallyRotatePortrait) orientationHint else 0,
                 fps = targetFps,
-                superStabilizationEnabled = superStabilizationEnabled,
                 analysisEnabled = analysisEnabled,
                 onAnalysisFrame = onAnalysisFrame,
                 analysisIntervalMs = analysisIntervalMs,
-                lookProfile = lookProfile,
                 onError = onError
             )
             cfrBridge = bridge
@@ -573,7 +569,7 @@ class DirectMediaCodecBackend(
 
     private fun logEncoderSummary() {
         val bridge = cfrBridge?.stats()
-        val sentByBridge = bridge?.let { it.realFrames + it.interpolatedFrames } ?: -1L
+        val sentByBridge = bridge?.let { it.realFrames } ?: -1L
         Log.i(
             TAG,
             "resumo encoder: codec=$activeCodecName realtime=$realtimeTuningApplied " +

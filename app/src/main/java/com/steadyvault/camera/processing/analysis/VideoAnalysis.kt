@@ -48,14 +48,6 @@ data class VideoAnalysis(
     val hasRepairableProblems: Boolean
         get() = hasCadenceProblems || hasAvSyncProblem
 
-    val cadenceLabel: String
-        get() = when {
-            cadenceScore >= 92 -> "excelente"
-            cadenceScore >= 78 -> "boa"
-            cadenceScore >= 60 -> "irregular"
-            else -> "instável"
-        }
-
     companion object {
         private val FPS_CANDIDATES = intArrayOf(24, 25, 30, 48, 50, 60, 90, 120, 144, 240)
 

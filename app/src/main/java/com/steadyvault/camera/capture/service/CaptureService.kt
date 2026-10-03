@@ -320,7 +320,6 @@ class CaptureService : Service() {
         // perfil histórico da câmera no instante em que o usuário toca em Gravar.
         CameraProfileStore.setActiveMode(this, CameraProfileStore.FunctionMode.VIDEO)
         recordingSettings = currentSettings.copy(selectedCameraId = profileCameraId, zoomRatio = profileZoomRatio)
-        com.steadyvault.camera.capture.recorder.SensorNoiseHint.zoom = profileZoomRatio
 
         if (recordingSettings.thermalProtection && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val thermalStatus = getSystemService(PowerManager::class.java).currentThermalStatus
@@ -767,8 +766,6 @@ class CaptureService : Service() {
     private fun effectiveExposureCompensation(profile: CameraProfile): Int {
         // "0" volta a significar exposição neutra. A Hybrid AE aplicava EV negativo
         // automaticamente em 60 FPS, deixando a gravação mais escura que o preview.
-        @Suppress("UNUSED_VARIABLE")
-        val ignoredProfile = profile
         return recordingSettings.exposureCompensation
     }
 
@@ -776,8 +773,6 @@ class CaptureService : Service() {
         characteristics: CameraCharacteristics,
         targetFps: Int
     ): Range<Int> {
-        @Suppress("UNUSED_VARIABLE")
-        val ignoredCharacteristics = characteristics
         return Range(targetFps, targetFps)
     }
 
@@ -1120,7 +1115,6 @@ class CaptureService : Service() {
                     audioAgc = recordingSettings.audioAgc,
                     audioNoiseSuppressor = recordingSettings.audioNoiseSuppressor,
                     audioLowCut = recordingSettings.audioLowCut,
-                    superStabilizationEnabled = false, // gravação pura: sem estabilização na GPU
                     analysisEnabled = SmartFocusSettings.enabled(this) || fixedCadenceWanted(cameraProfile),
                     analysisIntervalMs = if (fixedCadenceWanted(cameraProfile)) SOFT_AE_INTERVAL_MS else 700L,
                     onAnalysisFrame = { rgba, frameWidth, frameHeight ->
@@ -1131,7 +1125,6 @@ class CaptureService : Service() {
                             analyzeBackgroundSmartFocusFrame(rgba, frameWidth, frameHeight)
                         }
                     },
-                    lookProfile = com.steadyvault.camera.capture.recorder.VideoLook.profileFor(recordingSettings.colorProfile),
                     onError = { throwable ->
                         if (!stopping.get() && serviceActive.get()) {
                             failAndStop("MediaCodec direto: ${errorText(throwable)}")
@@ -3823,7 +3816,6 @@ private class RecordingResultProbe : CameraCaptureSession.CaptureCallback() {
     ) {
         val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
         val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0
-        if (iso > 0) com.steadyvault.camera.capture.recorder.SensorNoiseHint.iso = iso
         val duration = result.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L
         val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L
         val af = result.get(CaptureResult.CONTROL_AF_STATE) ?: -1

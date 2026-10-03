@@ -35,7 +35,6 @@ object AutoGapRepairQueueStore {
         val error: Int,
         val lastError: String?
     ) {
-        val hasWork: Boolean get() = pending > 0 || running > 0
 
         fun text(): String = buildString {
             append("Fila automática: ")
