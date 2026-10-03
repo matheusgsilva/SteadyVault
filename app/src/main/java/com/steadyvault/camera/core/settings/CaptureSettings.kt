@@ -118,16 +118,19 @@ object CaptureSettings {
     }
 
     private const val PREFS = "steadyvault_capture_settings"
+    private const val KEY_AUTOMATIC_DEFAULTS = "automatic_defaults_version"
+    private const val AUTOMATIC_DEFAULTS_VERSION = 1
 
     fun snapshot(context: Context): Snapshot {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        migrateToAutomaticDefaults(context, prefs)
         val storedFps = prefs.getInt("fps", 60)
         val fps = storedFps.takeIf { it in SUPPORTED_FPS } ?: 60
         val resolution = resolutionForFps(context, fps)
         val storedCodec = prefs.getString("codec", CODEC_HEVC)
         val codec = storedCodec?.takeIf { it in SUPPORTED_CODECS } ?: CODEC_HEVC
-        val storedStabilization = prefs.getString("stabilization", STABILIZATION_PREVIEW)
-        val stabilization = storedStabilization?.takeIf { it in SUPPORTED_STABILIZATIONS } ?: STABILIZATION_PREVIEW
+        val storedStabilization = prefs.getString("stabilization", STABILIZATION_AUTO)
+        val stabilization = storedStabilization?.takeIf { it in SUPPORTED_STABILIZATIONS } ?: STABILIZATION_AUTO
         val storedFocus = prefs.getString("focus_mode", FOCUS_CONTINUOUS_VIDEO)
         val focusMode = storedFocus?.takeIf { it in SUPPORTED_FOCUS_MODES } ?: FOCUS_CONTINUOUS_VIDEO
 
@@ -147,7 +150,7 @@ object CaptureSettings {
 
         val defaultBitrate = defaultBitrateMbps(resolution, fps, codec)
         val storedBitrate = prefs.getInt("bitrate_mbps", defaultBitrate).coerceIn(4, 240)
-        val edgeMode = prefs.getString("edge_mode", PROCESSING_FAST) ?: PROCESSING_FAST
+        val edgeMode = prefs.getString("edge_mode", PROCESSING_AUTO) ?: PROCESSING_AUTO
 
         return Snapshot(
             resolution = resolution,
@@ -160,7 +163,7 @@ object CaptureSettings {
             colorProfile = prefs.getString("color_profile", COLOR_NATURAL) ?: COLOR_NATURAL,
             stabilization = stabilization,
             focusMode = focusMode,
-            noiseReduction = prefs.getString("noise_reduction", PROCESSING_FAST) ?: PROCESSING_FAST,
+            noiseReduction = prefs.getString("noise_reduction", PROCESSING_AUTO) ?: PROCESSING_AUTO,
             edgeMode = edgeMode,
             antibanding = prefs.getString("antibanding", ANTIBANDING_AUTO) ?: ANTIBANDING_AUTO,
             whiteBalanceMode = prefs.getString("white_balance_mode", WHITE_BALANCE_AUTO)?.takeIf { it in supportedWhiteBalanceValues } ?: WHITE_BALANCE_AUTO,
@@ -168,7 +171,7 @@ object CaptureSettings {
             lockWhiteBalance = prefs.getBoolean("lock_white_balance", false),
             lockAeAwbForCadence = prefs.getBoolean("lock_ae_awb_for_cadence", false),
             previewMode = prefs.getString("preview_mode", PREVIEW_OFF)?.takeIf { it in supportedPreviewValues } ?: PREVIEW_OFF,
-            exposureCompensation = prefs.getInt("exposure_compensation", 2).coerceIn(-12, 12),
+            exposureCompensation = prefs.getInt("exposure_compensation", 0).coerceIn(-12, 12),
             selectedCameraId = prefs.getString("selected_camera_id", null)?.takeIf { it.isNotBlank() },
             zoomRatio = prefs.getFloat("zoom_ratio", 1f).takeIf { it.isFinite() }?.coerceIn(0.5f, 30f) ?: 1f,
             thermalProtection = prefs.getBoolean("thermal_protection", true),
@@ -227,6 +230,31 @@ object CaptureSettings {
             .putBoolean("secure_screen", normalized.secureScreen)
             .apply()
         CameraProfileStore.onSnapshotSaved(context, normalized)
+    }
+
+    /**
+     * Uma vez por instalação: leva todos os ajustes de processamento para o modo automático
+     * (a HAL decide) e devolve o bitrate ao valor recomendado para a resolução/FPS.
+     */
+    private fun migrateToAutomaticDefaults(context: Context, prefs: android.content.SharedPreferences) {
+        if (prefs.getInt(KEY_AUTOMATIC_DEFAULTS, 0) >= AUTOMATIC_DEFAULTS_VERSION) return
+        prefs.edit()
+            .putInt(KEY_AUTOMATIC_DEFAULTS, AUTOMATIC_DEFAULTS_VERSION)
+            .putString("stabilization", STABILIZATION_AUTO)
+            .putString("noise_reduction", PROCESSING_AUTO)
+            .putString("edge_mode", PROCESSING_AUTO)
+            .putString("antibanding", ANTIBANDING_AUTO)
+            .putString("white_balance_mode", WHITE_BALANCE_AUTO)
+            .putString("yellow_reduction", YELLOW_REDUCTION_AUTO)
+            .putString("focus_mode", FOCUS_CONTINUOUS_VIDEO)
+            .putString("color_profile", COLOR_NATURAL)
+            .putBoolean("lock_white_balance", false)
+            .putBoolean("lock_ae_awb_for_cadence", false)
+            .putBoolean("auto_fps_low_light", true)
+            .putInt("exposure_compensation", 0)
+            .remove("bitrate_mbps")
+            .apply()
+        CameraProfileStore.resetProcessingToAutomatic(context)
     }
 
     fun restoreDefaults(context: Context) {

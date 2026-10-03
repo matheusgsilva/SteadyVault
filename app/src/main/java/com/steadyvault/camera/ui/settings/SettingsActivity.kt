@@ -434,7 +434,7 @@ class SettingsActivity : FragmentActivity() {
             exposureOptions(snapshot.exposureCompensation),
             snapshot.exposureCompensation.toString()
         )
-        addInfo("A compensação escolhida é aplicada diretamente à câmera. O padrão agora é +2 para levantar cenas noturnas sem alterar o FPS; ajuste para 0 se quiser a medição neutra do aparelho.")
+        addInfo("A compensação escolhida é aplicada diretamente à câmera. O padrão é 0 (automático): a câmera mede a cena sozinha; só mexa aqui se quiser clarear ou escurecer de propósito.")
         addSmallButton("Aplicar perfil de teste de cadência 4K60") {
             val current = CaptureSettings.snapshot(this)
             val testProfile = current.copy(

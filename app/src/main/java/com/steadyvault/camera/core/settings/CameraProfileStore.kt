@@ -35,6 +35,22 @@ object CameraProfileStore {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
     }
 
+    /**
+     * Migração "tudo automático": apaga dos perfis por câmera/FPS os ajustes de processamento
+     * (estabilização, ruído, nitidez, anti-flicker, balanço de branco, redução de amarelo, EV),
+     * que passam a vir dos padrões automáticos. Zoom, resolução, FPS e câmera lembrada ficam.
+     */
+    fun resetProcessingToAutomatic(context: Context) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val suffixes = listOf(
+            "stabilization", "noise_reduction", "edge_mode", "antibanding",
+            "white_balance_mode", "yellow_reduction", "lock_white_balance", "exposure_compensation"
+        )
+        val editor = prefs.edit()
+        prefs.all.keys.filter { key -> suffixes.any { key.endsWith(it) } }.forEach { editor.remove(it) }
+        editor.apply()
+    }
+
     fun activeMode(context: Context): FunctionMode = runCatching {
         FunctionMode.valueOf(
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
