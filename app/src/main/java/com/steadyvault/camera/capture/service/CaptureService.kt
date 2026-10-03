@@ -2287,7 +2287,9 @@ class CaptureService : Service() {
     }
 
     private fun fixedCadenceWanted(profile: CameraProfile): Boolean =
-        SensorCadencePolicy.supportsFixedCadence(profile.targetFps) && !profile.highSpeed &&
+        // Até 60 fps a AE da HAL (a mesma da câmera da Samsung) segura o brilho sem "pisca"; a AE manual
+        // com cadência fixa só entra nas taxas altas, onde a HAL não sustenta o ritmo sozinha.
+        SensorCadencePolicy.supportsFixedCadence(profile.targetFps) && profile.targetFps >= 120 && !profile.highSpeed &&
             !profile.hdrHlg10 && supportsManualSensor(profile)
 
     /** Laço de brilho por software: AE própria (cadência fixa) ou compensação de EV (high-speed). */
