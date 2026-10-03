@@ -79,7 +79,7 @@ class MediaPlayerActivity : ComponentActivity() {
     private var viewerControlsVisible = false
     private var dismissInProgress = false
     private var videoDurationMs = 0
-    private var speedIndex = 2
+    private var speedIndex = 4
     private var scrubPrecisionIndex = 0
     private var initialPlaybackSpeedApplied = false
     private var userSelectedPlaybackSpeed = false
@@ -1075,10 +1075,13 @@ class MediaPlayerActivity : ComponentActivity() {
 
     private fun applyAutomaticPlaybackSpeed(frameRate: Float) {
         if (userSelectedPlaybackSpeed) return
-        // 120/240 gravados pelo SteadyVault são vídeo em tempo real, como 4K120 da
-        // câmera Samsung. Slow motion só acontece se o usuário escolher outra velocidade.
-        val targetSpeed = 1f
-        val targetIndex = PLAYBACK_SPEEDS.indexOfFirst { it == targetSpeed }.takeIf { it >= 0 } ?: 2
+        // 120/240 FPS tocam em câmera lenta por padrão (como o slow motion da câmera Samsung):
+        // a velocidade que deixa a saída em ~30 quadros/s (120 -> 0,25x; 240 -> 0,125x).
+        // Até 60 FPS toca em tempo real. O botão de velocidade muda quando quiser.
+        val targetSpeed = if (frameRate >= 100f) {
+            PLAYBACK_SPEEDS.minByOrNull { kotlin.math.abs(it - 30f / frameRate) } ?: 1f
+        } else 1f
+        val targetIndex = PLAYBACK_SPEEDS.indexOfFirst { it == targetSpeed }.takeIf { it >= 0 } ?: 4
         if (speedIndex == targetIndex && videoView.isPrepared()) return
         speedIndex = targetIndex
         videoView.setPlaybackSpeed(targetSpeed)
@@ -1527,7 +1530,7 @@ class MediaPlayerActivity : ComponentActivity() {
         private const val TRIM_FILMSTRIP_MAXIMUM_SIDE = 240
         private const val HIGH_REFRESH_OUTPUT_MIN = 50f
         private const val MAX_PREFERRED_REFRESH_RATE = 120f
-        private val PLAYBACK_SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+        private val PLAYBACK_SPEEDS = floatArrayOf(0.125f, 0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
         private val SCRUB_PRECISIONS = floatArrayOf(1f, 0.5f, 0.25f, 0.125f)
     }
 }

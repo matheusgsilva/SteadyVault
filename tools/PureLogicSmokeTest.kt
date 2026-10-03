@@ -214,6 +214,7 @@ fun main() {
     expect(UiBehaviorRules.isRecordingBusy("Salvando original no cofre…"), "publicação do original deve continuar ocupada")
     expect(UiBehaviorRules.isRecordingFinalizing("Salvando original no cofre…"), "publicação do original deve ser finalização")
     expect(UiBehaviorRules.sanitizedPlaybackSpeed(1.48f) == 1.5f, "velocidade sanitizada")
+    expect(UiBehaviorRules.sanitizedPlaybackSpeed(0.13f) == 0.125f, "velocidade lenta 240 fps")
     expect(ScrubFramePolicy.snapPositionMs(60, 10_000, 30f) == 67, "snap do quadro a 30 FPS")
     expect(
         ScrubSeekPolicy.chooseCommitMode(1_000, 20_000, resumePlayback = true) == ScrubSeekPolicy.Mode.FAST_SYNC,

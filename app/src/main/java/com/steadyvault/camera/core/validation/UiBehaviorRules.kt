@@ -99,7 +99,7 @@ object UiBehaviorRules {
     }
 
     fun sanitizedPlaybackSpeed(value: Float): Float {
-        val allowed = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+        val allowed = floatArrayOf(0.125f, 0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
         return allowed.minByOrNull { abs(it - value) } ?: 1f
     }
 }
