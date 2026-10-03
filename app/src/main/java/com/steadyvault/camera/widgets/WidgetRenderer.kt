@@ -221,7 +221,6 @@ object WidgetRenderer {
                 510,
                 Intent(context, WidgetStartReceiver::class.java)
                     .setAction(WidgetStartReceiver.ACTION_START)
-                    .putExtra(WidgetStartReceiver.EXTRA_TARGET_FPS, CaptureModeStore.getTargetFps(context))
                     .setData(Uri.parse("steadyvault://widget/start")),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
