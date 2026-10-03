@@ -2223,7 +2223,8 @@ class CaptureService : Service() {
             maxFrameDurationNs = maxFrameDuration,
             manualSensorSupported = true,
             lowLightPriority = true,
-            comfortIso = SOFT_AE_COMFORT_ISO
+            comfortIso = SOFT_AE_COMFORT_ISO,
+            minFrameDurationNs = sensorMinFrameDurationNs(profile)
         ) ?: return
         val now = SystemClock.elapsedRealtime()
         if (now - softAeLastLogMs >= 1_000L) {
@@ -2264,8 +2265,21 @@ class CaptureService : Service() {
             sensitivityMinIso = sensitivityRange.lower,
             sensitivityMaxIso = sensitivityRange.upper,
             maxFrameDurationNs = maxFrameDuration,
-            manualSensorSupported = supportsManualSensor(profile)
+            manualSensorSupported = supportsManualSensor(profile),
+            minFrameDurationNs = sensorMinFrameDurationNs(profile)
         )
+    }
+
+    /**
+     * Duração mínima de quadro que o sensor sustenta neste tamanho (ex.: 16,747 ms em 4K "60"):
+     * pedir menos que isso só faz a HAL corrigir sozinha. Só vale quando fica até 10% acima do
+     * nominal, para um valor absurdo da HAL não derrubar o FPS escolhido.
+     */
+    private fun sensorMinFrameDurationNs(profile: CameraProfile): Long {
+        val map = profile.characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return 0L
+        val nominal = 1_000_000_000L / profile.targetFps.coerceAtLeast(1)
+        val minimum = encoderSurfaceMinFrameDurationNs(map, profile.videoSize)
+        return if (minimum > nominal && minimum <= nominal + nominal / 10) minimum else 0L
     }
 
     private fun armRecorderForFirstFrame(token: Int) {

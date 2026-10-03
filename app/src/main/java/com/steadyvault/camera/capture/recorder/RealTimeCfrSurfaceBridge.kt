@@ -76,6 +76,8 @@ class RealTimeCfrSurfaceBridge(
     @Volatile private var surfaceTexture: SurfaceTexture? = null
     @Volatile private var realFrames = 0L
     @Volatile private var maxIntervalNs = 0L
+    @Volatile private var firstSensorNs = 0L
+    @Volatile private var lastSensorSeenNs = 0L
     private val intervalBuckets = LongArray(5)
     @Volatile private var worstFrameNs = 0L
     @Volatile private var maxBacklogSignals = 0
@@ -152,6 +154,16 @@ class RealTimeCfrSurfaceBridge(
     private fun logSummary() {
         if (!summaryLogged.compareAndSet(false, true)) return
         val stats = stats()
+        val spanNs = lastSensorSeenNs - firstSensorNs
+        val deliveredFps = if (spanNs > 0L && stats.realFrames > 1L) {
+            (stats.realFrames - 1L) * 1_000_000_000.0 / spanNs.toDouble()
+        } else 0.0
+        Log.i(
+            TAG,
+            "FPS do sensor: entregue=%.2f nominal=%d (%.1f%%) quadros=%d".format(
+                deliveredFps, fps, if (fps > 0) 100.0 * deliveredFps / fps else 0.0, stats.realFrames
+            )
+        )
         Log.i(
             TAG,
             "resumo ponte: reais=${stats.realFrames} piorFrame=${stats.worstFrameMs}ms " +
@@ -388,6 +400,7 @@ class RealTimeCfrSurfaceBridge(
                     // O primeiro frame ancora o PTS no relógio; os seguintes seguem o sensor.
                     pureBaseSensorNs = current.timestampNs
                     pureBasePtsNs = System.nanoTime()
+                    firstSensorNs = current.timestampNs
                     renderTextureToEncoder(
                         program = textureProgram,
                         texture = current.texture,
@@ -424,6 +437,7 @@ class RealTimeCfrSurfaceBridge(
                 )
                 realFrames++
                 lastSensorNs = current.timestampNs
+                lastSensorSeenNs = current.timestampNs
                 giveBack(current)
                 val frameNs = System.nanoTime() - frameStartNs
                 if (frameNs > worstFrameNs) worstFrameNs = frameNs

@@ -9,6 +9,9 @@ object SensorCadencePolicy {
         val sensitivityIso: Int
     )
 
+    /** Cadência fixa (AE_MODE_OFF + duração de quadro fixa) vale para as taxas altas do sensor. */
+    fun supportsFixedCadence(fps: Int): Boolean = fps == 60 || fps == 120
+
     fun resolve(
         fps: Int,
         observedExposureNs: Long,
@@ -18,12 +21,13 @@ object SensorCadencePolicy {
         sensitivityMinIso: Int,
         sensitivityMaxIso: Int,
         maxFrameDurationNs: Long,
-        manualSensorSupported: Boolean
+        manualSensorSupported: Boolean,
+        minFrameDurationNs: Long = 0L
     ): Plan? {
-        if (!manualSensorSupported || fps != 60 || observedExposureNs <= 0L || observedSensitivityIso <= 0) return null
+        if (!manualSensorSupported || !supportsFixedCadence(fps) || observedExposureNs <= 0L || observedSensitivityIso <= 0) return null
         if (exposureMinNs <= 0L || exposureMaxNs < exposureMinNs || sensitivityMinIso <= 0 || sensitivityMaxIso < sensitivityMinIso) return null
 
-        val frameDurationNs = (1_000_000_000.0 / fps.toDouble()).roundToLong()
+        val frameDurationNs = maxOf((1_000_000_000.0 / fps.toDouble()).roundToLong(), minFrameDurationNs)
         if (maxFrameDurationNs in 1 until frameDurationNs) return null
 
         val motionExposureCapNs = (1_000_000_000.0 / (fps * 2.0)).roundToLong()
@@ -59,12 +63,13 @@ object SensorCadencePolicy {
         maxFrameDurationNs: Long,
         manualSensorSupported: Boolean,
         lowLightPriority: Boolean,
-        comfortIso: Int = 800
+        comfortIso: Int = 800,
+        minFrameDurationNs: Long = 0L
     ): Plan? {
-        if (!manualSensorSupported || fps != 60 || light <= 0.0) return null
+        if (!manualSensorSupported || !supportsFixedCadence(fps) || light <= 0.0) return null
         if (exposureMinNs <= 0L || exposureMaxNs < exposureMinNs || sensitivityMinIso <= 0 || sensitivityMaxIso < sensitivityMinIso) return null
 
-        val frameDurationNs = (1_000_000_000.0 / fps.toDouble()).roundToLong()
+        val frameDurationNs = maxOf((1_000_000_000.0 / fps.toDouble()).roundToLong(), minFrameDurationNs)
         if (maxFrameDurationNs in 1 until frameDurationNs) return null
 
         val motionCapNs = (1_000_000_000.0 / (fps * 2.0)).roundToLong()

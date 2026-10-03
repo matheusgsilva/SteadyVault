@@ -267,15 +267,25 @@ object CaptureSettings {
     }
 
     fun defaultBitrateMbps(resolution: String, fps: Int, codec: String): Int {
-        val recommended = when (resolution) {
-            RESOLUTION_8K -> if (fps == 60) 180 else 100
-            RESOLUTION_720P -> if (fps == 60) 15 else 10
-            RESOLUTION_1080P -> if (fps == 60) 28 else 20
-            RESOLUTION_2K -> if (fps == 60) 40 else 30
-            RESOLUTION_4K -> if (fps == 60) 60 else 48
-            else -> if (fps == 60) 60 else 48
+        val at60 = when (resolution) {
+            RESOLUTION_8K -> 180
+            RESOLUTION_720P -> 15
+            RESOLUTION_1080P -> 28
+            RESOLUTION_2K -> 40
+            else -> 60
         }
-        return if (codec == CODEC_AVC) (recommended * 1.25).toInt().coerceAtMost(220) else recommended
+        val recommended = when {
+            fps >= 120 -> (at60 * 1.6).toInt()
+            fps >= 60 -> at60
+            else -> when (resolution) {
+                RESOLUTION_8K -> 100
+                RESOLUTION_720P -> 10
+                RESOLUTION_1080P -> 20
+                RESOLUTION_2K -> 30
+                else -> 48
+            }
+        }
+        return if (codec == CODEC_AVC) (recommended * 1.25).toInt().coerceAtMost(220) else recommended.coerceAtMost(240)
     }
 
     fun resolutionLabel(value: String): String = when (value) {
@@ -327,5 +337,5 @@ object CaptureSettings {
         FOCUS_LOCKED,
         FOCUS_OFF
     )
-    private val SUPPORTED_FPS = linkedSetOf(30, 60)
+    private val SUPPORTED_FPS = linkedSetOf(30, 60, 120)
 }
