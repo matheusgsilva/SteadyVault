@@ -109,7 +109,7 @@ object CaptureStateStore {
         val value = preferences.getString(KEY_EFFECTIVE_RESOLUTION_VALUE, null)
             ?.takeIf { it.isNotBlank() }
             ?: resolutionValueFromLabel(resolution)
-        return EffectiveMode(value, resolution, fps)
+        return canonicalMode(value, resolution, fps)
     }
 
     fun effectiveModeForFps(context: Context, fps: Int): EffectiveMode? {
@@ -122,7 +122,7 @@ object CaptureStateStore {
         val value = preferences.getString(historyResolutionValueKey(fps), null)
             ?.takeIf { it.isNotBlank() }
             ?: resolutionValueFromLabel(label)
-        return EffectiveMode(value, label, fps)
+        return canonicalMode(value, label, fps)
     }
 
     fun clearEffectiveMode(context: Context) {
@@ -200,6 +200,20 @@ object CaptureStateStore {
             .remove(historyUpdatedKey(240))
             .putInt(KEY_HISTORY_SCHEMA, HISTORY_SCHEMA)
             .apply()
+    }
+
+    /** Rótulos antigos vinham como "2560×1440"; normaliza para o nome oficial (ex.: "2K / QHD"). */
+    private fun canonicalMode(value: String, label: String, fps: Int): EffectiveMode {
+        val height = Regex("(\\d+)\\s*[x×]\\s*(\\d+)").find(label)?.groupValues?.get(2)?.toIntOrNull()
+        val fixedValue = when (height) {
+            4320 -> CaptureSettings.RESOLUTION_8K
+            2160 -> CaptureSettings.RESOLUTION_4K
+            1440 -> CaptureSettings.RESOLUTION_2K
+            1080 -> CaptureSettings.RESOLUTION_1080P
+            720 -> CaptureSettings.RESOLUTION_720P
+            else -> null
+        } ?: return EffectiveMode(value, label, fps)
+        return EffectiveMode(fixedValue, CaptureSettings.resolutionLabel(fixedValue), fps)
     }
 
     private fun resolutionValueFromLabel(label: String): String = when {
