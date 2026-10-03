@@ -1469,7 +1469,7 @@ class CaptureActivity : ComponentActivity() {
             String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)
         } else "--"
         val first = if (previewPhotoMode) "FOTO • prévia $measured/$previewTarget"
-        else "${CaptureSettings.resolutionLabel(settings.resolution)} • ${settings.fps}fps • prévia $measured/$previewTarget"
+        else "${CaptureSettings.resolutionLabel(settings.resolution)} • GRAVA ${settings.fps}fps • prévia $measured/$previewTarget"
         val exposureNs = idlePreview.latestExposureNs
         val iso = idlePreview.latestIso
         val exposure = if (exposureNs > 0L) "1/${(1_000_000_000.0 / exposureNs).toInt().coerceAtLeast(1)}s" else "--"
@@ -3233,6 +3233,8 @@ class CaptureActivity : ComponentActivity() {
         renderPreviewQuickControls()
         renderPreviewSettingsSheetContent()
         ExpandedControlWidget.updateAll(this)
+        // O mostrador de teste precisa refletir o novo FPS na hora, sem esperar o próximo quadro medido.
+        resetPreviewFpsMeter()
         if (previewOpen) restartPreviewForUpdatedSettings()
     }
 
