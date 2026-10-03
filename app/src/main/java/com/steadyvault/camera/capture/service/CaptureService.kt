@@ -73,6 +73,7 @@ import android.hardware.camera2.params.SessionConfiguration
 import android.hardware.camera2.params.ColorSpaceTransform
 import android.hardware.camera2.params.RggbChannelVector
 import android.hardware.camera2.params.TonemapCurve
+import android.media.ImageReader
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaCodecList
@@ -221,6 +222,12 @@ class CaptureService : Service() {
     @Volatile private var softAePlan: SensorCadencePolicy.Plan? = null
     @Volatile private var softAeLastLogMs = 0L
     @Volatile private var highSpeedCompensation = 0
+    @Volatile private var hsManualAe: SoftAutoExposure? = null
+    @Volatile private var hsManualPlan: SensorCadencePolicy.Plan? = null
+    @Volatile private var hsDarkStreak = 0
+    @Volatile private var hsAnalysisReader: ImageReader? = null
+    @Volatile private var hsAnalysisSurface: Surface? = null
+    @Volatile private var hsLastAnalysisMs = 0L
 
 
 
@@ -1157,7 +1164,8 @@ class CaptureService : Service() {
                     audioAgc = recordingSettings.audioAgc,
                     audioNoiseSuppressor = recordingSettings.audioNoiseSuppressor,
                     audioLowCut = recordingSettings.audioLowCut,
-                    analysisEnabled = SmartFocusSettings.enabled(this) || brightnessLoopWanted(cameraProfile),
+                    analysisEnabled = (SmartFocusSettings.enabled(this) && !cameraProfile.highSpeed) || brightnessLoopWanted(cameraProfile),
+                    directCamera = cameraProfile.highSpeed,
                     analysisIntervalMs = if (brightnessLoopWanted(cameraProfile)) SOFT_AE_INTERVAL_MS else 700L,
                     onAnalysisFrame = { rgba, frameWidth, frameHeight ->
                         runSoftAutoExposure(rgba, frameWidth, frameHeight)
@@ -1378,10 +1386,11 @@ class CaptureService : Service() {
     private fun createRecordingSessionSafely(
         camera: CameraDevice,
         profile: CameraProfile,
-        token: Int
+        token: Int,
+        allowHighSpeedAnalysis: Boolean = true
     ) {
         runCatching {
-            createRecordingSession(camera, profile, token)
+            createRecordingSession(camera, profile, token, allowHighSpeedAnalysis)
         }.onFailure { throwable ->
             Log.e(LOG_TAG, "Falha controlada criando sessão de gravação", throwable)
             failSelectedConfigurationFromWorker(
@@ -1394,7 +1403,8 @@ class CaptureService : Service() {
     private fun createRecordingSession(
         camera: CameraDevice,
         profile: CameraProfile,
-        token: Int
+        token: Int,
+        allowHighSpeedAnalysis: Boolean = true
     ) {
         if (!isAttemptValid(token)) {
             return
@@ -1410,10 +1420,19 @@ class CaptureService : Service() {
         // Toda gravação usa a mesma sessão encoder-only. A tela de captura pode manter
         // sua interface, mas nunca recebe uma segunda saída Camera2 durante o vídeo.
         // Isso reserva ISP, memória e largura de banda exclusivamente para o arquivo.
-        if (profile.highSpeed) highSpeedCompensation = initialHighSpeedCompensation(profile)
+        var analysisSurface: Surface? = null
+        if (profile.highSpeed) {
+            highSpeedCompensation = initialHighSpeedCompensation(profile)
+            hsManualAe = null
+            hsManualPlan = null
+            hsDarkStreak = 0
+            closeHighSpeedAnalysis()
+            if (allowHighSpeedAnalysis) analysisSurface = createHighSpeedAnalysisSurface(profile)
+        }
         val requestBuilder =
             createRecordRequestBuilder(camera).apply {
                 addTarget(surface)
+                analysisSurface?.let { addTarget(it) }
                 configureCaptureRequest(this, profile)
                 if (!profile.highSpeed) applyFinalWhiteBalance(this, profile)
             }
@@ -1435,7 +1454,10 @@ class CaptureService : Service() {
             }
         }
 
-        val outputConfigurations = listOf(outputConfiguration)
+        val outputConfigurations = listOfNotNull(
+            outputConfiguration,
+            analysisSurface?.let { OutputConfiguration(it) }
+        )
 
         val sessionType =
             if (profile.highSpeed) {
@@ -1531,6 +1553,13 @@ class CaptureService : Service() {
                         CameraCaptureSession
                     ) {
                         session.close()
+                        if (profile.highSpeed && analysisSurface != null && isAttemptValid(token)) {
+                            // A HAL recusou o par encoder + análise: tenta só o encoder (sem laço de brilho por quadro).
+                            Log.w(LOG_TAG, "high-speed recusou a segunda saída de análise; repetindo só com o encoder")
+                            closeHighSpeedAnalysis()
+                            createRecordingSessionSafely(camera, profile, token, allowHighSpeedAnalysis = false)
+                            return
+                        }
                         failSelectedConfigurationFromWorker(
                             token,
                             "a HAL recusou ${sizeName(profile.videoSize)} ${profile.targetFps} FPS"
@@ -2235,7 +2264,7 @@ class CaptureService : Service() {
 
     /** Laço de brilho por software: AE própria (cadência fixa) ou compensação de EV (high-speed). */
     private fun brightnessLoopWanted(profile: CameraProfile): Boolean =
-        fixedCadenceWanted(profile) || profile.highSpeed
+        fixedCadenceWanted(profile)
 
     private fun initSoftAe(profile: CameraProfile, plan: SensorCadencePolicy.Plan) {
         val exposureRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) ?: return
@@ -2253,10 +2282,6 @@ class CaptureService : Service() {
     private fun runSoftAutoExposure(rgba: ByteArray, width: Int, height: Int) {
         if (!serviceActive.get() || stopping.get()) return
         val profile = selectedCamera ?: return
-        if (profile.highSpeed) {
-            runHighSpeedBrightnessGuard(profile, rgba, width, height)
-            return
-        }
         val ae = softAe ?: return
         val (luma, sat) = SoftAutoExposure.measure(rgba, width, height)
         if (luma <= 0.0) return
@@ -2313,15 +2338,108 @@ class CaptureService : Service() {
         return (base + boost).coerceIn(range.lower, range.upper)
     }
 
+    private fun closeHighSpeedAnalysis() {
+        hsAnalysisSurface = null
+        val reader = hsAnalysisReader
+        hsAnalysisReader = null
+        runCatching { reader?.setOnImageAvailableListener(null, null) }
+        runCatching { reader?.close() }
+    }
+
     /**
-     * Constrained high-speed mantém o AE da HAL (sem cadência manual). Se o quadro sair escuro,
-     * sobe a compensação de EV aos poucos; se estourar, desce até o valor do usuário. Troca só o
-     * burst repetido: a duração do quadro e o número de quadros nunca mudam.
+     * Saída pequena só para medir brilho (a do encoder recebe os 120/240 quadros direto da câmera).
+     * Precisa ser um tamanho high-speed com a mesma faixa de FPS; sem ele não há laço de brilho.
      */
-    private fun runHighSpeedBrightnessGuard(profile: CameraProfile, rgba: ByteArray, width: Int, height: Int) {
+    private fun createHighSpeedAnalysisSurface(profile: CameraProfile): Surface? {
+        val map = profile.characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
+        val size = runCatching { map.highSpeedVideoSizes?.toList().orEmpty() }.getOrDefault(emptyList())
+            .filter { it != profile.videoSize && it.width * 9 == it.height * 16 && it.width <= 1280 }
+            .filter { candidate ->
+                runCatching { map.getHighSpeedVideoFpsRangesFor(candidate)?.toList().orEmpty() }
+                    .getOrDefault(emptyList()).any { it == profile.fpsRange }
+            }
+            .maxByOrNull { it.width * it.height } ?: return null
+        val reader = runCatching { ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2) }
+            .getOrNull() ?: return null
+        reader.setOnImageAvailableListener({ source ->
+            val image = runCatching { source.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
+            try {
+                val now = SystemClock.elapsedRealtime()
+                if (now - hsLastAnalysisMs < SOFT_AE_INTERVAL_MS) return@setOnImageAvailableListener
+                hsLastAnalysisMs = now
+                val plane = image.planes[0]
+                val buffer = plane.buffer
+                val w = image.width
+                val h = image.height
+                val rowStride = plane.rowStride
+                val pixelStride = plane.pixelStride
+                var sum = 0.0
+                var sat = 0
+                var count = 0
+                var y = h / 6
+                while (y < h - h / 6) {
+                    var x = w / 6
+                    while (x < w - w / 6) {
+                        val index = y * rowStride + x * pixelStride
+                        if (index < buffer.limit()) {
+                            val luma = (buffer.get(index).toInt() and 0xFF).toDouble()
+                            sum += luma
+                            if (luma >= 250.0) sat++
+                            count++
+                        }
+                        x += 2
+                    }
+                    y += 2
+                }
+                if (count > 0) {
+                    runHighSpeedBrightnessGuard(profile, sum / count / 255.0, sat.toDouble() / count)
+                }
+            } finally {
+                runCatching { image.close() }
+            }
+        }, mainHandler)
+        hsAnalysisReader = reader
+        hsAnalysisSurface = reader.surface
+        Log.i("SteadyVaultCfr", "high-speed: saída de análise de brilho ${size.width}x${size.height}")
+        return reader.surface
+    }
+
+    private fun buildHighSpeedBurst(profile: CameraProfile, session: CameraConstrainedHighSpeedCaptureSession): List<CaptureRequest>? {
+        val camera = synchronized(resourceLock) { cameraDevice } ?: return null
+        val surface = synchronized(resourceLock) { recorderSurface } ?: return null
+        val request = createRecordRequestBuilder(camera).apply {
+            addTarget(surface)
+            hsAnalysisSurface?.let { addTarget(it) }
+            configureCaptureRequest(this, profile)
+        }.build()
+        return session.createHighSpeedRequestList(request)
+    }
+
+    private fun submitHighSpeedBurst(profile: CameraProfile) {
+        cameraExecutor.execute {
+            if (!serviceActive.get() || stopping.get()) return@execute
+            val session = synchronized(resourceLock) { captureSession } as? CameraConstrainedHighSpeedCaptureSession
+                ?: return@execute
+            runCatching {
+                val burst = buildHighSpeedBurst(profile, session) ?: return@execute
+                session.setRepeatingBurst(burst, null, mainHandler)
+            }.onFailure { Log.w(LOG_TAG, "Ajuste de brilho high-speed recusado", it) }
+        }
+    }
+
+    /**
+     * Constrained high-speed começa com o AE da HAL. Se o quadro sair escuro, sobe a compensação de
+     * EV; se mesmo no máximo ficar escuro por ~1 s, passa a exposição/ISO manuais (exposição no teto
+     * do quadro, ISO guiado pela luminância). Só o burst repetido muda: a duração do quadro não.
+     */
+    private fun runHighSpeedBrightnessGuard(profile: CameraProfile, luma: Double, sat: Double) {
+        if (!serviceActive.get() || stopping.get() || luma <= 0.0) return
+        val manual = hsManualAe
+        if (manual != null) {
+            runHighSpeedManualBrightness(profile, manual, luma, sat)
+            return
+        }
         val range = profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: return
-        val (luma, sat) = SoftAutoExposure.measure(rgba, width, height)
-        if (luma <= 0.0) return
         val base = recordingSettings.exposureCompensation.coerceIn(range.lower, range.upper)
         val current = highSpeedCompensation
         val delta = when {
@@ -2331,27 +2449,64 @@ class CaptureService : Service() {
             else -> 0
         }
         val next = (current + delta).coerceIn(base, range.upper)
-        val now = SystemClock.elapsedRealtime()
-        if (now - softAeLastLogMs >= 1_000L) {
-            softAeLastLogMs = now
-            Log.i("SteadyVaultCfr", "brilho high-speed: luma=%.2f sat=%.2f EV(índice)=%d->%d máx=%d".format(luma, sat, current, next, range.upper))
-        }
+        Log.i("SteadyVaultCfr", "brilho high-speed: luma=%.2f sat=%.2f EV(índice)=%d->%d máx=%d".format(luma, sat, current, next, range.upper))
+
+        hsDarkStreak = if (luma < 0.2 && next >= range.upper) hsDarkStreak + 1 else 0
+        if (hsDarkStreak >= 4 && supportsManualSensor(profile) && enterHighSpeedManual(profile)) return
+
         if (next == current) return
         highSpeedCompensation = next
-        cameraExecutor.execute {
-            if (!serviceActive.get() || stopping.get()) return@execute
-            val session = synchronized(resourceLock) { captureSession } as? CameraConstrainedHighSpeedCaptureSession
-                ?: return@execute
-            val camera = synchronized(resourceLock) { cameraDevice } ?: return@execute
-            val surface = synchronized(resourceLock) { recorderSurface } ?: return@execute
-            runCatching {
-                val request = createRecordRequestBuilder(camera).apply {
-                    addTarget(surface)
-                    configureCaptureRequest(this, profile)
-                }.build()
-                session.setRepeatingBurst(session.createHighSpeedRequestList(request), null, mainHandler)
-            }.onFailure { Log.w(LOG_TAG, "Ajuste de brilho high-speed recusado", it) }
-        }
+        submitHighSpeedBurst(profile)
+    }
+
+    private fun enterHighSpeedManual(profile: CameraProfile): Boolean {
+        val exposureRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) ?: return false
+        val isoRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: return false
+        val frameNs = 1_000_000_000L / profile.targetFps
+        val absCap = minOf(exposureRange.upper, frameNs - 500_000L)
+        if (absCap < exposureRange.lower) return false
+        val startIso = minOf(isoRange.upper, 1600).coerceAtLeast(isoRange.lower)
+        val ae = SoftAutoExposure(
+            initialLight = absCap.toDouble() * startIso,
+            minLight = exposureRange.lower.toDouble() * isoRange.lower,
+            maxLight = absCap.toDouble() * isoRange.upper,
+            fixedTarget = 0.40
+        )
+        val plan = highSpeedPlan(profile, ae.light) ?: return false
+        hsManualAe = ae
+        hsManualPlan = plan
+        Log.i("SteadyVaultCfr", "brilho high-speed: AE da HAL no limite, passando para exposição/ISO manuais (exp=${plan.exposureTimeNs / 1000}us iso=${plan.sensitivityIso})")
+        submitHighSpeedBurst(profile)
+        return true
+    }
+
+    private fun highSpeedPlan(profile: CameraProfile, light: Double): SensorCadencePolicy.Plan? {
+        val exposureRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) ?: return null
+        val isoRange = profile.characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: return null
+        return SensorCadencePolicy.resolveFromLight(
+            fps = profile.targetFps,
+            light = light,
+            exposureMinNs = exposureRange.lower,
+            exposureMaxNs = exposureRange.upper,
+            sensitivityMinIso = isoRange.lower,
+            sensitivityMaxIso = isoRange.upper,
+            maxFrameDurationNs = 0L,
+            manualSensorSupported = true,
+            lowLightPriority = true,
+            comfortIso = SOFT_AE_COMFORT_ISO
+        )
+    }
+
+    private fun runHighSpeedManualBrightness(profile: CameraProfile, ae: SoftAutoExposure, luma: Double, sat: Double) {
+        val before = ae.light
+        val light = ae.update(luma, sat)
+        val plan = highSpeedPlan(profile, light) ?: return
+        Log.i("SteadyVaultCfr", "brilho high-speed manual: luma=%.2f alvo=%.2f -> exp=%dus iso=%d".format(luma, ae.target, plan.exposureTimeNs / 1000, plan.sensitivityIso))
+        if (light == before) return
+        val old = hsManualPlan
+        if (old != null && old.exposureTimeNs == plan.exposureTimeNs && old.sensitivityIso == plan.sensitivityIso) return
+        hsManualPlan = plan
+        submitHighSpeedBurst(profile)
     }
 
     private fun fixedCadencePlan(
@@ -2666,11 +2821,20 @@ class CaptureService : Service() {
         profile: CameraProfile
     ) {
         setSafely(builder, CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-        setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
-        setSafely(builder, CaptureRequest.CONTROL_AE_LOCK, false)
-        profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)?.let {
-            setSafely(builder, CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, highSpeedCompensation.coerceIn(it.lower, it.upper))
+        val manualPlan = hsManualPlan
+        if (manualPlan != null) {
+            setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+            setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
+            setSafely(builder, CaptureRequest.SENSOR_FRAME_DURATION, manualPlan.frameDurationNs)
+            setSafely(builder, CaptureRequest.SENSOR_EXPOSURE_TIME, manualPlan.exposureTimeNs)
+            setSafely(builder, CaptureRequest.SENSOR_SENSITIVITY, manualPlan.sensitivityIso)
+        } else {
+            setSafely(builder, CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+            setSafely(builder, CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, profile.fpsRange)
+            setSafely(builder, CaptureRequest.CONTROL_AE_LOCK, false)
+            profile.characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)?.let {
+                setSafely(builder, CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, highSpeedCompensation.coerceIn(it.lower, it.upper))
+            }
         }
 
         // Constrained high-speed não herdava o anti-banding do request regular.
@@ -3253,6 +3417,7 @@ class CaptureService : Service() {
     }
 
     private fun releaseCameraOnly() {
+        closeHighSpeedAnalysis()
         synchronized(resourceLock) {
             runCatching { captureSession?.close() }
             captureSession = null

@@ -18,16 +18,17 @@ import kotlin.math.pow
 class SoftAutoExposure(
     initialLight: Double,
     private val minLight: Double,
-    private val maxLight: Double
+    private val maxLight: Double,
+    fixedTarget: Double? = null
 ) {
     var light: Double = initialLight.coerceIn(minLight, maxLight)
         private set
 
     /** Luminância alvo (0..1), calibrada nas duas primeiras medidas (o AE da HAL já convergiu). */
-    var target: Double = 0.45
+    var target: Double = fixedTarget ?: 0.45
         private set
 
-    private var calibrationCount = 0
+    private var calibrationCount = if (fixedTarget != null) CALIBRATION_SAMPLES else 0
     private var calibrationSum = 0.0
 
     /** Atualiza com a luminância média (0..1) e a fração de pixels saturados; devolve a nova luz. */

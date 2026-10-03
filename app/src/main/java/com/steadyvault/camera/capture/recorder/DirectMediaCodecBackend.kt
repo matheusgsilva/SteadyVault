@@ -47,6 +47,8 @@ class DirectMediaCodecBackend(
     private val analysisEnabled: Boolean = false,
     private val onAnalysisFrame: ((ByteArray, Int, Int) -> Unit)? = null,
     private val analysisIntervalMs: Long = 700L,
+    /** Alta velocidade: a câmera grava direto na Surface do encoder (sem ponte GPU), como o MediaRecorder. */
+    private val directCamera: Boolean = false,
     private val onError: (Throwable) -> Unit
 ) : RecordingBackend {
 
@@ -56,7 +58,7 @@ class DirectMediaCodecBackend(
 
     // Retrato: o arquivo já sai girado pela GPU (dimensões trocadas, hint 0). Girar só pelo
     // hint do muxer deixa players/galerias exibindo o vídeo de lado.
-    private val physicallyRotatePortrait = orientationHint == 90 || orientationHint == 270
+    private val physicallyRotatePortrait = !directCamera && (orientationHint == 90 || orientationHint == 270)
     private val encoderWidth = if (physicallyRotatePortrait) height else width
     private val encoderHeight = if (physicallyRotatePortrait) width else height
     private val encoderOrientationHint = if (physicallyRotatePortrait) 0 else orientationHint
@@ -93,6 +95,7 @@ class DirectMediaCodecBackend(
     @Volatile private var ptsHoles = 0L
     @Volatile private var framesLostByEncoder = 0L
     @Volatile private var maxPtsDeltaUs = 0L
+    @Volatile private var writtenSpanUs = 0L
 
     private val committed = AtomicBoolean(false)
     private val stopRequested = AtomicBoolean(false)
@@ -154,21 +157,25 @@ class DirectMediaCodecBackend(
                 drain(mediaCodec, mediaMuxer)
             }
 
-            val bridge = RealTimeCfrSurfaceBridge(
-                encoderSurface = encoderSurface,
-                sourceWidth = width,
-                sourceHeight = height,
-                outputWidth = encoderWidth,
-                outputHeight = encoderHeight,
-                physicalRotationDegrees = if (physicallyRotatePortrait) orientationHint else 0,
-                fps = targetFps,
-                analysisEnabled = analysisEnabled,
-                onAnalysisFrame = onAnalysisFrame,
-                analysisIntervalMs = analysisIntervalMs,
-                onError = onError
-            )
-            cfrBridge = bridge
-            val cameraSurface = bridge.prepare()
+            val cameraSurface = if (directCamera) {
+                encoderSurface
+            } else {
+                val bridge = RealTimeCfrSurfaceBridge(
+                    encoderSurface = encoderSurface,
+                    sourceWidth = width,
+                    sourceHeight = height,
+                    outputWidth = encoderWidth,
+                    outputHeight = encoderHeight,
+                    physicalRotationDegrees = if (physicallyRotatePortrait) orientationHint else 0,
+                    fps = targetFps,
+                    analysisEnabled = analysisEnabled,
+                    onAnalysisFrame = onAnalysisFrame,
+                    analysisIntervalMs = analysisIntervalMs,
+                    onError = onError
+                )
+                cfrBridge = bridge
+                bridge.prepare()
+            }
             cameraInputSurface = cameraSurface
 
             prepared = true
@@ -330,6 +337,7 @@ class DirectMediaCodecBackend(
                                 }
                                 mediaMuxer.writeSampleData(videoTrack, buffer, adjusted)
                                 writtenSamples++
+                                writtenSpanUs = ptsUs - firstPtsUs
 
                                 // Buraco de PTS na SAÍDA do encoder: a ponte entrega uma grade
                                 // perfeita, então qualquer intervalo > 1,5 frame aqui é frame
@@ -561,7 +569,11 @@ class DirectMediaCodecBackend(
                 "quadrosPerdidosNoEncoder=$framesLostByEncoder " +
                 "maiorIntervalo=${maxPtsDeltaUs / 1000}ms fps=$targetFps"
         )
-        if (framesLostByEncoder > 0L) {
+        if (writtenSamples > 1L && writtenSpanUs > 0L) {
+            val recordedFps = (writtenSamples - 1) * 1_000_000.0 / writtenSpanUs
+            Log.i(TAG, "FPS gravado no arquivo: %.2f nominal=%d (%.1f%%)".format(recordedFps, targetFps, recordedFps * 100.0 / targetFps))
+        }
+        if (framesLostByEncoder > 0L && !directCamera) {
             Log.w(
                 TAG,
                 "o ENCODER pulou $framesLostByEncoder frame(s): o gap está depois da ponte CFR " +

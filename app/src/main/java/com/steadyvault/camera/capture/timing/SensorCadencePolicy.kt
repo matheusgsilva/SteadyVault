@@ -10,7 +10,7 @@ object SensorCadencePolicy {
     )
 
     /** Cadência fixa (AE_MODE_OFF + duração de quadro fixa) vale para as taxas altas do sensor. */
-    fun supportsFixedCadence(fps: Int): Boolean = fps == 60 || fps == 120
+    fun supportsFixedCadence(fps: Int): Boolean = fps == 60 || fps == 120 || fps == 240
 
     fun resolve(
         fps: Int,
