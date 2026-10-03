@@ -23,7 +23,6 @@ import androidx.media3.common.util.UnstableApi
 import com.steadyvault.camera.R
 import com.steadyvault.camera.core.feedback.Haptics
 import com.steadyvault.camera.core.settings.CaptureSettings
-import com.steadyvault.camera.processing.auto.AutoGapRepairService
 import com.steadyvault.camera.storage.vault.MediaThumbnailRepository
 import com.steadyvault.camera.storage.vault.VaultMediaCacheSettings
 import com.steadyvault.camera.storage.vault.VaultRepository
@@ -753,7 +752,6 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
             OneUiDialog.Choice("Abrir", "Visualizar esta mídia."),
             OneUiDialog.Choice("Detalhes", "Ver resolução, duração, tamanho e data."),
             OneUiDialog.Choice("Cortar/editar", "Abrir o player já no modo de corte com prévia."),
-            OneUiDialog.Choice("Pós-processar agora", "Analisar gaps e reconstruir a fluidez usando a fila robusta."),
             OneUiDialog.Choice("Exportar", "Criar uma cópia na galeria do aparelho."),
             OneUiDialog.Choice("Mover para a lixeira", "Pode restaurar depois.", destructive = true),
             OneUiDialog.Choice("Excluir direto", "Apaga permanentemente, sem lixeira.", destructive = true)
@@ -774,10 +772,9 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
                     0 -> open(item)
                     1 -> showMediaDetails(item)
                     2 -> openTrimEditor(item)
-                    3 -> runPostProcessing(item)
-                    4 -> export(item)
-                    5 -> bulkMoveToTrash(listOf(item))
-                    6 -> confirmDirectDelete(listOf(item))
+                    3 -> export(item)
+                    4 -> bulkMoveToTrash(listOf(item))
+                    5 -> confirmDirectDelete(listOf(item))
                 }
             } else {
                 when (option) {
@@ -824,19 +821,6 @@ abstract class PrivateVaultGalleryActivity : ComponentActivity() {
                 .putExtra(mediaPlayerVaultExtra, true)
                 .putExtra(MediaPlayerActivity.EXTRA_START_TRIM, true)
         )
-    }
-
-    private fun runPostProcessing(item: VaultRepository.MediaItem) {
-        val started = AutoGapRepairService.repairNow(this, item.file)
-        Toast.makeText(
-            this,
-            if (started) {
-                "Pós-processamento iniciado em segundo plano"
-            } else {
-                "Não foi possível iniciar o pós-processamento"
-            },
-            Toast.LENGTH_SHORT
-        ).show()
     }
 
     private fun export(item: VaultRepository.MediaItem) {

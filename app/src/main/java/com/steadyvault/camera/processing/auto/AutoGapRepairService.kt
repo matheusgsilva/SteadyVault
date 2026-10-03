@@ -674,27 +674,6 @@ class AutoGapRepairService : Service() {
         }
 
 
-        fun repairNow(context: Context, source: File): Boolean {
-            if (!source.isFile || !VaultRepository.isInsideKnownVault(context, source)) return false
-
-            // Pedido manual também respeita a mesma regra do automático: com o app
-            // aberto ou durante gravação, apenas persiste na fila. O processamento
-            // começa somente quando o app entra em segundo plano e a câmera está livre.
-            AutoGapRepairSettings.setEnabled(context, true)
-            AutoGapRepairQueueStore.enqueue(context, source, 0)
-            userPauseRequested = false
-            manualDrainRequested = true
-
-            if (
-                capturePriorityRequested ||
-                interactiveBlocksProcessing() ||
-                CaptureStateStore.isBusy(context)
-            ) return true
-
-            startSelf(context, ACTION_RESUME)
-            return true
-        }
-
         fun pauseForCapture(context: Context) {
             // O flag é atualizado no mesmo processo antes de qualquer IPC: o transcoder
             // enxerga o cancelamento imediatamente, sem fazer a câmera esperar.
