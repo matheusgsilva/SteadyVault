@@ -35,12 +35,6 @@ object BackgroundRecordingZoom {
         return effective
     }
 
-    fun cycle(context: Context): Float {
-        val available = supported(context)
-        val current = selected(context)
-        val index = available.indexOfFirst { abs(it - current) < 0.05f }
-        return set(context, available[(index + 1) % available.size])
-    }
 
     fun cameraSelection(context: Context): CameraSelection? {
         val options = CameraLensCatalog.options(context)

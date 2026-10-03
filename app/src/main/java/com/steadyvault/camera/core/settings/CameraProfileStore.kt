@@ -141,18 +141,6 @@ object CameraProfileStore {
             .getString(if (front) LAST_FRONT_CAMERA else LAST_BACK_CAMERA, null)
             ?.takeIf { it.isNotBlank() }
 
-    fun resetProfile(
-        context: Context,
-        cameraId: String,
-        mode: FunctionMode,
-        fallback: CaptureSettings.Snapshot = CaptureSettings.snapshot(context)
-    ) {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val prefix = scopePrefix(cameraId, scopeFor(mode, fallback))
-        val editor = prefs.edit()
-        prefs.all.keys.filter { it.startsWith(prefix) }.forEach(editor::remove)
-        editor.apply()
-    }
 
 
     private fun ensureScope(

@@ -673,32 +673,6 @@ class AutoGapRepairService : Service() {
             startSelf(context, ACTION_RESUME)
         }
 
-        /**
-         * Pós-processamento disparado ao finalizar uma gravação.
-         * O vídeo é somente enfileirado enquanto o app estiver em primeiro plano.
-         * A fila só pode drenar quando todas as Activities estiverem em segundo plano
-         * e não houver captura/gravação usando a câmera.
-         */
-        fun enqueueAfterRecording(
-            context: Context,
-            source: File,
-            targetFps: Int,
-            startImmediately: Boolean
-        ) {
-            if (!source.isFile) return
-            if (startImmediately) {
-                AutoGapRepairSettings.setEnabled(context, true)
-                userPauseRequested = false
-                immediateWidgetDrainRequested = true
-                AutoGapRepairQueueStore.recoverInterrupted(context)
-                AutoGapRepairQueueStore.removeMissingSources(context)
-            }
-            if (!AutoGapRepairSettings.snapshot(context).enabled) return
-            AutoGapRepairQueueStore.enqueue(context, source, targetFps)
-            if (capturePriorityRequested || CaptureStateStore.isBusy(context)) return
-            if (interactiveBlocksProcessing() || userPauseRequested) return
-            startSelf(context, ACTION_RESUME)
-        }
 
         fun repairNow(context: Context, source: File): Boolean {
             if (!source.isFile || !VaultRepository.isInsideKnownVault(context, source)) return false
@@ -744,16 +718,7 @@ class AutoGapRepairService : Service() {
         private fun interactiveBlocksProcessing(): Boolean =
             interactivePriorityRequested
 
-        fun pauseForInteractiveUse() {
-            // Same-process flag: a running transcoder observes this in its cancellation
-            // callback without starting another Android service just to stop work.
-            interactivePriorityRequested = true
-        }
 
-        fun resumeForBackground(context: Context) {
-            interactivePriorityRequested = false
-            resumeIfEnabled(context)
-        }
 
         fun cancelAndForget(context: Context, source: File) {
             val normalized = source.absoluteFile.normalize()
@@ -767,21 +732,7 @@ class AutoGapRepairService : Service() {
             }
         }
 
-        fun pauseByUser(context: Context) {
-            userPauseRequested = true
-            runCatching {
-                context.startService(
-                    Intent(context, AutoGapRepairService::class.java).setAction(ACTION_PAUSE_USER)
-                )
-            }
-        }
 
-        fun resumeByUser(context: Context) {
-            userPauseRequested = false
-            AutoGapRepairQueueStore.recoverInterrupted(context)
-            AutoGapRepairQueueStore.removeMissingSources(context)
-            resumeIfEnabled(context)
-        }
 
         fun resumeIfEnabled(context: Context) {
             if (!AutoGapRepairSettings.snapshot(context).enabled) return
@@ -803,18 +754,6 @@ class AutoGapRepairService : Service() {
             resumeIfEnabled(context)
         }
 
-        fun awaitReleasedForCapture(timeoutMs: Long = 2_500L): Boolean {
-            val deadline = SystemClock.elapsedRealtime() + timeoutMs.coerceAtLeast(0L)
-            while (processingActive && SystemClock.elapsedRealtime() < deadline) {
-                try {
-                    Thread.sleep(25L)
-                } catch (_: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    return !processingActive
-                }
-            }
-            return !processingActive
-        }
 
         private fun startSelf(context: Context, action: String, configure: Intent.() -> Unit = {}) {
             val intent = Intent(context, AutoGapRepairService::class.java).setAction(action).apply(configure)

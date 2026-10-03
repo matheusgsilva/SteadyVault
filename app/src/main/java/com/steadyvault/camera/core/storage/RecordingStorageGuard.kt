@@ -55,34 +55,6 @@ object RecordingStorageGuard {
         }
     }
 
-    /** Reserva mínima reavaliada durante a gravação para finalizar antes de o disco esgotar. */
-    fun checkOngoing(
-        context: Context,
-        videoBitrateBps: Long,
-        audioBitrateBps: Long
-    ): Result {
-        val bytesPerSecond = (
-            videoBitrateBps.coerceAtLeast(MIN_VIDEO_BITRATE_BPS) +
-                audioBitrateBps.coerceAtLeast(DEFAULT_AUDIO_BITRATE_BPS)
-            ) / 8L
-        val required = max(
-            RUNTIME_MINIMUM_FREE_BYTES,
-            bytesPerSecond * RUNTIME_SAFETY_SECONDS + RUNTIME_FILESYSTEM_RESERVE_BYTES
-        )
-        val spaces = storageSpaces(context)
-        val available = spaces.minOfOrNull { it.second } ?: 0L
-        val failing = spaces.firstOrNull { it.second < required }
-        return when {
-            spaces.isEmpty() -> Result(false, required, 0L, "Não foi possível acompanhar o espaço livre.")
-            failing != null -> Result(
-                false,
-                required,
-                failing.second,
-                "Espaço crítico: restam ${formatBytes(failing.second)}; reservando o trecho gravado."
-            )
-            else -> Result(true, required, available, "Espaço de gravação monitorado.")
-        }
-    }
 
     private fun storageSpaces(context: Context): List<Pair<File, Long>> = listOf(
         context.cacheDir,
@@ -120,7 +92,4 @@ object RecordingStorageGuard {
     private const val MIN_REQUIRED_BYTES = 768L * 1024L * 1024L
     private const val MIN_VIDEO_BITRATE_BPS = 8_000_000L
     private const val DEFAULT_AUDIO_BITRATE_BPS = 256_000L
-    private const val RUNTIME_SAFETY_SECONDS = 60L
-    private const val RUNTIME_FILESYSTEM_RESERVE_BYTES = 192L * 1024L * 1024L
-    private const val RUNTIME_MINIMUM_FREE_BYTES = 512L * 1024L * 1024L
 }

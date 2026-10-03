@@ -1003,49 +1003,6 @@ class RealTimeCfrSurfaceBridge(
         }
     }
 
-    private fun renderExternal(
-        st: SurfaceTexture,
-        textureMatrix: FloatArray,
-        program: Int,
-        externalTexture: Int,
-        vertices: FloatBuffer,
-        texCoords: FloatBuffer,
-        viewportWidth: Int = outputWidth,
-        viewportHeight: Int = outputHeight,
-        rotationDegrees: Int = physicalRotationDegrees,
-        look: Boolean = false
-    ) {
-        st.getTransformMatrix(textureMatrix)
-        val shaderRotation = if (rotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, rotationDegrees)
-        GLES20.glViewport(0, 0, viewportWidth, viewportHeight)
-        GLES20.glUseProgram(program)
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uRotationDegrees"), shaderRotation.toFloat())
-
-        val positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-        val texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord")
-        val matrixHandle = GLES20.glGetUniformLocation(program, "uTextureMatrix")
-        val samplerHandle = GLES20.glGetUniformLocation(program, "sTexture")
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uLook"), if (look && APPLY_LOOK) 1f else 0f)
-        GLES20.glUniform2f(
-            GLES20.glGetUniformLocation(program, "uLookTexel"),
-            VideoLook.RADIUS_PX / viewportWidth,
-            VideoLook.RADIUS_PX / viewportHeight
-        )
-
-        vertices.position(0)
-        GLES20.glEnableVertexAttribArray(positionHandle)
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertices)
-
-        texCoords.position(0)
-        GLES20.glEnableVertexAttribArray(texCoordHandle)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
-
-        GLES20.glUniformMatrix4fv(matrixHandle, 1, false, textureMatrix, 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, externalTexture)
-        GLES20.glUniform1i(samplerHandle, 0)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-    }
 
     @Volatile private var matrixLogged = false
 
@@ -1203,8 +1160,6 @@ class RealTimeCfrSurfaceBridge(
         GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, texCoords)
     }
 
-    private fun currentRotation(textureMatrix: FloatArray): Int =
-        if (physicalRotationDegrees == 0) 0 else resolveShaderRotation(textureMatrix, physicalRotationDegrees)
 
     /** Rede de segurança (sem movimento): crossfade temporal entre dois frames do anel + look. */
     private fun renderBlendToEncoder(
@@ -1509,7 +1464,6 @@ class RealTimeCfrSurfaceBridge(
             }
 
     companion object {
-        private const val BACKGROUND_ANALYSIS_INTERVAL_MS = 700L
 
         /**
          * Texturas do anel (4K RGBA ~33 MB cada): frame anterior + frame em processamento +
@@ -1557,11 +1511,7 @@ class RealTimeCfrSurfaceBridge(
         /** Acima disso (lacuna longa) o movimento entre os frames reais já não é estimável: crossfade. */
         private const val MAX_MOTION_OUTPUTS = 4
 
-        private const val ANALYSIS_FAILED = -2f
 
-        /** Abaixo disso (fração de texels 1/8 que mudaram) o frame é idêntico ao anterior. */
-        private const val DUPLICATE_CHANGED_FRACTION = 0.002f
-        private const val MAX_CONSECUTIVE_SKIPS = 2
 
         // Rotações de UV horárias como matriz row-major [00,01,10,11].
         private val ROTATION_CANDIDATES = listOf(
@@ -1635,12 +1585,6 @@ class RealTimeCfrSurfaceBridge(
 
         private const val VERTEX_SHADER_BLEND = VERTEX_SHADER_EXTERNAL
 
-        private val IDENTITY_MATRIX = floatArrayOf(
-            1f, 0f, 0f, 0f,
-            0f, 1f, 0f, 0f,
-            0f, 0f, 1f, 0f,
-            0f, 0f, 0f, 1f
-        )
 
         // Cópia câmera -> anel com denoise temporal recursivo, gated por movimento.
         private const val FRAGMENT_SHADER_INGEST = """

@@ -73,7 +73,6 @@ object AppStorageCatalog {
         return Category(id, label, description, metrics.first, metrics.second, clearable)
     }
 
-    private fun fileCategory(id: String, label: String, description: String, file: File): Category = Category(id, label, description, if (file.isFile) 1 else 0, if (file.isFile) file.length().coerceAtLeast(0L) else 0L)
 
     private fun cacheCategory(context: Context): Category {
         val roots = listOfNotNull(context.cacheDir, context.externalCacheDir, File(context.applicationInfo.dataDir, "code_cache")).distinctBy(::canonicalPath)

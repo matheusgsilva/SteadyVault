@@ -97,24 +97,7 @@ object CaptureStateStore {
             .apply()
     }
 
-    fun rememberValidatedModeForFps(context: Context, resolutionValue: String, resolutionLabel: String, fps: Int) {
-        if (fps <= 0 || resolutionLabel.isBlank()) return
-        val safeValue = resolutionValue.takeIf { it in CaptureSettings.supportedResolutionValues }
-            ?: resolutionValueFromLabel(resolutionLabel)
-        preferences(context).edit()
-            .putString(historyResolutionValueKey(fps), safeValue)
-            .putString(historyResolutionLabelKey(fps), resolutionLabel)
-            .putLong(historyUpdatedKey(fps), System.currentTimeMillis())
-            .apply()
-    }
 
-    fun clearEffectiveModeHistoryForFps(context: Context, fps: Int) {
-        preferences(context).edit()
-            .remove(historyResolutionValueKey(fps))
-            .remove(historyResolutionLabelKey(fps))
-            .remove(historyUpdatedKey(fps))
-            .apply()
-    }
 
     fun effectiveMode(context: Context): EffectiveMode? {
         val preferences = preferences(context)

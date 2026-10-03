@@ -275,35 +275,7 @@ class HardwareVideoTranscoder {
                 drainEncoder(false)
             }
 
-            fun interpolateCorrection(
-                from: MotionTrajectoryStabilizer.Correction,
-                to: MotionTrajectoryStabilizer.Correction,
-                alpha: Float
-            ): MotionTrajectoryStabilizer.Correction {
-                val a = alpha.coerceIn(0f, 1f)
-                return MotionTrajectoryStabilizer.Correction(
-                    xUv = from.xUv + (to.xUv - from.xUv) * a,
-                    yUv = from.yUv + (to.yUv - from.yUv) * a,
-                    rotationRad = from.rotationRad + (to.rotationRad - from.rotationRad) * a,
-                    zoom = from.zoom + (to.zoom - from.zoom) * a,
-                    jankDetected = from.jankDetected || to.jankDetected,
-                    confidence = from.confidence + (to.confidence - from.confidence) * a
-                )
-            }
 
-            fun decayCorrection(
-                correction: MotionTrajectoryStabilizer.Correction
-            ): MotionTrajectoryStabilizer.Correction {
-                val factor = 0.72f
-                return MotionTrajectoryStabilizer.Correction(
-                    xUv = correction.xUv * factor,
-                    yUv = correction.yUv * factor,
-                    rotationRad = correction.rotationRad * factor,
-                    zoom = 1f + (correction.zoom - 1f) * factor,
-                    jankDetected = false,
-                    confidence = correction.confidence * factor
-                )
-            }
 
             fun writeCurrentFrame(
                 ptsUs: Long,

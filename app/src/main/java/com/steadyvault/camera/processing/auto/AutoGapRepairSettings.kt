@@ -87,9 +87,5 @@ object AutoGapRepairSettings {
             .edit().putString(KEY_MODE, safe.name).apply()
     }
 
-    fun setMaxInterpolatedFramesPerGap(context: Context, value: Int) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putInt(KEY_MAX_FRAMES, value.coerceIn(1, 30)).apply()
-    }
 
 }

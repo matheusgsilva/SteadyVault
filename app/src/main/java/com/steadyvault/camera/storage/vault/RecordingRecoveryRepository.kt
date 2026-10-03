@@ -137,7 +137,6 @@ object RecordingRecoveryRepository {
         }
     }
 
-    fun recoveryBytes(context: Context): Long = directory(context).walkTopDown().filter(File::isFile).sumOf { it.length().coerceAtLeast(0L) }
 
     private fun preserveBroken(context: Context, raw: File): File? {
         val target = uniqueFile(directory(context), "Erro_GravacaoInterrompida_${System.currentTimeMillis()}.mp4")

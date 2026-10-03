@@ -41,6 +41,4 @@ object CaptureCadencePolicy {
         return measuredFps >= targetFps * safeRatio && measuredFps <= targetFps * maximumRatio
     }
 
-    fun fastPathAllowed(confidence: Confidence, targetFps: Int): Boolean =
-        targetFps < 60 || confidence == Confidence.CONFIRMED
 }

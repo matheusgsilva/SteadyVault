@@ -20,20 +20,6 @@ object PhotoPerformanceTracker {
         val width: Int,
         val height: Int
     ) {
-        fun displayText(): String = buildString {
-            append(width).append('×').append(height).append(" • total ").append(totalMs).append(" ms")
-            append('\n').append("Preparação: ").append(prepareMs).append(" ms")
-            append(" • câmera/JPEG: ").append(sensorToJpegMs).append(" ms")
-            append(" • gravação: ").append(writeMs).append(" ms")
-            val bottleneck = maxOf(prepareMs, sensorToJpegMs, writeMs)
-            append('\n').append("Maior etapa: ").append(
-                when (bottleneck) {
-                    prepareMs -> "preparação/foco"
-                    sensorToJpegMs -> "sensor/processamento JPEG"
-                    else -> "gravação no cofre"
-                }
-            )
-        }
     }
 
     fun begin() = synchronized(lock) {
@@ -81,18 +67,4 @@ object PhotoPerformanceTracker {
             .apply()
     }
 
-    fun lastReport(context: Context): Report? {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val measured = prefs.getLong("measured_at", 0L)
-        if (measured <= 0L) return null
-        return Report(
-            measuredAtMillis = measured,
-            prepareMs = prefs.getLong("prepare_ms", 0L),
-            sensorToJpegMs = prefs.getLong("camera_ms", 0L),
-            writeMs = prefs.getLong("write_ms", 0L),
-            totalMs = prefs.getLong("total_ms", 0L),
-            width = prefs.getInt("width", 0),
-            height = prefs.getInt("height", 0)
-        )
-    }
 }

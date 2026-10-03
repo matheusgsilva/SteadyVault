@@ -1309,91 +1309,6 @@ class CaptureActivity : ComponentActivity() {
         HardwareSupportPolicy.shouldExpose(supportOf(value))
     } > 1
 
-    private fun showLiveSettingsMenu() {
-        if (CaptureStateStore.isBusy(this) || photoBusy || PhotoCaptureStateStore.isBusy(this)) {
-            Toast.makeText(this, "Pare a captura antes de alterar as configurações.", Toast.LENGTH_LONG).show()
-            return
-        }
-        val settings = CaptureSettings.snapshot(this)
-        val features = selectedCameraFeatures()
-        val actions = mutableListOf<Pair<OneUiDialog.Choice, () -> Unit>>()
-        actions.add(OneUiDialog.Choice("Resolução", CaptureSettings.resolutionLabel(settings.resolution)) to ::showLiveResolutionChoices)
-        actions.add(OneUiDialog.Choice("Taxa de quadros", "${settings.fps} FPS") to ::showLiveFpsChoices)
-        val hdrSupport = features?.hdrHlg10 ?: Support.UNVERIFIED
-        val hdrAvailable = settings.codec != CaptureSettings.CODEC_AVC &&
-            HardwareSupportPolicy.shouldExpose(hdrSupport)
-        if (hdrAvailable) {
-            actions.add(OneUiDialog.Choice("HDR HLG10", if (settings.hdrHlg10) "Ativado" else "Desativado") to ::showLiveHdrChoices)
-        }
-        if (hasMultipleExposedValues(CaptureSettings.supportedWhiteBalanceValues) { value ->
-                features?.whiteBalanceSupport(value) ?: Support.UNVERIFIED
-            }) {
-            actions.add(OneUiDialog.Choice("Balanço de branco", whiteBalanceLabel(settings.whiteBalanceMode)) to ::showLiveWhiteBalanceChoices)
-        }
-        if (hasMultipleExposedValues(CaptureSettings.supportedYellowReductionValues) { value ->
-                yellowReductionSupport(features, value)
-            }) {
-        }
-        if (features?.exposureCompensationSupported != false) {
-            actions.add(OneUiDialog.Choice("Exposição", exposureLabel(settings.exposureCompensation)) to ::showLiveExposureChoices)
-        }
-        if (hasMultipleExposedValues(
-                listOf(
-                    CaptureSettings.STABILIZATION_PREVIEW,
-                    CaptureSettings.STABILIZATION_EIS,
-                    CaptureSettings.STABILIZATION_OIS,
-                    CaptureSettings.STABILIZATION_OFF
-                )
-            ) { value -> stabilizationSupport(settings, features, value) }) {
-            actions.add(OneUiDialog.Choice("Estabilização", stabilizationLabel(settings.stabilization)) to ::showLiveStabilizationChoices)
-        }
-        if (hasMultipleExposedValues(
-                listOf(
-                    CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
-                    CaptureSettings.FOCUS_CONTINUOUS_PICTURE,
-                    CaptureSettings.FOCUS_AUTO,
-                    CaptureSettings.FOCUS_OFF
-                )
-            ) { value -> focusSupport(settings, features, value) }) {
-            actions.add(OneUiDialog.Choice("Foco", focusLabel(settings.focusMode)) to ::showLiveFocusChoices)
-        }
-        if (!settings.hdrHlg10 && settings.fps < CaptureModeStore.FPS_60) {
-        }
-        val processingCandidates = listOf(
-            CaptureSettings.PROCESSING_AUTO,
-            CaptureSettings.PROCESSING_OFF,
-            CaptureSettings.PROCESSING_FAST,
-            CaptureSettings.PROCESSING_HIGH_QUALITY
-        )
-        if (hasMultipleExposedValues(processingCandidates) { value ->
-                processingSupport(settings, features, value, noise = true)
-            }) {
-        }
-        if (hasMultipleExposedValues(processingCandidates) { value ->
-                processingSupport(settings, features, value, noise = false)
-            }) {
-        }
-        if (hasMultipleExposedValues(
-                listOf(
-                    CaptureSettings.ANTIBANDING_AUTO,
-                    CaptureSettings.ANTIBANDING_50HZ,
-                    CaptureSettings.ANTIBANDING_60HZ,
-                    CaptureSettings.ANTIBANDING_OFF
-                )
-            ) { value -> features?.antibandingSupport(value) ?: Support.UNVERIFIED }) {
-            actions.add(OneUiDialog.Choice("Anti-flicker", antibandingLabel(settings.antibanding)) to ::showLiveAntibandingChoices)
-        }
-        actions.add(OneUiDialog.Choice("Codec e bitrate", "${codecLabel(settings.codec)} • ${settings.bitrateMbps} Mbps") to ::showLiveCodecAndBitrateMenu)
-        actions.add(OneUiDialog.Choice("Todos os ajustes avançados", "Abre a tela completa e retorna ao preview") to ::openAdvancedSettingsFromPreview)
-        OneUiDialog.choices(
-            activity = this,
-            title = "Ajustes ao vivo",
-            message = "Cada alteração é salva imediatamente, reinicia apenas a sessão de visualização e será usada também nas capturas feitas fora do preview.",
-            choices = actions.map { it.first }
-        ) { index ->
-            actions.getOrNull(index)?.second?.invoke()
-        }
-    }
 
     private fun startSmartPoseAnalysis() {
         mainHandler.removeCallbacks(smartPoseAnalysisRunnable)
@@ -1691,27 +1606,6 @@ class CaptureActivity : ComponentActivity() {
         ) { position -> applyLiveSettings(settings.copy(whiteBalanceMode = values[position]), "Balanço de branco atualizado") }
     }
 
-    private fun showLiveYellowReductionChoices() {
-        val settings = CaptureSettings.snapshot(this)
-        val features = selectedCameraFeatures()
-        fun support(value: String): Support = yellowReductionSupport(features, value)
-        val candidates = CaptureSettings.supportedYellowReductionValues.toList()
-        val values = exposedFeatureValues(candidates, settings.yellowReduction, ::support)
-        OneUiDialog.choices(
-            activity = this,
-            title = "Neutralizar dominante amarela",
-            message = "A correção usa os ganhos medidos pela própria câmera quando o aparelho permite pós-processamento manual.",
-            choices = values.map { value ->
-                val featureSupport = support(value)
-                OneUiDialog.Choice(
-                    yellowReductionLabel(value),
-                    featureDescription(featureSupport, yellowReductionDescription(value)),
-                    featureSelectable(featureSupport)
-                )
-            },
-            selectedIndex = values.indexOf(settings.yellowReduction).coerceAtLeast(0)
-        ) { position -> applyLiveSettings(settings.copy(yellowReduction = values[position]), "Correção de cor atualizada") }
-    }
 
     private fun showLiveExposureChoices() {
         val settings = CaptureSettings.snapshot(this)
@@ -1782,53 +1676,7 @@ class CaptureActivity : ComponentActivity() {
         ) { position -> applyLiveSettings(settings.copy(focusMode = values[position]), "Modo de foco atualizado") }
     }
 
-    private fun showLiveColorProfileChoices() {
-        val settings = CaptureSettings.snapshot(this)
-        val values = listOf(CaptureSettings.COLOR_NATURAL, CaptureSettings.COLOR_SOFT, CaptureSettings.COLOR_FLAT)
-        val enabled = !settings.hdrHlg10 && settings.fps < CaptureModeStore.FPS_60
-        OneUiDialog.choices(
-            activity = this,
-            title = "Perfil de cor",
-            message = if (enabled) "A curva tonal é aplicada na câmera e aparece no preview." else "Perfis personalizados exigem SDR, câmera única e 30 FPS; em FPS alto a HAL usa o tonemap rápido.",
-            choices = values.map { value -> OneUiDialog.Choice(CaptureSettings.colorProfileLabel(value), colorProfileDescription(value), enabled || value == CaptureSettings.COLOR_NATURAL) },
-            selectedIndex = values.indexOf(settings.colorProfile)
-        ) { position -> applyLiveSettings(settings.copy(colorProfile = values[position]), "Perfil de cor atualizado") }
-    }
 
-    private fun showLiveProcessingChoices(noise: Boolean) {
-        val settings = CaptureSettings.snapshot(this)
-        val features = selectedCameraFeatures()
-        fun support(value: String): Support = processingSupport(settings, features, value, noise)
-        val candidates = listOf(
-            CaptureSettings.PROCESSING_AUTO,
-            CaptureSettings.PROCESSING_OFF,
-            CaptureSettings.PROCESSING_FAST,
-            CaptureSettings.PROCESSING_HIGH_QUALITY
-        )
-        val current = if (noise) settings.noiseReduction else settings.edgeMode
-        val values = exposedFeatureValues(candidates, current, ::support)
-        OneUiDialog.choices(
-            activity = this,
-            title = if (noise) "Redução de ruído" else "Nitidez da câmera",
-            message = if (settings.fps >= CaptureModeStore.FPS_60) {
-                "Em FPS alto a câmera pode substituir o modo escolhido por uma opção mais leve."
-            } else {
-                null
-            },
-            choices = values.map { value ->
-                val featureSupport = support(value)
-                OneUiDialog.Choice(
-                    processingLabel(value),
-                    featureDescription(featureSupport, processingDescription(value, noise)),
-                    featureSelectable(featureSupport)
-                )
-            },
-            selectedIndex = values.indexOf(current).coerceAtLeast(0)
-        ) { position ->
-            val updated = if (noise) settings.copy(noiseReduction = values[position]) else settings.copy(edgeMode = values[position])
-            applyLiveSettings(updated, if (noise) "Redução de ruído atualizada" else "Nitidez atualizada")
-        }
-    }
 
     private fun showLiveAntibandingChoices() {
         val settings = CaptureSettings.snapshot(this)
@@ -1995,21 +1843,7 @@ class CaptureActivity : ComponentActivity() {
         else -> "A câmera mede e estabiliza a cena"
     }
 
-    private fun yellowReductionLabel(value: String): String = when (value) {
-        CaptureSettings.YELLOW_REDUCTION_LIGHT -> "Leve"
-        CaptureSettings.YELLOW_REDUCTION_MEDIUM -> "Média"
-        CaptureSettings.YELLOW_REDUCTION_STRONG -> "Forte"
-        CaptureSettings.YELLOW_REDUCTION_AUTO -> "Automática conservadora"
-        else -> "Desativada"
-    }
 
-    private fun yellowReductionDescription(value: String): String = when (value) {
-        CaptureSettings.YELLOW_REDUCTION_LIGHT -> "Correção discreta"
-        CaptureSettings.YELLOW_REDUCTION_MEDIUM -> "Correção visível sem exagerar o azul"
-        CaptureSettings.YELLOW_REDUCTION_STRONG -> "Somente para luz muito amarela"
-        CaptureSettings.YELLOW_REDUCTION_AUTO -> "Só corrige quando os ganhos indicam luz quente"
-        else -> "Mantém a resposta original da câmera"
-    }
 
     private fun exposureLabel(value: Int): String = when {
         value > 0 -> "+$value EV"
@@ -2047,25 +1881,8 @@ class CaptureActivity : ComponentActivity() {
         else -> "Acompanha continuamente a cena"
     }
 
-    private fun colorProfileDescription(value: String): String = when (value) {
-        CaptureSettings.COLOR_SOFT -> "Contraste levemente reduzido"
-        CaptureSettings.COLOR_FLAT -> "Imagem plana para edição"
-        else -> "Curva natural BT.709"
-    }
 
-    private fun processingLabel(value: String): String = when (value) {
-        CaptureSettings.PROCESSING_OFF -> "Desativada"
-        CaptureSettings.PROCESSING_FAST -> "Rápida"
-        CaptureSettings.PROCESSING_HIGH_QUALITY -> "Alta qualidade"
-        else -> "Automática"
-    }
 
-    private fun processingDescription(value: String, noise: Boolean): String = when (value) {
-        CaptureSettings.PROCESSING_OFF -> if (noise) "Preserva textura e granulação" else "Evita halos artificiais"
-        CaptureSettings.PROCESSING_FAST -> "Processamento leve para manter FPS"
-        CaptureSettings.PROCESSING_HIGH_QUALITY -> if (noise) "Reduz mais ruído, podendo suavizar detalhes" else "Realça contornos com maior carga"
-        else -> "A câmera escolhe conforme o modo"
-    }
 
     private fun antibandingLabel(value: String): String = when (value) {
         CaptureSettings.ANTIBANDING_50HZ -> "50 Hz"
@@ -2500,22 +2317,6 @@ class CaptureActivity : ComponentActivity() {
         addPreviewSettingsAction(if (previewAeAfLocked) "Liberar AF/AE" else "Travar AF/AE", if (previewAeAfLocked) "Travado" else "Contínuo") { togglePreviewAeAfLock() }
         addPreviewSettingsAction("Grade 3×3", if (isPreviewGridEnabled()) "Ativada" else "Desativada") { togglePreviewGrid() }
     }
-    private fun renderGeneralSettingsActions(settings: CaptureSettings.Snapshot) {
-        previewSettingsActionsContainer.removeAllViews()
-        addPreviewSettingsAction(
-            "Perfil ativo",
-            activePreviewProfileSummary(settings)
-        ) { selectPreviewSettingsTab(PreviewSettingsTab.CAMERAS) }
-        addPreviewSettingsAction("Como funciona", "Preview configura o perfil ativo. Widget/tela preta usam o perfil salvo, sem reduzir qualidade escondido.") {
-            showPreviewProfileExplanation()
-        }
-        addPreviewSettingsAction("Ajustes rápidos", "Exposição, foco, cor, estabilização, codec e bitrate") {
-            showLiveSettingsMenu()
-        }
-        addPreviewSettingsAction("Redefinir perfil atual", "Restaura somente esta câmera e esta função", destructive = true) {
-            resetActiveCameraProfile()
-        }
-    }
 
     private fun renderPhotoSettingsActions(settings: CaptureSettings.Snapshot) {
         previewSettingsActionsContainer.removeAllViews()
@@ -2786,43 +2587,6 @@ class CaptureActivity : ComponentActivity() {
         )
     }
 
-    private fun resetActiveCameraProfile() {
-        val current = CaptureSettings.snapshot(this)
-        val cameraId = current.selectedCameraId ?: return
-        val mode = if (previewPhotoMode) CameraProfileStore.FunctionMode.PHOTO else CameraProfileStore.FunctionMode.VIDEO
-        OneUiDialog.confirm(
-            activity = this,
-            title = "Redefinir perfil",
-            message = "Somente o perfil ${if (previewPhotoMode) "de foto" else "de vídeo"} de ${CameraLensCatalog.labelFor(this, cameraId)} será restaurado.",
-            positiveLabel = "Redefinir",
-            destructive = true
-        ) {
-            CameraProfileStore.resetProfile(this, cameraId, mode)
-            val defaults = current.copy(
-                resolution = CaptureSettings.RESOLUTION_4K,
-                fps = 60,
-                codec = CaptureSettings.CODEC_HEVC,
-                bitrateMbps = CaptureSettings.defaultBitrateMbps(CaptureSettings.RESOLUTION_4K, 60, CaptureSettings.CODEC_HEVC),
-                hdrHlg10 = false,
-                colorProfile = CaptureSettings.COLOR_NATURAL,
-                stabilization = CaptureSettings.STABILIZATION_OFF,
-                focusMode = if (previewPhotoMode) CaptureSettings.FOCUS_CONTINUOUS_PICTURE else CaptureSettings.FOCUS_CONTINUOUS_VIDEO,
-                noiseReduction = CaptureSettings.PROCESSING_FAST,
-                edgeMode = CaptureSettings.PROCESSING_FAST,
-                antibanding = CaptureSettings.ANTIBANDING_AUTO,
-                whiteBalanceMode = CaptureSettings.WHITE_BALANCE_AUTO,
-                yellowReduction = CaptureSettings.YELLOW_REDUCTION_AUTO,
-                exposureCompensation = 0,
-                zoomRatio = 1f,
-                selectedCameraId = cameraId
-            )
-            CameraProfileStore.activate(this, cameraId, mode, defaults)
-            updatePreviewSettingsText()
-            renderPreviewQuickControls()
-            renderPreviewSettingsSheetContent()
-            restartPreviewForUpdatedSettings()
-        }
-    }
 
 
     private fun cameraProfileIcon(option: CameraLensCatalog.Option): Int = when {
@@ -4511,8 +4275,6 @@ class CaptureActivity : ComponentActivity() {
         // O layout sempre respeita a proporção real do buffer e nunca estica a imagem.
         private const val STANDARD_VIDEO_PREVIEW_BUFFER_WIDTH = 1280
         private const val STANDARD_VIDEO_PREVIEW_BUFFER_HEIGHT = 720
-        private const val HIGH_SPEED_VIDEO_PREVIEW_BUFFER_WIDTH = 1280
-        private const val HIGH_SPEED_VIDEO_PREVIEW_BUFFER_HEIGHT = 720
         private const val PHOTO_PREVIEW_BUFFER_WIDTH = 1280
         private const val PHOTO_PREVIEW_BUFFER_HEIGHT = 720
         private const val PREVIEW_UI_PREFS = "steadyvault_preview_ui"

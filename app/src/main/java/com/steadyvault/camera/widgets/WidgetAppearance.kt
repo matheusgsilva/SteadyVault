@@ -26,18 +26,6 @@ object WidgetAppearance {
 
     fun expandedDisabledBackground(context: Context): Int = disabledBackground(surfaceTheme(context), lock = false)
     fun lockDisabledBackground(context: Context): Int = lockDisabledFor(context, surfaceTheme(context))
-    fun lockRecordingBackground(context: Context): Int = lockCorner(
-        context,
-        R.drawable.bg_widget_lock_button_recording_compact,
-        R.drawable.bg_widget_lock_button_recording_balanced,
-        R.drawable.bg_widget_lock_button_recording_soft
-    )
-    fun lockStopBackground(context: Context): Int = lockCorner(
-        context,
-        R.drawable.bg_widget_lock_button_red_compact,
-        R.drawable.bg_widget_lock_button_red_balanced,
-        R.drawable.bg_widget_lock_button_red_soft
-    )
 
     /**
      * O host da tela de bloqueio usa RemoteViews e não consegue receber um GradientDrawable

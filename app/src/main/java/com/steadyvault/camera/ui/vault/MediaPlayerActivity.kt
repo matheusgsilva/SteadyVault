@@ -1525,8 +1525,6 @@ class MediaPlayerActivity : ComponentActivity() {
         private const val PRECISION_STATUS_MS = 1_500L
         private const val TRIM_FILMSTRIP_FRAMES = 9
         private const val TRIM_FILMSTRIP_MAXIMUM_SIDE = 240
-        private const val HIGH_FRAME_RATE_MIN = 230f
-        private const val HIGH_FRAME_RATE_MAX = 241.5f
         private const val HIGH_REFRESH_OUTPUT_MIN = 50f
         private const val MAX_PREFERRED_REFRESH_RATE = 120f
         private val PLAYBACK_SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)

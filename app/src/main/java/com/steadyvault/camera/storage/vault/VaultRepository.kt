@@ -141,11 +141,7 @@ object VaultRepository {
         }
     }
 
-    fun createScreenshotFiles(context: Context, destination: File): PrivateCaptureFiles =
-        createPrivateCaptureFiles(context, destination, "SV_SCREENSHOT", "png")
 
-    fun createScreenRecordingFiles(context: Context, destination: File): PrivateCaptureFiles =
-        createPrivateCaptureFiles(context, destination, "SV_SCREEN", "mp4")
 
     @Synchronized
     fun commitPrivateCapture(files: PrivateCaptureFiles): File {
@@ -170,11 +166,6 @@ object VaultRepository {
         return files.final
     }
 
-    fun discardPrivateCapture(files: PrivateCaptureFiles?) {
-        files ?: return
-        files.working.delete()
-        files.final.delete()
-    }
 
     fun cleanupStalePrivateCaptures(context: Context, destination: File) {
         val directory = requirePrivateCaptureDirectory(context, destination)
@@ -412,21 +403,6 @@ object VaultRepository {
         source.parentFile?.takeIf { source.isFile && isInsideKnownVault(context, source) && it.isDirectory }
             ?: primaryDirectory(context)
 
-    private fun createPrivateCaptureFiles(
-        context: Context,
-        destination: File,
-        prefix: String,
-        extension: String
-    ): PrivateCaptureFiles {
-        val directory = requirePrivateCaptureDirectory(context, destination)
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-        val final = uniqueFile(directory, "${prefix}_${stamp}.$extension")
-        val working = File(
-            directory,
-            "$PRIVATE_CAPTURE_WORK_PREFIX${final.name}$PRIVATE_CAPTURE_PENDING_SUFFIX"
-        )
-        return PrivateCaptureFiles(working, final)
-    }
 
     private fun requirePrivateCaptureDirectory(context: Context, destination: File): File {
         val requested = destination.canonicalFile

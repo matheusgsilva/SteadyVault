@@ -129,14 +129,7 @@ object VaultCleanupRepository {
         )
     }
 
-    fun protectTemporary(file: File) {
-        activeTemporaryPaths += normalizedPath(file)
-    }
 
-    fun releaseTemporary(file: File?) {
-        file ?: return
-        activeTemporaryPaths -= normalizedPath(file)
-    }
 
     fun runStartupCleanup(context: Context) {
         val app = context.applicationContext

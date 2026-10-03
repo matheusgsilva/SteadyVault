@@ -470,72 +470,6 @@ class CaptureService : Service() {
         }
     }
 
-    private fun prepareHeadlessInParallel(
-        cameraProfile: CameraProfile,
-        encoderProfile: EncoderProfile,
-        token: Int,
-        requestCameraOwnership: Boolean
-    ) {
-        if (!isAttemptValid(token)) return
-        synchronized(resourceLock) { headlessSessionStartToken = -1 }
-
-        sendStateOnMain("Abrindo câmera e encoder em paralelo…")
-        updateNotificationOnMain("Preparando captura rápida…")
-
-        encoderPreparationExecutor.execute encoderPreparation@{
-            try {
-                prepareOutputAndRecorder(cameraProfile, encoderProfile)
-            } catch (throwable: Throwable) {
-                cameraExecutor.execute cameraFailure@{
-                    if (!isAttemptValid(token)) return@cameraFailure
-                        failSelectedConfigurationFromWorker(token, "encoder: ${errorText(throwable)}")
-                }
-                return@encoderPreparation
-            }
-
-            if (!isAttemptValid(token)) {
-                releaseRecorderAndOutput(deleteOutput = true)
-                return@encoderPreparation
-            }
-
-            cameraExecutor.execute {
-                val camera = synchronized(resourceLock) { cameraDevice }
-                if (camera != null) maybeCreateHeadlessSession(camera, cameraProfile, token)
-            }
-        }
-
-        val openCamera = {
-            if (!isAttemptValid(token)) {
-                releaseRecordingResources(deleteOutput = true)
-            } else {
-                cameraExecutor.execute {
-                    runCatching { openSelectedCamera(cameraProfile, token) }
-                        .onFailure {
-                            failSelectedConfigurationFromWorker(
-                                token,
-                                "falha ao solicitar abertura da câmera: ${errorText(it)}"
-                            )
-                        }
-                }
-            }
-        }
-
-        if (requestCameraOwnership) {
-            CameraResourceCoordinator.requestCapture(
-                owner = CameraResourceCoordinator.Owner.VIDEO,
-                token = cameraLeaseToken,
-                onGranted = openCamera,
-                onDenied = { reason ->
-                    cameraExecutor.execute {
-                        releaseRecordingResources(deleteOutput = true)
-                        failAndStopFromWorker("câmera indisponível: $reason")
-                    }
-                }
-            )
-        } else {
-            openCamera()
-        }
-    }
 
     private fun maybeCreateHeadlessSession(
         camera: CameraDevice,
@@ -847,23 +781,7 @@ class CaptureService : Service() {
         return Range(targetFps, targetFps)
     }
 
-    /**
-     * FPS selecionado é contrato exato. Nenhuma faixa variável é aceita: 30 usa
-     * [30,30] e 60 usa [60,60].
-     */
-    private fun selectTargetFpsRange(
-        ranges: List<Range<Int>>,
-        targetFps: Int
-    ): Range<Int>? = ranges.firstOrNull {
-        StrictCaptureModePolicy.acceptsFpsRange(targetFps, it.lower, it.upper)
-    }
 
-    private fun configurationRequestOrder(targetFps: Int): List<Pair<Size, Int>> {
-        val requested = requireNotNull(recordingSettings.exactPreferredSize()) { "resolução manual inválida" }.toPolicyDimensions()
-        return StrictCaptureModePolicy.requestOrder(requested, targetFps).map { request ->
-            Size(request.dimensions.width, request.dimensions.height) to request.fps
-        }
-    }
 
     private fun matchesRequestedMode(camera: CameraProfile, targetFps: Int): Boolean {
         val requested = recordingSettings.exactPreferredSize()?.toPolicyDimensions() ?: return false
@@ -1048,7 +966,6 @@ class CaptureService : Service() {
     }
 
 
-    private fun explicitOisRequested(): Boolean = recordingSettings.stabilization == CaptureSettings.STABILIZATION_OIS
 
     private fun profileSatisfiesExplicitStabilization(profile: CameraProfile): Boolean {
         // Metadados de estabilização da câmera lógica podem ser incompletos em Samsung.
@@ -2090,80 +2007,6 @@ class CaptureService : Service() {
         }.getOrNull()
     }
 
-    private fun buildLocked3ARequest(
-        profile: CameraProfile,
-        cadencePlan: SensorCadencePolicy.Plan?,
-        gains: RggbChannelVector?,
-        transform: ColorSpaceTransform?,
-        focusDistanceDiopters: Float?
-    ): CaptureRequest? {
-        val camera = synchronized(resourceLock) { cameraDevice } ?: return null
-        val surface = synchronized(resourceLock) { recorderSurface } ?: return null
-
-        return runCatching {
-            createRecordRequestBuilder(camera).apply {
-                addTarget(surface)
-                configureCaptureRequest(this, profile, cadencePlan)
-
-                val awbModes = profile.characteristics.get(
-                    CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES
-                ) ?: intArrayOf()
-                val capabilities = profile.characteristics.get(
-                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES
-                ) ?: intArrayOf()
-                val manualPost = capabilities.contains(
-                    CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING
-                )
-                val canUseMeasuredWhiteBalance =
-                    gains != null &&
-                    transform != null &&
-                    manualPost &&
-                    awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF)
-
-                if (canUseMeasuredWhiteBalance) {
-                    set(CaptureRequest.CONTROL_AWB_LOCK, false)
-                    set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-                    set(
-                        CaptureRequest.COLOR_CORRECTION_MODE,
-                        CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX
-                    )
-                    set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, transform)
-                    set(CaptureRequest.COLOR_CORRECTION_GAINS, gains)
-                } else if (
-                    profile.characteristics.get(
-                        CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE
-                    ) == true
-                ) {
-                    set(CaptureRequest.CONTROL_AWB_LOCK, true)
-                }
-
-                if (cadencePlan == null &&
-                    profile.characteristics.get(
-                        CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE
-                    ) == true
-                ) {
-                    set(CaptureRequest.CONTROL_AE_LOCK, true)
-                }
-
-                if (
-                    recordingSettings.focusMode == CaptureSettings.FOCUS_LOCKED &&
-                    focusDistanceDiopters != null
-                ) {
-                    val minimumFocusDistance = profile.characteristics.get(
-                        CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE
-                    ) ?: 0f
-                    if (minimumFocusDistance > 0f) {
-                        set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
-                        set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
-                        set(
-                            CaptureRequest.LENS_FOCUS_DISTANCE,
-                            focusDistanceDiopters.coerceIn(0f, minimumFocusDistance)
-                        )
-                    }
-                }
-            }.build()
-        }.getOrNull()
-    }
 
     private fun startLockedFocusRecording(
         session: CameraCaptureSession,
@@ -3259,30 +3102,6 @@ class CaptureService : Service() {
         finishServiceOnMain()
     }
 
-    private fun hasHlgVideoTrack(file: File): Boolean {
-        val extractor = android.media.MediaExtractor()
-        return try {
-            extractor.setDataSource(file.absolutePath)
-            for (index in 0 until extractor.trackCount) {
-                val format = extractor.getTrackFormat(index)
-                val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
-                if (!mime.startsWith("video/")) continue
-                val standard = runCatching {
-                    format.getInteger(MediaFormat.KEY_COLOR_STANDARD)
-                }.getOrNull()
-                val transfer = runCatching {
-                    format.getInteger(MediaFormat.KEY_COLOR_TRANSFER)
-                }.getOrNull()
-                return standard == MediaFormat.COLOR_STANDARD_BT2020 &&
-                        transfer == MediaFormat.COLOR_TRANSFER_HLG
-            }
-            false
-        } catch (_: Throwable) {
-            false
-        } finally {
-            extractor.release()
-        }
-    }
 
     private fun finishWithRecoveredPartial(
         rawFile: File,
@@ -3865,9 +3684,6 @@ class CaptureService : Service() {
         // Sem granulado: exposição sobe (até ~1/60 s) antes de o ISO passar disto.
         private const val SOFT_AE_COMFORT_ISO = 800
         private const val FOCUS_LOCK_MAX_WARMUP_MS = 250L
-        private const val THREE_A_LOCK_MIN_WARMUP_FRAMES = 4
-        private const val THREE_A_LOCK_MAX_WARMUP_FRAMES = 10
-        private const val THREE_A_LOCK_MAX_WARMUP_MS = 350L
         private const val THREE_A_DETERMINISTIC_MIN_WARMUP_FRAMES = 12
         private const val THREE_A_DETERMINISTIC_STABLE_FRAMES = 6
         private const val THREE_A_DETERMINISTIC_MAX_WARMUP_FRAMES = 30
@@ -3954,12 +3770,8 @@ class CaptureService : Service() {
         private const val FRAME_DURATION_TOLERANCE_NS =
             50_000L
 
-        private const val HIGH_FPS_FRAME_TOLERANCE_NS = 500_000L
 
-        private const val RAW_FILE_PREFIX = "steadyvault_raw_"
         private const val STALE_RAW_FILE_MIN_AGE_MS = 60_000L
-        private const val AUTO_HIGHLIGHT_BIAS_EV_60 = -0.40f
-        private const val AUTO_HIGHLIGHT_BIAS_EV_30 = -0.25f
         private const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
         private const val CAMERA_RECOVERY_DELAY_MS = 450L
 
