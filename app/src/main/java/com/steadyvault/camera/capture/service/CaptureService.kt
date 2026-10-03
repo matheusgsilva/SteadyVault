@@ -819,7 +819,9 @@ class CaptureService : Service() {
     private fun effectiveExposureCompensation(profile: CameraProfile): Int {
         // "0" volta a significar exposição neutra. A Hybrid AE aplicava EV negativo
         // automaticamente em 60 FPS, deixando a gravação mais escura que o preview.
-        return recordingSettings.exposureCompensation
+        // Soma o EV que iguala o brilho das lentes telefoto/ultra ao do 1x (ver ZoomBrightness).
+        return recordingSettings.exposureCompensation +
+            com.steadyvault.camera.core.camera.ZoomBrightness.extraSteps(profile.characteristics, recordingSettings.zoomRatio)
     }
 
     private fun resolveStandardFpsRange(

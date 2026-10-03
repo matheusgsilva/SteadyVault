@@ -1295,7 +1295,12 @@ class IdleCameraPreviewController(
 
         val exposureRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
         exposureRange?.let {
-            set(builder, CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, settings.exposureCompensation.coerceIn(it.lower, it.upper))
+            set(
+                builder,
+                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                (settings.exposureCompensation + com.steadyvault.camera.core.camera.ZoomBrightness.extraSteps(characteristics, settings.zoomRatio))
+                    .coerceIn(it.lower, it.upper)
+            )
         }
 
         CameraZoom.apply(builder, characteristics, settings.zoomRatio)
