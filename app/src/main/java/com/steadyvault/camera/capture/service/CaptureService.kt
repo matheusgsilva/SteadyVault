@@ -1541,6 +1541,13 @@ class CaptureService : Service() {
                                 )
                             }
                         } catch (throwable: Throwable) {
+                            if (profile.highSpeed && analysisSurface != null && isAttemptValid(token)) {
+                                Log.w(LOG_TAG, "high-speed recusou a saída de análise (${errorText(throwable)}); repetindo só com o encoder")
+                                session.close()
+                                closeHighSpeedAnalysis()
+                                createRecordingSessionSafely(camera, profile, token, allowHighSpeedAnalysis = false)
+                                return
+                            }
                             failSelectedConfigurationFromWorker(
                                 token,
                                 "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(throwable)}"
@@ -1617,6 +1624,12 @@ class CaptureService : Service() {
         try {
             camera.createCaptureSession(sessionConfiguration)
         } catch (throwable: Throwable) {
+            if (profile.highSpeed && analysisSurface != null) {
+                Log.w(LOG_TAG, "high-speed recusou a saída de análise (${errorText(throwable)}); repetindo só com o encoder")
+                closeHighSpeedAnalysis()
+                createRecordingSessionSafely(camera, profile, token, allowHighSpeedAnalysis = false)
+                return
+            }
             failSelectedConfigurationFromWorker(
                 token,
                 "falha criando sessão ${sizeName(profile.videoSize)} ${profile.targetFps} FPS: ${errorText(throwable)}"
@@ -2359,7 +2372,12 @@ class CaptureService : Service() {
                     .getOrDefault(emptyList()).any { it == profile.fpsRange }
             }
             .maxByOrNull { it.width * it.height } ?: return null
-        val reader = runCatching { ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2) }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        // A HAL só aceita como "preview" Surface com uso de textura (GPU); o ImageReader comum é só CPU
+        // e dá "surface is not for preview or hardware video encoding".
+        val usage = android.hardware.HardwareBuffer.USAGE_CPU_READ_OFTEN or
+            android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE
+        val reader = runCatching { ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2, usage) }
             .getOrNull() ?: return null
         reader.setOnImageAvailableListener({ source ->
             val image = runCatching { source.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
