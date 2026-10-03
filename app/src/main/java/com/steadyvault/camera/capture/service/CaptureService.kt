@@ -227,6 +227,7 @@ class CaptureService : Service() {
     @Volatile private var hsDarkStreak = 0
     @Volatile private var hsAnalysisReader: ImageReader? = null
     @Volatile private var hsAnalysisSurface: Surface? = null
+    @Volatile private var hsAnalysisThread: android.os.HandlerThread? = null
     @Volatile private var hsLastAnalysisMs = 0L
 
 
@@ -685,6 +686,8 @@ class CaptureService : Service() {
         val characteristics = runCatching {
             getSystemService(CameraManager::class.java).getCameraCharacteristics(cameraId)
         }.getOrNull() ?: return null
+        // A matriz pode ter sido atualizada depois: se a rota (regular x high-speed) mudou, não reaproveita.
+        if (rememberedHighSpeed != shouldUseHighSpeed(cameraId, characteristics, rememberedSize, fps)) return null
         val fpsRange = resolveFpsRange(characteristics, rememberedSize, fps, rememberedHighSpeed) ?: return null
         val dynamicRange = when {
             allowHdr && supportsHlg10(characteristics) -> storedDynamicRange
@@ -1420,6 +1423,9 @@ class CaptureService : Service() {
         // Toda gravação usa a mesma sessão encoder-only. A tela de captura pode manter
         // sua interface, mas nunca recebe uma segunda saída Camera2 durante o vídeo.
         // Isso reserva ISP, memória e largura de banda exclusivamente para o arquivo.
+        // AE própria de uma gravação anterior nunca pode vazar para esta sessão.
+        softAe = null
+        softAePlan = null
         var analysisSurface: Surface? = null
         if (profile.highSpeed) {
             highSpeedCompensation = initialHighSpeedCompensation(profile)
@@ -1660,8 +1666,17 @@ class CaptureService : Service() {
             armRecorderForFirstFrame(token)
             session.setRepeatingBurst(requests, null, mainHandler)
             commitRecorderStart(profile, token, highSpeed = true)
-        }.onFailure {
-            failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(it)}")
+        }.onFailure { failure ->
+            val camera = synchronized(resourceLock) { cameraDevice }
+            if (hsAnalysisSurface != null && camera != null && isAttemptValid(token) && !recorderStarted) {
+                // A HAL recusou o burst com a saída de análise: repete só com a Surface do encoder.
+                Log.w(LOG_TAG, "high-speed recusou o burst com análise (${errorText(failure)}); repetindo só com o encoder")
+                runCatching { session.close() }
+                closeHighSpeedAnalysis()
+                createRecordingSessionSafely(camera, profile, token, allowHighSpeedAnalysis = false)
+            } else {
+                failSelectedConfigurationFromWorker(token, "não foi possível iniciar ${profile.targetFps} FPS: ${errorText(failure)}")
+            }
         }
     }
 
@@ -2357,6 +2372,9 @@ class CaptureService : Service() {
         hsAnalysisReader = null
         runCatching { reader?.setOnImageAvailableListener(null, null) }
         runCatching { reader?.close() }
+        val thread = hsAnalysisThread
+        hsAnalysisThread = null
+        runCatching { thread?.quitSafely() }
     }
 
     /**
@@ -2377,8 +2395,10 @@ class CaptureService : Service() {
         // e dá "surface is not for preview or hardware video encoding".
         val usage = android.hardware.HardwareBuffer.USAGE_CPU_READ_OFTEN or
             android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE
-        val reader = runCatching { ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 2, usage) }
+        val reader = runCatching { ImageReader.newInstance(size.width, size.height, ImageFormat.YUV_420_888, 4, usage) }
             .getOrNull() ?: return null
+        // Thread própria: um main thread ocupado não pode segurar os buffers da sessão high-speed.
+        val analysisThread = android.os.HandlerThread("SteadyVault-HsAnalysis").also { it.start() }
         reader.setOnImageAvailableListener({ source ->
             val image = runCatching { source.acquireLatestImage() }.getOrNull() ?: return@setOnImageAvailableListener
             try {
@@ -2415,7 +2435,8 @@ class CaptureService : Service() {
             } finally {
                 runCatching { image.close() }
             }
-        }, mainHandler)
+        }, android.os.Handler(analysisThread.looper))
+        hsAnalysisThread = analysisThread
         hsAnalysisReader = reader
         hsAnalysisSurface = reader.surface
         Log.i("SteadyVaultCfr", "high-speed: saída de análise de brilho ${size.width}x${size.height}")

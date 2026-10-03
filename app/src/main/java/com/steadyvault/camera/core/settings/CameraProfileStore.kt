@@ -88,7 +88,15 @@ object CameraProfileStore {
         // Bitrate é uma preferência persistente de gravação e não pertence ao perfil
         // de câmera/foto. Preservá-lo em ambos os modos evita que entrar em FOTO e
         // voltar para VÍDEO restaure silenciosamente um valor antigo.
-        val activated = stored.copy(bitrateMbps = fallback.bitrateMbps)
+        // A resolução de cada FPS mora em resolution_<fps> (Ajustes/botões); o perfil antigo não a sobrepõe.
+        val activated = if (mode == FunctionMode.VIDEO) {
+            stored.copy(
+                bitrateMbps = fallback.bitrateMbps,
+                resolution = CaptureSettings.resolutionForFps(context, stored.fps)
+            )
+        } else {
+            stored.copy(bitrateMbps = fallback.bitrateMbps)
+        }
         CaptureSettings.save(context, activated)
         return activated
     }

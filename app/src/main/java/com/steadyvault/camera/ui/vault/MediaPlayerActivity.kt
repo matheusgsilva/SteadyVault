@@ -1453,7 +1453,7 @@ class MediaPlayerActivity : ComponentActivity() {
     }
 
     private fun applyPreferredPlaybackRefreshRate(sourceFps: Float, playbackSpeed: Float) {
-        val outputRate = sourceFps.coerceAtLeast(0f) * playbackSpeed.coerceAtLeast(0.25f)
+        val outputRate = sourceFps.coerceAtLeast(0f) * playbackSpeed.coerceAtLeast(0.05f)
         if (outputRate < HIGH_REFRESH_OUTPUT_MIN) {
             restoreDisplayRefreshPreference()
             return

@@ -53,6 +53,7 @@ object CaptureModeCatalog {
 
     private const val PREFS = "steadyvault_mode_capabilities"
     private const val KEY_SCAN_TIME = "scan_time"
+    private const val HIGH_FPS_MIN = 120
     private val fpsValues get() = CaptureSettings.supportedFpsValues
 
     fun resolve(context: Context, matrix: CaptureCapabilityMatrix.Matrix? = CaptureCapabilityMatrix.cached(), scanInProgress: Boolean = false): Catalog {
@@ -61,6 +62,8 @@ object CaptureModeCatalog {
                 ?.takeIf { it.resolutionValue in CaptureSettings.supportedResolutionValues }
                 ?.let { Profile(fps, it.resolutionValue, it.resolutionLabel, Source.VALIDATED) }
             val detected = matrix?.maximumMode(fps)?.toProfile(Source.DETECTED)
+            // Taxas altas (120/240) só aparecem quando a análise confirmou o modo nesta câmera.
+            if (matrix != null && detected == null && fps >= HIGH_FPS_MIN) return@map unavailable(fps)
             val cached = cachedProfile(context, fps)
             when {
                 detected != null -> if (validated != null && validated.resolutionValue == detected.resolutionValue) validated else detected
@@ -83,6 +86,7 @@ object CaptureModeCatalog {
     ): Profile {
         val safeResolution = resolution.takeIf { it in CaptureSettings.supportedResolutionValues } ?: CaptureSettings.RESOLUTION_4K
         val validated = CaptureStateStore.effectiveModeForFps(context, fps)?.takeIf { it.resolutionValue == safeResolution }
+        if (matrix != null && fps >= HIGH_FPS_MIN && matrix.bestMode(safeResolution, fps) == null) return unavailable(fps)
         matrix?.bestMode(safeResolution, fps)?.let {
             return if (validated != null) Profile(fps, safeResolution, validated.resolutionLabel, Source.VALIDATED)
             else it.toProfile(Source.DETECTED)

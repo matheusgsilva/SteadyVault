@@ -341,12 +341,14 @@ class DirectMediaCodecBackend(
                                     } else {
                                         val predicted = smoothUs + smoothDeltaUs
                                         val error = rawRelUs - predicted
-                                        val next = if (abs(error) > smoothDeltaUs * 1.5) {
+                                        val gap = abs(error) > smoothDeltaUs * 1.5
+                                        val next = if (gap) {
                                             rawRelUs.toDouble() // lacuna ou salto real: segue o sensor
                                         } else {
                                             predicted + error * 0.1
                                         }.coerceAtLeast(smoothUs + 1.0)
-                                        smoothDeltaUs = smoothDeltaUs * 0.98 + (next - smoothUs) * 0.02
+                                        // Lacuna não entra na estimativa do intervalo médio.
+                                        if (!gap) smoothDeltaUs = smoothDeltaUs * 0.98 + (next - smoothUs) * 0.02
                                         smoothUs = next
                                     }
                                     smoothUs.toLong()

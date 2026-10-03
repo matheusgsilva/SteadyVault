@@ -1574,7 +1574,8 @@ class CaptureActivity : ComponentActivity() {
     private fun showLiveHdrChoices() {
         val settings = CaptureSettings.snapshot(this)
         val support = selectedCameraFeatures()?.hdrHlg10 ?: Support.UNVERIFIED
-        val hdrAllowed = featureSelectable(support)
+        // 120/240 FPS (high-speed) não suportam HDR de 10 bits.
+        val hdrAllowed = featureSelectable(support) && settings.fps < CaptureModeStore.FPS_120
         OneUiDialog.choices(
             activity = this,
             title = "HDR HLG10",
@@ -3162,13 +3163,17 @@ class CaptureActivity : ComponentActivity() {
         CaptureSettings.saveResolutionForFps(this, targetFps, targetResolution)
         val profile = configuredProfile(targetFps, targetResolution)
         CaptureStateStore.clearEffectiveMode(this)
-        CaptureSettings.updateResolutionAndFps(this, targetResolution, targetFps)
+        // Com câmera escolhida, o perfil do FPS destino é ativado direto (salvar antes reescreveria
+        // o perfil dele com os ajustes do FPS anterior).
+        if (settings.selectedCameraId.isNullOrBlank()) {
+            CaptureSettings.updateResolutionAndFps(this, targetResolution, targetFps)
+        }
         settings.selectedCameraId?.let { cameraId ->
             CameraProfileStore.activate(
                 this,
                 cameraId,
                 CameraProfileStore.FunctionMode.VIDEO,
-                CaptureSettings.snapshot(this).copy(selectedCameraId = cameraId)
+                settings.copy(selectedCameraId = cameraId, fps = targetFps, resolution = targetResolution)
             )
         }
         val message = selectedModeStateMessage(profile)
