@@ -1450,7 +1450,7 @@ class CaptureActivity : ComponentActivity() {
     private fun previewHudColor(): Int {
         val target = CaptureSettings.snapshot(this).fps
         if (previewMeasuredFps <= 0.0 || target <= 0) return android.graphics.Color.WHITE
-        val ratio = previewMeasuredFps / minOf(target, PREVIEW_HUD_PREVIEW_FPS_CAP)
+        val ratio = previewMeasuredFps / previewHudTargetFps(target)
         return when {
             ratio >= 0.95 -> 0xFF7CFC9A.toInt()
             ratio >= 0.80 -> 0xFFFFD54F.toInt()
@@ -1458,9 +1458,13 @@ class CaptureActivity : ComponentActivity() {
         }
     }
 
+    /** Alvo real da prévia: 30 em FOTO (sessão de foto), no máximo 60 em vídeo. */
+    private fun previewHudTargetFps(fps: Int): Int =
+        if (previewPhotoMode) 30 else minOf(fps, PREVIEW_HUD_PREVIEW_FPS_CAP)
+
     private fun buildPreviewHudText(): String {
         val settings = CaptureSettings.snapshot(this)
-        val previewTarget = minOf(settings.fps, PREVIEW_HUD_PREVIEW_FPS_CAP)
+        val previewTarget = previewHudTargetFps(settings.fps)
         val measured = if (previewMeasuredFps > 0.0) {
             String.format(java.util.Locale.US, "%.1f", previewMeasuredFps)
         } else "--"
